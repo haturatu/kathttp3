@@ -19,7 +19,7 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
     private val ids = AtomicLong(1)
     private val active = ConcurrentHashMap.newKeySet<Long>()
     private val nativeLock = Any()
-    private         val handle = NativeBridge.createClient(config.connectTimeoutMillis, config.requestTimeoutMillis, config.idleTimeoutMillis, config.maxRedirects, config.trustMode.native, config.insecureCert, config.caCertificateFile).also { check(it != 0L) }
+    private         val handle = NativeBridge.createClient(config.connectTimeoutMillis, config.requestTimeoutMillis, config.idleTimeoutMillis, config.maxRedirects, config.trustMode.native, config.insecureCert, config.caCertificateFile, config.resolver).also { check(it != 0L) }
 
     suspend fun execute(request: KatHttpRequest): KatHttpResponse {
         return if (config.interceptors.isEmpty()) {

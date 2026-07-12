@@ -22,6 +22,7 @@ data class KatHttpClientConfig(
     val insecureCert: Boolean = false,
     val expectSuccess: Boolean = false,
     val interceptors: List<HttpInterceptor> = emptyList(),
+    val resolver: DnsResolver? = null,
 ) {
     init { require(connectTimeoutMillis > 0); require(requestTimeoutMillis > 0); require(idleTimeoutMillis > 0); require(maxRedirects >= 0); require(maxBufferedBodyBytes > 0); require(caCertificateFile == null || caCertificateFile.isNotBlank()) }
 }

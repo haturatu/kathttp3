@@ -1,6 +1,9 @@
 #include <jni.h>
 #include <atomic>
+#include <cstring>
 #include <mutex>
+#include <sys/socket.h>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "android_cert_verifier.h"
@@ -11,6 +14,22 @@ namespace {
 JavaVM *g_vm = nullptr;
 std::mutex g_handles_mutex;
 std::unordered_set<kathttp_client *> g_handles;
+std::unordered_map<kathttp_client *, void *> g_resolvers;
+
+/* Per-client state for a Kotlin DnsResolver injected through the options.
+ * Class/method IDs are resolved on the calling (Java) thread at create time,
+ * where the app class loader is available, then used from the native worker
+ * thread (which would fail FindClass otherwise). */
+struct ResolverCtx {
+  jobject resolver = nullptr;       /* global ref */
+  jmethodID resolve_mid = nullptr;  /* DnsResolver.resolve */
+  jclass list_class = nullptr;      /* global ref to java/util/List */
+  jmethodID list_size_mid = nullptr;
+  jmethodID list_get_mid = nullptr;
+  jclass addr_class = nullptr;      /* global ref to dev/kathttp/ResolvedAddress */
+  jmethodID ip_mid = nullptr;       /* ResolvedAddress.getIp */
+  jmethodID port_mid = nullptr;     /* ResolvedAddress.getPort */
+};
 
 class EnvScope {
  public:
@@ -41,6 +60,59 @@ void release_state(JNIEnv *env, CallbackState *state) {
   if (!state) return;
   if (state->callback) env->DeleteGlobalRef(state->callback);
   delete state;
+}
+
+/* C-ABI callback handed to kathttp; adapts the Kotlin DnsResolver into the
+ * native Resolver interface. Family is derived from the IP string. */
+int jni_resolve_cb(const char *host, uint16_t port, void *userdata,
+                   kathttp_resolved_address *out, size_t *out_count) {
+  auto *ctx = static_cast<ResolverCtx *>(userdata);
+  if (!ctx || !ctx->resolver || !out || !out_count) return -1;
+  EnvScope scope;
+  JNIEnv *env = scope.get();
+  if (!env) return -1;
+
+  jstring jhost = env->NewStringUTF(host);
+  jobject list = env->CallObjectMethod(ctx->resolver, ctx->resolve_mid, jhost,
+                                       static_cast<jint>(port));
+  env->DeleteLocalRef(jhost);
+  if (!list || env->ExceptionCheck()) {
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return -1;
+  }
+
+  jint count = env->CallIntMethod(list, ctx->list_size_mid);
+  size_t cap = *out_count;
+  size_t written = 0;
+  for (jint i = 0; i < count && written < cap; ++i) {
+    jobject elem = env->CallObjectMethod(list, ctx->list_get_mid, i);
+    if (!elem) continue;
+    jstring jip = reinterpret_cast<jstring>(env->CallObjectMethod(elem, ctx->ip_mid));
+    jint aport = env->CallIntMethod(elem, ctx->port_mid);
+    const char *ip = jip ? env->GetStringUTFChars(jip, nullptr) : nullptr;
+    if (ip && *ip) {
+      int family = (std::strchr(ip, ':') != nullptr) ? AF_INET6 : AF_INET;
+      std::strncpy(out[written].ip, ip, sizeof(out[written].ip) - 1);
+      out[written].ip[sizeof(out[written].ip) - 1] = '\0';
+      out[written].port = static_cast<uint16_t>(aport);
+      out[written].family = family;
+      ++written;
+      env->ReleaseStringUTFChars(jip, ip);
+    }
+    if (jip) env->DeleteLocalRef(jip);
+    env->DeleteLocalRef(elem);
+  }
+  *out_count = written;
+  env->DeleteLocalRef(list);
+  return 0;
+}
+
+void free_resolver_ctx(JNIEnv *env, ResolverCtx *ctx) {
+  if (!ctx) return;
+  if (ctx->resolver) env->DeleteGlobalRef(ctx->resolver);
+  if (ctx->list_class) env->DeleteGlobalRef(ctx->list_class);
+  if (ctx->addr_class) env->DeleteGlobalRef(ctx->addr_class);
+  delete ctx;
 }
 
 void event_cb(void *opaque, const kathttp_event *event) noexcept {
@@ -90,14 +162,51 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
   return JNI_VERSION_1_6;
 }
 
-extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp_internal_NativeBridge_createClient(JNIEnv *env, jobject, jlong connect, jlong request, jlong idle, jint redirects, jint trustMode, jboolean insecure, jstring caFile) {
+extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp_internal_NativeBridge_createClient(JNIEnv *env, jobject, jlong connect, jlong request, jlong idle, jint redirects, jint trustMode, jboolean insecure, jstring caFile, jobject resolver) {
   kathttp_client_options o; kathttp_client_options_init(&o); o.connect_timeout_ms=connect; o.request_timeout_ms=request; o.idle_timeout_ms=idle; o.max_redirects=redirects;
   o.trust_mode = static_cast<uint32_t>(trustMode); o.insecure_cert = insecure ? 1 : 0;
   const char *ca = caFile ? env->GetStringUTFChars(caFile, nullptr) : nullptr; if (caFile && !ca) return 0; o.ca_cert_file = ca;
-  auto *p=kathttp_client_create(&o); if (ca) env->ReleaseStringUTFChars(caFile, ca); if (p) { try { std::lock_guard<std::mutex> lock(g_handles_mutex); g_handles.insert(p); } catch (...) { kathttp_client_destroy(p); return 0; } } return static_cast<jlong>(reinterpret_cast<uintptr_t>(p));
+  ResolverCtx *rctx = nullptr;
+  if (resolver) {
+    rctx = new (std::nothrow) ResolverCtx;
+    if (rctx) {
+      jclass rc = env->GetObjectClass(resolver);
+      jclass lc = env->FindClass("java/util/List");
+      jclass ac = env->FindClass("dev/kathttp/ResolvedAddress");
+      rctx->resolver = env->NewGlobalRef(resolver);
+      rctx->resolve_mid = rc ? env->GetMethodID(rc, "resolve", "(Ljava/lang/String;I)Ljava/util/List;") : nullptr;
+      rctx->list_class = lc ? reinterpret_cast<jclass>(env->NewGlobalRef(lc)) : nullptr;
+      rctx->list_size_mid = (rctx->list_class && !env->ExceptionCheck()) ? env->GetMethodID(rctx->list_class, "size", "()I") : nullptr;
+      rctx->list_get_mid = (rctx->list_class && !env->ExceptionCheck()) ? env->GetMethodID(rctx->list_class, "get", "(I)Ljava/lang/Object;") : nullptr;
+      rctx->addr_class = ac ? reinterpret_cast<jclass>(env->NewGlobalRef(ac)) : nullptr;
+      rctx->ip_mid = (rctx->addr_class && !env->ExceptionCheck()) ? env->GetMethodID(rctx->addr_class, "getIp", "()Ljava/lang/String;") : nullptr;
+      rctx->port_mid = (rctx->addr_class && !env->ExceptionCheck()) ? env->GetMethodID(rctx->addr_class, "getPort", "()I") : nullptr;
+      if (env->ExceptionCheck()) env->ExceptionClear();
+      if (rc) env->DeleteLocalRef(rc);
+      if (lc) env->DeleteLocalRef(lc);
+      if (ac) env->DeleteLocalRef(ac);
+      if (rctx->resolve_mid && rctx->list_class && rctx->list_size_mid && rctx->list_get_mid && rctx->addr_class && rctx->ip_mid && rctx->port_mid) {
+        o.resolve_cb = jni_resolve_cb;
+        o.resolve_cb_userdata = rctx;
+      } else {
+        free_resolver_ctx(env, rctx); rctx = nullptr;
+      }
+    }
+  }
+  auto *p=kathttp_client_create(&o); if (ca) env->ReleaseStringUTFChars(caFile, ca);
+  if (p) {
+    try {
+      std::lock_guard<std::mutex> lock(g_handles_mutex);
+      g_handles.insert(p);
+      if (rctx) g_resolvers[p] = rctx;
+    } catch (...) { if (rctx) { free_resolver_ctx(env, rctx); g_resolvers.erase(p); } kathttp_client_destroy(p); return 0; }
+  } else if (rctx) {
+    free_resolver_ctx(env, rctx);
+  }
+  return static_cast<jlong>(reinterpret_cast<uintptr_t>(p));
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_kathttp_internal_NativeBridge_closeClient(JNIEnv *, jobject, jlong h) { std::lock_guard<std::mutex> lock(g_handles_mutex); auto *p=reinterpret_cast<kathttp_client *>(static_cast<uintptr_t>(h)); if (g_handles.count(p)) kathttp_client_close(p); }
-extern "C" JNIEXPORT void JNICALL Java_dev_kathttp_internal_NativeBridge_destroyClient(JNIEnv *, jobject, jlong h) { auto *p=reinterpret_cast<kathttp_client *>(static_cast<uintptr_t>(h)); { std::lock_guard<std::mutex> lock(g_handles_mutex); if (!g_handles.erase(p)) return; } kathttp_client_destroy(p); }
+extern "C" JNIEXPORT void JNICALL Java_dev_kathttp_internal_NativeBridge_destroyClient(JNIEnv *env, jobject, jlong h) { auto *p=reinterpret_cast<kathttp_client *>(static_cast<uintptr_t>(h)); ResolverCtx *rctx = nullptr; { std::lock_guard<std::mutex> lock(g_handles_mutex); if (!g_handles.erase(p)) return; auto it = g_resolvers.find(p); if (it != g_resolvers.end()) { rctx = reinterpret_cast<ResolverCtx *>(it->second); g_resolvers.erase(it); } } if (rctx) free_resolver_ctx(env, rctx); kathttp_client_destroy(p); }
 extern "C" JNIEXPORT void JNICALL Java_dev_kathttp_internal_NativeBridge_cancel(JNIEnv *, jobject, jlong h, jlong id) { std::lock_guard<std::mutex> lock(g_handles_mutex); auto *p=reinterpret_cast<kathttp_client *>(static_cast<uintptr_t>(h)); if (g_handles.count(p)) kathttp_client_cancel(p,id); }
 
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp_internal_NativeBridge_execute(JNIEnv *env, jobject, jlong h, jlong id, jstring method, jstring url, jobjectArray names, jobjectArray values, jbyteArray body, jboolean redirects, jobject callback) {
