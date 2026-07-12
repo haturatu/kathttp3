@@ -675,30 +675,37 @@ void QuicClient::consume(int64_t request_id, size_t bytes) {
 
 void QuicClient::try_submit_pending() {
   if (!http3_ready_ || !http3_ || !http3_->ready()) return;
-  std::lock_guard<std::mutex> lk(job_mutex_);
-  for (auto it = pending_jobs_.begin(); it != pending_jobs_.end();) {
-    Job *job = it->get();
-    if (job->cancelled) { it = pending_jobs_.erase(it); continue; }
-    int64_t stream_id;
-    int rv = ngtcp2_conn_open_bidi_stream(conn_, &stream_id, nullptr);
-    if (rv == NGTCP2_ERR_STREAM_ID_BLOCKED) {
-      break;  // wait for extend_max_local_streams_bidi
-    }
-    if (rv != 0) {
-      notify_job_error(job, KATHTTP_ERR_QUIC);
+  // Engine callbacks may synchronously invoke cancel()/close().  Never call
+  // them while job_mutex_ is held: that formerly made a failed body request
+  // (notably PUT) re-enter this mutex and could leave the native worker stuck.
+  std::vector<std::pair<std::unique_ptr<Job>, int>> failed;
+  {
+    std::lock_guard<std::mutex> lk(job_mutex_);
+    for (auto it = pending_jobs_.begin(); it != pending_jobs_.end();) {
+      Job *job = it->get();
+      if (job->cancelled) { it = pending_jobs_.erase(it); continue; }
+      int64_t stream_id;
+      int rv = ngtcp2_conn_open_bidi_stream(conn_, &stream_id, nullptr);
+      if (rv == NGTCP2_ERR_STREAM_ID_BLOCKED) {
+        break;  // wait for extend_max_local_streams_bidi
+      }
+      if (rv != 0) {
+        failed.emplace_back(std::move(*it), KATHTTP_ERR_QUIC);
+        it = pending_jobs_.erase(it);
+        continue;
+      }
+      job->stream_id = stream_id;
+      job->http3_ready = true;
+      if (!http3_->submit_request(job)) {
+        failed.emplace_back(std::move(*it), KATHTTP_ERR_HTTP3);
+        it = pending_jobs_.erase(it);
+        continue;
+      }
+      active_jobs_.push_back(std::move(*it));
       it = pending_jobs_.erase(it);
-      continue;
     }
-    job->stream_id = stream_id;
-    job->http3_ready = true;
-    if (!http3_->submit_request(job)) {
-      notify_job_error(job, KATHTTP_ERR_HTTP3);
-      it = pending_jobs_.erase(it);
-      continue;
-    }
-    active_jobs_.push_back(std::move(*it));
-    it = pending_jobs_.erase(it);
   }
+  for (auto &[job, error] : failed) notify_job_error(job.get(), error);
 }
 
 void QuicClient::on_handshake_confirmed() {
