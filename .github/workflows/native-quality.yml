@@ -2,7 +2,47 @@ name: Native Quality
 
 on:
   push:
+    paths:
+      - "src/**/*.c"
+      - "src/**/*.cc"
+      - "src/**/*.cpp"
+      - "src/**/*.h"
+      - "src/**/*.hpp"
+      - "include/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".clang-format"
+      - ".clang-tidy"
+      - "scripts/build-android-deps.sh"
+      - "third_party/versions.env"
+      - "third_party/versions.cmake"
+      - "build.gradle.kts"
+      - "kathttp/build.gradle.kts"
+      - "gradle.properties"
+      - "gradlew"
+      - "gradle/wrapper/**"
+      - ".github/workflows/native-quality.yml"
   pull_request:
+    paths:
+      - "src/**/*.c"
+      - "src/**/*.cc"
+      - "src/**/*.cpp"
+      - "src/**/*.h"
+      - "src/**/*.hpp"
+      - "include/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".clang-format"
+      - ".clang-tidy"
+      - "scripts/build-android-deps.sh"
+      - "third_party/versions.env"
+      - "third_party/versions.cmake"
+      - "build.gradle.kts"
+      - "kathttp/build.gradle.kts"
+      - "gradle.properties"
+      - "gradlew"
+      - "gradle/wrapper/**"
+      - ".github/workflows/native-quality.yml"
 
 permissions:
   contents: read

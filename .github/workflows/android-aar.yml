@@ -6,7 +6,35 @@ on:
       - main
     tags:
       - "v*"
+    paths:
+      - "kathttp/**"
+      - "src/**"
+      - "include/**"
+      - "CMakeLists.txt"
+      - "settings.gradle.kts"
+      - "build.gradle.kts"
+      - "gradle.properties"
+      - "gradlew"
+      - "gradle/wrapper/**"
+      - "scripts/build-android-deps.sh"
+      - "third_party/versions.env"
+      - "third_party/versions.cmake"
+      - ".github/workflows/android-aar.yml"
   pull_request:
+    paths:
+      - "kathttp/**"
+      - "src/**"
+      - "include/**"
+      - "CMakeLists.txt"
+      - "settings.gradle.kts"
+      - "build.gradle.kts"
+      - "gradle.properties"
+      - "gradlew"
+      - "gradle/wrapper/**"
+      - "scripts/build-android-deps.sh"
+      - "third_party/versions.env"
+      - "third_party/versions.cmake"
+      - ".github/workflows/android-aar.yml"
 
 permissions:
   contents: read

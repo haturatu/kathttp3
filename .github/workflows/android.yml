@@ -2,7 +2,37 @@ name: Android
 
 on:
   push:
+    paths:
+      - "example/**"
+      - "kathttp/**"
+      - "src/**"
+      - "include/**"
+      - "CMakeLists.txt"
+      - "settings.gradle.kts"
+      - "build.gradle.kts"
+      - "gradle.properties"
+      - "gradlew"
+      - "gradle/wrapper/**"
+      - "scripts/build-android-deps.sh"
+      - "third_party/versions.env"
+      - "third_party/versions.cmake"
+      - ".github/workflows/android.yml"
   pull_request:
+    paths:
+      - "example/**"
+      - "kathttp/**"
+      - "src/**"
+      - "include/**"
+      - "CMakeLists.txt"
+      - "settings.gradle.kts"
+      - "build.gradle.kts"
+      - "gradle.properties"
+      - "gradlew"
+      - "gradle/wrapper/**"
+      - "scripts/build-android-deps.sh"
+      - "third_party/versions.env"
+      - "third_party/versions.cmake"
+      - ".github/workflows/android.yml"
 
 jobs:
   example:
