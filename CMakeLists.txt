@@ -6,6 +6,8 @@ option(KATHTTP_BUILD_JNI "Build the JNI bridge" OFF)
 option(KATHTTP_SANITIZE "Enable address and undefined sanitizers" OFF)
 option(KATHTTP_ANALYSIS_ONLY "Build compile-only targets for static analysis" OFF)
 option(KATHTTP_ENABLE_IWYU "Run include-what-you-use during CMake builds" OFF)
+set(KATHTTP_ANALYSIS_DEPS_INCLUDE_DIR "" CACHE PATH
+    "Pinned Android dependency include directory used by host static analysis")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +19,14 @@ if(KATHTTP_ANALYSIS_ONLY)
   # to link ngtcp2/nghttp3.  Keeping this mode link-free makes analysis jobs
   # quick and independent of Android prebuilt artifacts.
   set(KATHTTP_DEP_TARGETS)
+  if(KATHTTP_ANALYSIS_DEPS_INCLUDE_DIR)
+    if(NOT EXISTS "${KATHTTP_ANALYSIS_DEPS_INCLUDE_DIR}/ngtcp2/ngtcp2.h")
+      message(FATAL_ERROR
+        "KATHTTP_ANALYSIS_DEPS_INCLUDE_DIR does not contain pinned ngtcp2 headers: "
+        "${KATHTTP_ANALYSIS_DEPS_INCLUDE_DIR}")
+    endif()
+    set(KATHTTP_DEP_INCLUDE_DIR "${KATHTTP_ANALYSIS_DEPS_INCLUDE_DIR}")
+  endif()
 elseif(ANDROID)
   set(KATHTTP_DEPS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/android-deps" CACHE PATH "Root containing <ABI>/include and <ABI>/lib pinned dependencies")
   if(NOT KATHTTP_DEPS_ROOT)
@@ -66,10 +76,15 @@ else()
 endif()
 target_include_directories(kathttp PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_include_directories(kathttp PRIVATE src/core)
-if(ANDROID AND KATHTTP_DEP_INCLUDE_DIR)
+if(KATHTTP_DEP_INCLUDE_DIR)
   target_include_directories(kathttp SYSTEM PRIVATE "${KATHTTP_DEP_INCLUDE_DIR}")
 endif()
 target_compile_definitions(kathttp PRIVATE KATHTTP_BUILDING_LIBRARY)
+if(KATHTTP_ANALYSIS_ONLY AND KATHTTP_DEP_INCLUDE_DIR)
+  # Analyse against exactly the Android production backend, not distro
+  # packages whose ngtcp2/nghttp3 API version can differ from our pins.
+  target_compile_definitions(kathttp PRIVATE KATHTTP_USE_BORINGSSL)
+endif()
 target_compile_options(kathttp PRIVATE
   -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow
   -Wformat=2 -Wundef -Wcast-align -Wnull-dereference -Wdouble-promotion)
