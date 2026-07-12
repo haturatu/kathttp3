@@ -39,6 +39,13 @@ bool TlsClientContext::init(bool verify_cert, const std::string &ca_cert_file,
     return false;
   }
 
+#ifdef KATHTPP_USE_BORINGSSL
+  if (ngtcp2_crypto_boringssl_configure_client_context(ssl_ctx_) != 0) {
+    KATHTPP_LOG_ERR("ngtcp2_crypto_boringssl_configure_client_context failed\n");
+    return false;
+  }
+#endif
+
   if (SSL_CTX_set_min_proto_version(ssl_ctx_, TLS1_3_VERSION) != 1) {
     KATHTPP_LOG_ERR("SSL_CTX_set_min_proto_version failed\n");
     return false;
@@ -131,10 +138,7 @@ bool TlsClientSession::init(TlsClientContext &ctx,
   }
 
 #ifdef KATHTPP_USE_BORINGSSL
-  if (ngtcp2_crypto_boringssl_configure_client_session(ssl_) != 0) {
-    KATHTPP_LOG_ERR("ngtcp2_crypto_boringssl_configure_client_session failed\n");
-    return false;
-  }
+  // BoringSSL's QUIC method is installed on SSL_CTX above.
 #else
   if (ngtcp2_crypto_ossl_configure_client_session(ssl_) != 0) {
     KATHTPP_LOG_ERR("ngtcp2_crypto_ossl_configure_client_session failed\n");

@@ -5,3 +5,7 @@ build-*/
 **/build/
 local.properties
 *.iml
+.tmp/
+third_party/src/
+third_party/build-android/
+third_party/android-deps/

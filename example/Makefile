@@ -6,15 +6,17 @@ ADB ?= adb
 APK := $(ROOT_DIR)/example/build/outputs/apk/debug/example-debug.apk
 KATHTTP_DEPS_ROOT ?= $(ROOT_DIR)/third_party/android-deps
 DEVICE_SERIAL ?=
+TMPDIR ?= $(ROOT_DIR)/.tmp
+export TMPDIR
 
-GRADLE_ARGS := --no-daemon -PkathttpDepsRoot=$(abspath $(KATHTTP_DEPS_ROOT))
+GRADLE_ARGS := --no-daemon -p $(ROOT_DIR) -PkathttpDepsRoot=$(abspath $(KATHTTP_DEPS_ROOT))
 
-.PHONY: help assemble adbcheck adbinstall clean
+.PHONY: help native-deps assemble adbcheck adbinstall clean
 
 help:
 	@echo "Targets:"
 	@echo "  make assemble    Build the debug APK"
-	@echo "  make adbinstall  Build and install it with adb install -r"
+	@echo "  make adbinstall  Build dependencies/APK and install with adb install -r"
 	@echo "  make clean       Clean Android build outputs"
 	@echo ""
 	@echo "Variables:"
@@ -22,8 +24,12 @@ help:
 	@echo "  DEVICE_SERIAL=<adb serial>  (required when multiple devices are connected)"
 	@echo "  ADB=/path/to/adb"
 
-assemble:
-	@test -f "$(KATHTTP_DEPS_ROOT)/lib/arm64-v8a/libngtcp2.a" || { echo "Android dependencies are missing under $(KATHTTP_DEPS_ROOT); see ../README.md" >&2; exit 2; }
+native-deps:
+	@mkdir -p "$(TMPDIR)"
+	$(GRADLEW) $(GRADLE_ARGS) buildAndroidNativeDeps
+
+assemble: native-deps
+	@mkdir -p "$(TMPDIR)"
 	$(GRADLEW) $(GRADLE_ARGS) :example:assembleDebug
 	@test -f "$(APK)" || { echo "APK was not produced: $(APK)" >&2; exit 2; }
 

@@ -2,7 +2,7 @@
 
 Kathttp is an experimental HTTP/3 client for Android (API 26+) with a C++20 core, stable C ABI, JNI bridge, coroutine Kotlin API, and a Jetpack Compose example. The transport stack is `ngtcp2 1.24.0 + nghttp3 1.17.0 + BoringSSL`.
 
-> Status: the host core and JNI bridge compile and core unit tests pass. Android packaging and live HTTP/3 interoperability have not yet been verified because the repository does not contain prebuilt Android dependencies or a CA bundle. See **Known limitations**; this is not production-ready.
+> Status: the host core/JNI and Android builds compile, core/Kotlin unit tests pass, and the four-ABI debug example APK has been assembled and installed on an arm64 Android device. Live HTTP/3 interoperability still requires a configured CA bundle and server testing; this is not production-ready.
 
 ## Architecture and ownership
 
@@ -41,29 +41,56 @@ ctest --test-dir build-asan --output-on-failure
 
 ## Android dependencies and build
 
-Kathttp deliberately does not link Android's private platform BoringSSL ABI. Supply a reproducibly-built dependency root with headers under `include/` and, for each ABI, these static libraries under `lib/<abi>/`:
+Prerequisites:
+
+- Android SDK with platform 36 and build-tools 36.0.0
+- Android NDK `27.0.12077973`
+- CMake 3.22.1 or newer, Git, Go, and Java 17. Ninja is recommended; Unix Makefiles are used automatically when Ninja is unavailable.
+
+Set `ANDROID_HOME` or `ANDROID_SDK_ROOT`. An explicit `ANDROID_NDK_HOME` is also accepted. Kathttp deliberately does not link Android's private platform BoringSSL ABI. The checked-in build script downloads fixed upstream sources and cross-compiles these static libraries:
 
 ```text
-libngtcp2.a
-libnghttp3.a
-libngtcp2_crypto_boringssl.a
-libssl.a
-libcrypto.a
+third_party/android-deps/<ABI>/lib/libngtcp2.a
+third_party/android-deps/<ABI>/lib/libngtcp2_crypto_boringssl.a
+third_party/android-deps/<ABI>/lib/libnghttp3.a
+third_party/android-deps/<ABI>/lib/libssl.a
+third_party/android-deps/<ABI>/lib/libcrypto.a
 ```
 
-Build ngtcp2 tag `v1.24.0`, nghttp3 tag `v1.17.0`, and BoringSSL revision `5ac7567c234514157a504ff3fbedc0f5eddbf678` using NDK r27+ for `arm64-v8a`, `armeabi-v7a`, and `x86_64`, then set this Gradle property. These pins are recorded in `third_party/versions.cmake`; the BoringSSL Android combination has not yet been verified by this repository's CI.
-
-```properties
-kathttpDepsRoot=/absolute/path/to/kathttp-android-deps
-```
-
-The Gradle 8.11.1 wrapper is checked in. Build with:
+Build every supported ABI:
 
 ```sh
-./gradlew :kathttp:assembleDebug :example:assembleDebug
+./gradlew buildAndroidNativeDeps
+```
+
+Build only one ABI or rebuild from clean state:
+
+```sh
+scripts/build-android-deps.sh --abi arm64-v8a --jobs 8
+scripts/build-android-deps.sh --clean --abi arm64-v8a
+```
+
+The script is incremental and safe to run repeatedly. Sources are kept under `third_party/src`, intermediate files under `third_party/build-android`, and installed headers/libraries under `third_party/android-deps/<ABI>`. Supported ABIs are `arm64-v8a`, `armeabi-v7a`, `x86_64`, and `x86`; all target Android API 26.
+
+Build the APK after dependencies:
+
+```sh
+./gradlew buildAndroidNativeDeps
+./gradlew :example:assembleDebug
+ls -l example/build/outputs/apk/debug/example-debug.apk
 ```
 
 The module uses compile SDK 36, minimum SDK 26, and Java/Kotlin JVM target 17.
+
+Pinned dependencies and licenses:
+
+| Library | Version | License |
+| --- | --- | --- |
+| BoringSSL | `3c6315e00ab02d7bc9b8922aff1f85d8f81ee130` | ISC-style/BSD-style; see upstream `LICENSE` |
+| nghttp3 | `v1.17.0` | MIT |
+| ngtcp2 | `v1.24.0` | MIT |
+
+These exact revisions are present both in `scripts/build-android-deps.sh` and `third_party/versions.cmake`.
 
 ### Certificate trust
 
@@ -118,7 +145,7 @@ The worker drives `ngtcp2_conn_get_expiry2`/`ngtcp2_conn_handle_expiry` with mon
 
 ## Known limitations
 
-- Android dependency build automation, wrapper JAR, and CA bundle are not checked in; therefore an Android APK build is not yet self-contained.
+- A CA bundle is not checked in; callers connecting to public servers must provide a maintained CA file or use a future Android TrustManager bridge.
 - Live GET/POST interoperability has not been verified against a local HTTP/3 server.
 - Request deadline enforcement, graceful GOAWAY draining, response Content-Length validation, trailer exposure, strict response-field validation and robust packet send backpressure are incomplete.
 - Streaming uses a bounded JNI-to-Kotlin channel but native QUIC flow-control credit is currently returned on callback delivery, not downstream Flow consumption.
@@ -138,4 +165,6 @@ src/jni/kathttp_jni.cc          JNI bridge
 kathttp/                        Android library and Kotlin API
 example/                        Compose sample app
 tests/core/                     host unit tests
+scripts/build-android-deps.sh   pinned Android dependency cross-build
+third_party/android-deps/       generated per-ABI headers and static libraries
 ```

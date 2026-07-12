@@ -6,8 +6,12 @@ android {
     defaultConfig {
         minSdk = 26
         consumerProguardFiles("consumer-rules.pro")
-        externalNativeBuild { cmake { arguments("-DKATHTTP_BUILD_TESTS=OFF", "-DKATHTTP_BUILD_JNI=ON", "-DKATHTTP_USE_BORINGSSL=ON", "-DKATHTTP_DEPS_ROOT=${project.findProperty("kathttpDepsRoot") ?: ""}"); abiFilters("arm64-v8a", "armeabi-v7a", "x86_64") } }
+        val configuredAbis = (project.findProperty("kathttpAbis") as String?)
+            ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
+            ?: listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+        externalNativeBuild { cmake { arguments("-DKATHTTP_BUILD_TESTS=OFF", "-DKATHTTP_BUILD_JNI=ON", "-DKATHTTP_DEPS_ROOT=${project.findProperty("kathttpDepsRoot") ?: rootProject.file("third_party/android-deps")}"); abiFilters += configuredAbis } }
     }
+    ndkVersion = "27.0.12077973"
     externalNativeBuild { cmake { path = file("../CMakeLists.txt"); version = "3.22.1" } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
