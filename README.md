@@ -72,6 +72,16 @@ scripts/build-android-deps.sh --clean --abi arm64-v8a
 
 The script is incremental and safe to run repeatedly. Sources are kept under `third_party/src`, intermediate files under `third_party/build-android`, and installed headers/libraries under `third_party/android-deps/<ABI>`. Supported ABIs are `arm64-v8a`, `armeabi-v7a`, `x86_64`, and `x86`; all target Android API 26.
 
+## CI cache
+
+The GitHub Actions workflows cache Gradle state, the pinned Android SDK/NDK/CMake
+packages, pinned dependency source checkouts, and generated
+`third_party/android-deps` static libraries. The source-cache key is based on
+the pinned revisions; the library-cache key additionally includes the build
+script. The build script validates each cached ABI (headers, all five libraries,
+API level, revisions, and recipe version) before skipping it, so an incomplete
+cache is rebuilt rather than used.
+
 Build the APK after dependencies:
 
 ```sh

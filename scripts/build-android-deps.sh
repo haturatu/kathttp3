@@ -2,6 +2,7 @@
 set -euo pipefail
 
 readonly ANDROID_API=26
+readonly BUILD_RECIPE_VERSION=1
 readonly ALL_ABIS=(arm64-v8a armeabi-v7a x86_64 x86)
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -101,10 +102,6 @@ checkout_source() {
   printf '%s\n' "$dir"
 }
 
-BORINGSSL_SRC="$(checkout_source boringssl https://boringssl.googlesource.com/boringssl "${BORINGSSL_REVISION}")"
-NGHTTP3_SRC="$(checkout_source nghttp3 https://github.com/ngtcp2/nghttp3.git "${NGHTTP3_VERSION}")"
-NGTCP2_SRC="$(checkout_source ngtcp2 https://github.com/ngtcp2/ngtcp2.git "${NGTCP2_VERSION}")"
-
 build_abi() {
   local abi="$1" prefix="${OUTPUT_DIR}/${abi}"
   local bssl_build="${BUILD_DIR}/boringssl-${abi}"
@@ -150,8 +147,45 @@ build_abi() {
   for lib in libssl.a libcrypto.a libnghttp3.a libngtcp2.a libngtcp2_crypto_boringssl.a; do
     [[ -s "${prefix}/lib/${lib}" ]] || { echo "Missing output: ${prefix}/lib/${lib}" >&2; exit 1; }
   done
-  printf '%s\n' "BoringSSL=${BORINGSSL_REVISION}" "nghttp3=${NGHTTP3_VERSION}" "ngtcp2=${NGTCP2_VERSION}" "android_api=${ANDROID_API}" > "${prefix}/versions.txt"
+  printf '%s\n' "BoringSSL=${BORINGSSL_REVISION}" "nghttp3=${NGHTTP3_VERSION}" "ngtcp2=${NGTCP2_VERSION}" "android_api=${ANDROID_API}" "build_recipe=${BUILD_RECIPE_VERSION}" > "${prefix}/versions.txt"
   echo "==> [${abi}] complete: ${prefix}"
 }
 
-for abi in "${ABIS[@]}"; do build_abi "$abi"; done
+abi_is_complete() {
+  local abi="$1"
+  local prefix="${OUTPUT_DIR}/${abi}"
+  local versions="${prefix}/versions.txt"
+  [[ -f "${versions}" ]] || return 1
+  grep -Fqx "BoringSSL=${BORINGSSL_REVISION}" "${versions}" || return 1
+  grep -Fqx "nghttp3=${NGHTTP3_VERSION}" "${versions}" || return 1
+  grep -Fqx "ngtcp2=${NGTCP2_VERSION}" "${versions}" || return 1
+  grep -Fqx "android_api=${ANDROID_API}" "${versions}" || return 1
+  grep -Fqx "build_recipe=${BUILD_RECIPE_VERSION}" "${versions}" || return 1
+  [[ -d "${prefix}/include/openssl" ]] || return 1
+  local lib
+  for lib in libssl.a libcrypto.a libnghttp3.a libngtcp2.a libngtcp2_crypto_boringssl.a; do
+    [[ -s "${prefix}/lib/${lib}" ]] || return 1
+  done
+}
+
+needs_build=0
+for abi in "${ABIS[@]}"; do
+  if ! abi_is_complete "${abi}"; then
+    needs_build=1
+    break
+  fi
+done
+
+if ((needs_build)); then
+  BORINGSSL_SRC="$(checkout_source boringssl https://boringssl.googlesource.com/boringssl "${BORINGSSL_REVISION}")"
+  NGHTTP3_SRC="$(checkout_source nghttp3 https://github.com/ngtcp2/nghttp3.git "${NGHTTP3_VERSION}")"
+  NGTCP2_SRC="$(checkout_source ngtcp2 https://github.com/ngtcp2/ngtcp2.git "${NGTCP2_VERSION}")"
+fi
+
+for abi in "${ABIS[@]}"; do
+  if abi_is_complete "${abi}"; then
+    echo "==> [${abi}] cached output is complete; skipping rebuild"
+  else
+    build_abi "${abi}"
+  fi
+done
