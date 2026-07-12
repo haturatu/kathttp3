@@ -4,6 +4,7 @@
 #include <nghttp3/nghttp3.h>
 
 #include <array>
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 
@@ -38,8 +39,17 @@ int recv_header_cb(nghttp3_conn *, int64_t stream_id, int32_t token,
   nghttp3_vec n = nghttp3_rcbuf_get_buf(name);
   nghttp3_vec v = nghttp3_rcbuf_get_buf(value);
   if (n.len == 7 && std::memcmp(n.base, ":status", 7) == 0) {
-    job->response.status_code =
-        static_cast<int>(strtol(reinterpret_cast<const char *>(v.base), nullptr, 10));
+    // nghttp3_vec is a length-delimited view, not a NUL-terminated string.
+    // strtol could read past a short :status buffer and crash on a PATCH
+    // response.  Parse exactly the received bytes instead.
+    int status = 0;
+    const char *first = reinterpret_cast<const char *>(v.base);
+    const char *last = first + v.len;
+    auto [end, error] = std::from_chars(first, last, status);
+    if (error != std::errc{} || end != last || status < 100 || status > 599) {
+      return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
+    }
+    job->response.status_code = status;
   } else {
     job->response.headers.add(
         std::string(reinterpret_cast<const char *>(n.base), n.len),
