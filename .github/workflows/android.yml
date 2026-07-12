@@ -55,7 +55,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
       - uses: android-actions/setup-android@v4
       - name: Restore Android SDK packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.android/cache
@@ -67,12 +67,12 @@ jobs:
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973" "cmake;3.22.1"
       - name: Restore pinned native dependency sources
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: third_party/src
           key: android-native-sources-${{ runner.os }}-${{ hashFiles('third_party/versions.env') }}
       - name: Restore pinned native dependencies (${{ matrix.abi }})
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # Build directories are intentionally excluded: CMake regenerates them.
           path: third_party/android-deps

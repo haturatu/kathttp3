@@ -61,7 +61,7 @@ jobs:
         uses: android-actions/setup-android@v4
 
       - name: Restore Android SDK packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.android/cache
@@ -80,13 +80,13 @@ jobs:
             "cmake;3.22.1"
 
       - name: Restore pinned native dependency sources
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: third_party/src
           key: android-native-sources-${{ runner.os }}-${{ hashFiles('third_party/versions.env') }}
 
       - name: Restore pinned native dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # Build directories are intentionally excluded: CMake regenerates them.
           path: third_party/android-deps
