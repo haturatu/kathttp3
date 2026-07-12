@@ -21,7 +21,15 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
     private val nativeLock = Any()
     private         val handle = NativeBridge.createClient(config.connectTimeoutMillis, config.requestTimeoutMillis, config.idleTimeoutMillis, config.maxRedirects, config.trustMode.native, config.insecureCert, config.caCertificateFile).also { check(it != 0L) }
 
-    suspend fun execute(request: KatHttpRequest): KatHttpResponse = suspendCancellableCoroutine { continuation ->
+    suspend fun execute(request: KatHttpRequest): KatHttpResponse {
+        return if (config.interceptors.isEmpty()) {
+            executeReal(request)
+        } else {
+            InterceptorChainImpl(this, config.interceptors, 0, request).proceed()
+        }
+    }
+
+    internal suspend fun executeReal(request: KatHttpRequest): KatHttpResponse = suspendCancellableCoroutine { continuation ->
         if (closed.get()) { continuation.resumeWithException(KathttpException.Closed()); return@suspendCancellableCoroutine }
         val id = ids.getAndIncrement()
         val callback = BufferedCallback(id, continuation)
@@ -49,6 +57,21 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
         return call
     }
 
+    private class InterceptorChainImpl(
+        override val client: KatHttpClient,
+        private val interceptors: List<HttpInterceptor>,
+        private val index: Int,
+        override val request: KatHttpRequest,
+    ) : InterceptorChain {
+        override suspend fun proceed(request: KatHttpRequest): KatHttpResponse {
+            return if (index < interceptors.size) {
+                interceptors[index].intercept(InterceptorChainImpl(client, interceptors, index + 1, request))
+            } else {
+                client.executeReal(request)
+            }
+        }
+    }
+
     override fun close() {
         synchronized(nativeLock) { if (!closed.compareAndSet(false, true)) return }
         NativeBridge.closeClient(handle)
@@ -66,7 +89,14 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
             if (terminal.get()) return
             if (body.size().toLong() + data.size > config.maxBufferedBodyBytes) { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle, id) }; fail(KathttpException.BodyTooLarge()) } else body.write(data)
         }
-        override fun onComplete() { if (terminal.compareAndSet(false, true)) { active.remove(id); if (continuation.isActive) continuation.resume(KatHttpResponse(status, headers, body.toByteArray())) } }
+        override fun onComplete() { if (terminal.compareAndSet(false, true)) { active.remove(id); if (continuation.isActive) {
+            val resp = KatHttpResponse(status, headers, body.toByteArray())
+            if (config.expectSuccess && resp.status >= 400) {
+                continuation.resumeWithException(ResponseException(resp.status, "HTTP ${resp.status}", resp))
+            } else {
+                continuation.resume(resp)
+            }
+        } } }
         override fun onError(code: Int) = fail(mapError(code))
         fun fail(error: Throwable) { if (terminal.compareAndSet(false, true)) { active.remove(id); if (continuation.isActive) continuation.resumeWithException(error) } }
     }

@@ -20,6 +20,8 @@ data class KatHttpClientConfig(
     val caCertificateFile: String? = null,
     val trustMode: TrustMode = TrustMode.PLATFORM,
     val insecureCert: Boolean = false,
+    val expectSuccess: Boolean = false,
+    val interceptors: List<HttpInterceptor> = emptyList(),
 ) {
     init { require(connectTimeoutMillis > 0); require(requestTimeoutMillis > 0); require(idleTimeoutMillis > 0); require(maxRedirects >= 0); require(maxBufferedBodyBytes > 0); require(caCertificateFile == null || caCertificateFile.isNotBlank()) }
 }
@@ -41,6 +43,8 @@ sealed class KathttpException(message: String) : IOException(message) {
     class BodyTooLarge : KathttpException("Response exceeds configured body limit")
     class Native(val code: Int) : KathttpException("Native HTTP/3 error: $code")
 }
+
+class ResponseException(val statusCode: Int, message: String, val response: KatHttpResponse?) : KathttpException(message)
 
 class CertificateVerificationException(message: String) : KathttpException(message)
 class TlsHandshakeException(message: String) : KathttpException(message)
