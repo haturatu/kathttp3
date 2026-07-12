@@ -2,7 +2,7 @@
 
 Kathttp is an experimental HTTP/3 client for Android (API 26+) with a C++20 core, stable C ABI, JNI bridge, coroutine Kotlin API, and a Jetpack Compose example. The transport stack is `ngtcp2 1.24.0 + nghttp3 1.17.0 + BoringSSL`.
 
-> Status: the host core/JNI and Android builds compile, core/Kotlin unit tests pass, and the four-ABI debug example APK has been assembled and installed on an arm64 Android device. Live HTTP/3 interoperability still requires a configured CA bundle and server testing; this is not production-ready.
+> Status: the host core/JNI and Android builds compile, core/Kotlin unit tests pass, and the four-ABI debug example APK has been assembled and installed on an arm64 Android device. On Android, certificate verification now uses the platform `X509TrustManager` by default (no bundled CA file required) and live HTTP/3 requests to public servers succeed; this is not production-ready.
 
 ## Architecture and ownership
 
@@ -94,7 +94,19 @@ These exact revisions are present both in `scripts/build-android-deps.sh` and `t
 
 ### Certificate trust
 
-Peer and hostname verification are enabled by default (`SSL_VERIFY_PEER` plus `SSL_set1_host`). BoringSSL embedded in an app does not automatically inherit Android's Java trust store or Network Security Config. An Android build must provide a maintained CA bundle to the native context (or add a Java `X509TrustManager` bridge) before public-server use. Verification failure is fatal; Kathttp does not silently disable it. Key logging is debug-only and must never be enabled in shipped builds.
+Peer and hostname verification are enabled by default. The default trust mode is `KATHTTP_TRUST_PLATFORM`, which on Android delegates to the platform `X509TrustManager` through `android.net.http.X509TrustManagerExtensions` (BoringSSL's custom-verify callback forwards the peer chain, server name and key type). This automatically inherits the Android system trust store and Network Security Config, so public-server use works out of the box without a bundled CA file.
+
+Three trust modes are selectable through `kathttp_trust_mode`:
+
+| Mode | Meaning |
+| --- | --- |
+| `KATHTTP_TRUST_PLATFORM` (default) | Use the OS/platform trust provider (Android `X509TrustManagerExtensions`; host OpenSSL default paths). |
+| `KATHTTP_TRUST_EMBEDDED_MOZILLA` | Verify against the built-in Mozilla CA bundle (`ca_bundle.h`). |
+| `KATHTTP_TRUST_CUSTOM_CA` | Verify against a caller-supplied PEM CA file (`ca_cert_file`). |
+
+`insecure_cert` disables verification entirely; it is debug-only and must never be enabled in shipped builds.
+
+Verification failure is fatal and surfaced with a distinct error code rather than a generic transport error: `KATHTTP_ERR_TLS` (-4) for handshake-level failures, `KATHTTP_ERR_CERTIFICATE_VERIFY` (-5), `KATHTTP_ERR_HOSTNAME_MISMATCH` (-6), and `KATHTTP_ERR_NO_TRUST_PROVIDER` (-7) when no trust provider is configured. The Kotlin API throws `TlsHandshakeException`, `CertificateVerificationException`, or `QuicTransportException` accordingly; transport errors remain `KATHTTP_ERR_QUIC` (-3) / `QuicTransportException`. Kathttp does not silently disable verification. Key logging is debug-only and must never be enabled in shipped builds.
 
 ## Kotlin usage
 
@@ -145,7 +157,7 @@ The worker drives `ngtcp2_conn_get_expiry2`/`ngtcp2_conn_handle_expiry` with mon
 
 ## Known limitations
 
-- A CA bundle is not checked in; callers connecting to public servers must provide a maintained CA file or use a future Android TrustManager bridge.
+- Certificate trust defaults to the Android platform provider (`X509TrustManagerExtensions`); the embedded Mozilla bundle and a caller-supplied CA file are also available via `kathttp_trust_mode`.
 - Live GET/POST interoperability has not been verified against a local HTTP/3 server.
 - Request deadline enforcement, graceful GOAWAY draining, response Content-Length validation, trailer exposure, strict response-field validation and robust packet send backpressure are incomplete.
 - Streaming uses a bounded JNI-to-Kotlin channel but native QUIC flow-control credit is currently returned on callback delivery, not downstream Flow consumption.
