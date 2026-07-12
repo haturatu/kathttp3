@@ -34,8 +34,8 @@ class ResponseCache {
     struct Entry {
         std::string key;
         Response resp;
-        uint64_t cached_at;
-        uint64_t max_age;
+        uint64_t cached_at = 0;
+        uint64_t max_age = 0;
     };
 
     std::mutex mu_;

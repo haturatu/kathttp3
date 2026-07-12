@@ -49,6 +49,9 @@ struct Job {
     uint64_t received_body_bytes = 0;     /* running total of BODY bytes */
     bool streaming = false;               /* streaming (Flow) request: apply
                                              HTTP/3 receive flow-control */
+    Job() = default;
+    Job(const Job&) = delete;
+    Job& operator=(const Job&) = delete;
     ~Job() {
         delete request;
     }
@@ -82,7 +85,7 @@ class QuicClient {
     }
 
     /* Human-readable BoringSSL/OpenSSL error queue (clears it). */
-    std::string lastTlsError() const {
+    const std::string& lastTlsError() const {
         return tls_session_.lastTlsError();
     }
 

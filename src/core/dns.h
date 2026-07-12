@@ -11,8 +11,8 @@ namespace kathttp {
 
 struct ResolvedEndpoint {
     std::string ip; /* textual IPv4 or IPv6 */
-    uint16_t port;
-    int family; /* AF_INET / AF_INET6 */
+    uint16_t port = 0;
+    int family = 0; /* AF_INET / AF_INET6 */
 };
 
 /* Pluggable name resolution. resolve() runs on the QUIC worker thread;

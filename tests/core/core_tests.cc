@@ -29,6 +29,7 @@ int main() {
     HeaderList set;
     set.add("set-cookie", "a=b; Secure; Path=/");
     jar.store(from, set);
-    assert(jar.cookie_header(from) == "a=b");
+    const auto cookie = jar.cookie_header(from);
+    assert(cookie == "a=b");
     std::cout << "core tests passed\n";
 }

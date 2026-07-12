@@ -74,7 +74,7 @@ class TlsClientSession {
     }
 
     /* Human-readable BoringSSL/OpenSSL error queue (clears it). */
-    std::string lastTlsError() const {
+    const std::string& lastTlsError() const {
         return last_failure_.message;
     }
 

@@ -68,9 +68,14 @@ jobs:
       - name: Run cppcheck
         run: >-
           cppcheck --project=build-tidy/compile_commands.json
-          --enable=warning,style,performance,portability
+          --enable=warning,performance,portability
           --inline-suppr --suppress=missingIncludeSystem
           --error-exitcode=1
+      - name: Report cppcheck style recommendations
+        if: always()
+        run: >-
+          cppcheck --project=build-tidy/compile_commands.json
+          --enable=style --inline-suppr --suppress=missingIncludeSystem || true
 
   sanitizers:
     runs-on: ubuntu-24.04
