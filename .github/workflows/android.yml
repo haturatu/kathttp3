@@ -5,8 +5,16 @@ on:
   pull_request:
 
 jobs:
-  arm64-example:
+  example:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        abi:
+          - arm64-v8a
+          - armeabi-v7a
+          - x86_64
+          - x86
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v5
@@ -33,17 +41,17 @@ jobs:
         with:
           path: third_party/src
           key: android-native-sources-${{ runner.os }}-${{ hashFiles('third_party/versions.env') }}
-      - name: Restore pinned arm64 native dependencies
+      - name: Restore pinned native dependencies (${{ matrix.abi }})
         uses: actions/cache@v4
         with:
           # Build directories are intentionally excluded: CMake regenerates them.
           path: third_party/android-deps
-          key: android-native-deps-${{ runner.os }}-arm64-v8a-api26-ndk27.0.12077973-${{ hashFiles('scripts/build-android-deps.sh', 'third_party/versions.env', 'third_party/versions.cmake') }}
+          key: android-native-deps-${{ runner.os }}-${{ matrix.abi }}-api26-ndk27.0.12077973-${{ hashFiles('scripts/build-android-deps.sh', 'third_party/versions.env', 'third_party/versions.cmake') }}
       - name: Build pinned native dependencies
-        run: ./gradlew --parallel buildAndroidNativeDeps -PandroidNativeDepsAbi=arm64-v8a -PandroidNativeDepsJobs=2
-      - name: Build example APK
-        run: ./gradlew --parallel :example:assembleDebug -PkathttpAbis=arm64-v8a -PandroidNativeDepsAbi=arm64-v8a -PandroidNativeDepsJobs=2
+        run: ./gradlew --parallel buildAndroidNativeDeps -PandroidNativeDepsAbi=${{ matrix.abi }} -PandroidNativeDepsJobs=2
+      - name: Build example APK (${{ matrix.abi }})
+        run: ./gradlew --parallel :example:assembleDebug -PkathttpAbis=${{ matrix.abi }} -PandroidNativeDepsAbi=${{ matrix.abi }} -PandroidNativeDepsJobs=2
       - uses: actions/upload-artifact@v7
         with:
-          name: kathttp-example-arm64-debug
+          name: kathttp-example-${{ matrix.abi }}-debug
           path: example/build/outputs/apk/debug/example-debug.apk

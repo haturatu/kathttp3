@@ -84,10 +84,12 @@ script. The build script validates each cached ABI (headers, all five libraries,
 API level, revisions, and recipe version) before skipping it, so an incomplete
 cache is rebuilt rather than used.
 
-The AAR workflow builds two ABI dependency sets concurrently and deliberately
-uses one compiler job per set, avoiding CPU oversubscription on hosted runners.
-The Gradle build cache and parallel project execution are enabled in
-`gradle.properties`.
+The Android example workflow uses a four-ABI GitHub Actions matrix
+(`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`), so each ABI's dependency and APK
+build runs independently. The AAR workflow still produces one combined AAR and
+builds two ABI dependency sets concurrently with one compiler job per set,
+avoiding CPU oversubscription on hosted runners. The Gradle build cache and
+parallel project execution are enabled in `gradle.properties`.
 
 Build the APK after dependencies:
 
