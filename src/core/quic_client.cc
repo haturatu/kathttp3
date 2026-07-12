@@ -394,23 +394,26 @@ bool QuicClient::setup_connection() {
   params.max_idle_timeout = idle_timeout_ms_ * NGTCP2_MILLISECONDS;
   params.active_connection_id_limit = 4;
 
-  // path: local = bound addr (filled after connect via getsockname);
-  // for simplicity we let ngtcp2 infer local from the connected socket.
+  // path: point ngtcp2 at our persistent address storage, then copy the
+  // bound (local) and connected (remote) addresses into it.  ngtcp2_addr.addr
+  // is a pointer to a caller-owned buffer, NOT an inline array.
   ngtcp2_path path{};
-  path.remote.addrlen = sizeof(path.remote.addr);
+  path.local.addr = reinterpret_cast<ngtcp2_sockaddr *>(&local_addr_);
+  path.local.addrlen = 0;
+  path.remote.addr = reinterpret_cast<ngtcp2_sockaddr *>(&remote_addr_);
+  path.remote.addrlen = 0;
   sockaddr_storage ss{};
   socklen_t slen = sizeof(ss);
   if (getsockname(sock_.fd(), reinterpret_cast<sockaddr *>(&ss), &slen) == 0) {
-    std::memcpy(&path.local.addr, &ss, slen);
+    std::memcpy(&local_addr_, &ss, slen);
     path.local.addrlen = slen;
   }
-  endpoints_[endpoint_idx_].family;  // keep family
   {
     sockaddr_storage rs{};
     socklen_t rlen = sizeof(rs);
     if (getpeername(sock_.fd(), reinterpret_cast<sockaddr *>(&rs), &rlen) ==
         0) {
-      std::memcpy(&path.remote.addr, &rs, rlen);
+      std::memcpy(&remote_addr_, &rs, rlen);
       path.remote.addrlen = rlen;
     }
   }

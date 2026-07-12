@@ -140,6 +140,8 @@ private:
   ngtcp2_crypto_conn_ref conn_ref_{};
   std::vector<uint8_t> stateless_reset_secret_;
   ngtcp2_path path_{};
+  sockaddr_storage local_addr_{};
+  sockaddr_storage remote_addr_{};
 
   TlsClientSession tls_session_;
   std::unique_ptr<Http3Session> http3_;
