@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "dev.kathttp"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 26

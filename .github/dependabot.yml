@@ -7,6 +7,15 @@ updates:
       day: "monday"
       time: "06:00"
     open-pull-requests-limit: 10
+    ignore:
+      # 2.11.x requires compileSdk 37, but platforms;android-37 is not yet
+      # published in the GitHub Actions SDK repository used by this project.
+      - dependency-name: "androidx.lifecycle:lifecycle-viewmodel-compose"
+        versions: [">= 2.11.0, < 2.12.0"]
+      - dependency-name: "androidx.lifecycle:lifecycle-viewmodel-ktx"
+        versions: [">= 2.11.0, < 2.12.0"]
+      - dependency-name: "androidx.lifecycle:lifecycle-runtime-compose"
+        versions: [">= 2.11.0, < 2.12.0"]
 
   - package-ecosystem: "github-actions"
     directory: "/.github/workflows"
