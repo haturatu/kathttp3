@@ -101,7 +101,10 @@ checkout_source() {
     git -C "$dir" fetch --depth 1 origin "$revision"
   fi
   git -C "$dir" checkout --detach --force "$revision" >&2
-  git -C "$dir" submodule update --init --recursive --depth 1 >&2
+  # Pinned nghttp3/ngtcp2 tags can reference submodule commits that are older
+  # than the submodule's tip.  A shallow update cannot resolve those commits
+  # on JitPack, so retain the history needed for an exact checkout.
+  git -C "$dir" submodule update --init --recursive >&2
   printf '%s\n' "$dir"
 }
 
