@@ -3,6 +3,7 @@
 #include <ngtcp2/ngtcp2.h>
 #include <nghttp3/nghttp3.h>
 
+#include <array>
 #include <cstdlib>
 #include <cstring>
 
@@ -293,33 +294,48 @@ bool Http3Session::submit_request(Job *job) {
 
 void Http3Session::pump_write(ngtcp2_tstamp ts) {
   if (!httpconn_) return;
-  uint8_t h3buf[NGTCP2_MAX_PKTLEN];
   uint8_t pkt[NGTCP2_MAX_PKTLEN];
+  // nghttp3 returns references to its queued stream bytes.  It does not write
+  // encoded bytes into a caller-provided buffer, and its return value is the
+  // number of vectors, not a byte length.  Passing a single pre-filled vector
+  // here used to forward a null data pointer to ngtcp2 for request bodies.
+  std::array<nghttp3_vec, 16> h3vec{};
   for (;;) {
     int64_t stream_id = -1;
     int fin = 0;
-    nghttp3_vec vec;
-    vec.base = h3buf;
-    vec.len = sizeof(h3buf);
-    nghttp3_ssize n =
-        nghttp3_conn_writev_stream(httpconn_, &stream_id, &fin, &vec, 1);
-    if (n < 0) {
+    nghttp3_ssize h3veccnt = nghttp3_conn_writev_stream(
+        httpconn_, &stream_id, &fin, h3vec.data(), h3vec.size());
+    if (h3veccnt < 0) {
       KATHTTP_LOG_ERR("nghttp3_conn_writev_stream: %s\n",
-                       nghttp3_strerror((int)n));
+                       nghttp3_strerror((int)h3veccnt));
       return;
     }
-    if (n == 0 && stream_id == -1) return;
-    ngtcp2_vec nv;
-    nv.base = n > 0 ? const_cast<uint8_t *>(vec.base) : nullptr;
-    nv.len = n > 0 ? vec.len : 0;
+    if (h3veccnt == 0 && stream_id == -1) return;
+
+    uint32_t flags = NGTCP2_WRITE_STREAM_FLAG_MORE;
+    if (fin) flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
     ngtcp2_pkt_info pi{};
     ngtcp2_ssize ndatalen = -1;
     ngtcp2_ssize w = ngtcp2_conn_writev_stream(
         client_->conn(), &client_->path(), &pi, pkt, sizeof(pkt), &ndatalen,
-        fin ? NGTCP2_WRITE_STREAM_FLAG_FIN : 0, stream_id,
-        n > 0 ? &nv : nullptr, n > 0 ? 1 : 0, ts);
+        flags, stream_id,
+        reinterpret_cast<const ngtcp2_vec *>(h3vec.data()),
+        static_cast<size_t>(h3veccnt), ts);
     if (w == NGTCP2_ERR_WRITE_MORE) {
-      if (ndatalen >= 0) nghttp3_conn_add_write_offset(httpconn_, stream_id, static_cast<size_t>(ndatalen));
+      if (ndatalen >= 0 &&
+          nghttp3_conn_add_write_offset(httpconn_, stream_id,
+                                        static_cast<size_t>(ndatalen)) != 0) {
+        KATHTTP_LOG_ERR("nghttp3_conn_add_write_offset failed\n");
+        return;
+      }
+      continue;
+    }
+    if (w == NGTCP2_ERR_STREAM_DATA_BLOCKED) {
+      nghttp3_conn_block_stream(httpconn_, stream_id);
+      continue;
+    }
+    if (w == NGTCP2_ERR_STREAM_SHUT_WR) {
+      nghttp3_conn_shutdown_stream_write(httpconn_, stream_id);
       continue;
     }
     if (w < 0) {
@@ -327,7 +343,12 @@ void Http3Session::pump_write(ngtcp2_tstamp ts) {
                        ngtcp2_strerror((int)w));
       return;
     }
-    if (ndatalen >= 0) nghttp3_conn_add_write_offset(httpconn_, stream_id, static_cast<size_t>(ndatalen));
+    if (ndatalen >= 0 &&
+        nghttp3_conn_add_write_offset(httpconn_, stream_id,
+                                      static_cast<size_t>(ndatalen)) != 0) {
+      KATHTTP_LOG_ERR("nghttp3_conn_add_write_offset failed\n");
+      return;
+    }
     if (w == 0) return;
     if (w > 0) client_->send_packet(pkt, static_cast<size_t>(w));
   }

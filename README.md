@@ -167,7 +167,7 @@ job.cancel() // propagated to RESET_STREAM / STOP_SENDING
 
 ## Example app
 
-The local-module Compose app is in `example/` and uses `implementation(project(":kathttp"))`. Install `example/build/outputs/apk/debug/example-debug.apk`, enter an HTTPS URL served over HTTP/3, select a method, and press GET or POST. Cancel cancels the coroutine and native request. It shows status, headers, protocol, duration, byte count, errors and the first 64,000 body characters. No public endpoint is hard-coded and cleartext traffic is disabled.
+The local-module Compose app is in `example/` and uses `implementation(project(":kathttp"))`. Install `example/build/outputs/apk/debug/example-debug.apk`, enter an HTTPS URL served over HTTP/3, select GET, POST, PUT, DELETE, PATCH, or HEAD, then press the single `Send <method>` button. POST, PUT, PATCH, and DELETE expose an editable UTF-8 body; headers are entered as lowercase `name: value` lines. Cancel cancels the coroutine and native request. The app shows status, headers, HTTP/3-over-QUIC protocol information, duration, byte count, and errors; response rendering is capped at 16,000 characters to keep the UI responsive. No public endpoint is hard-coded and cleartext traffic is disabled.
 
 With one Android device connected through adb, the example can be built and installed from its directory:
 

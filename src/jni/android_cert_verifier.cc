@@ -29,7 +29,13 @@ VerifyResult AndroidCertificateVerifier::verify(
   JNIEnv *env = nullptr;
   bool attached = false;
   if (vm_->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
-    if (vm_->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+#if defined(__ANDROID__)
+    const jint attach_result = vm_->AttachCurrentThread(&env, nullptr);
+#else
+    const jint attach_result =
+        vm_->AttachCurrentThread(reinterpret_cast<void **>(&env), nullptr);
+#endif
+    if (attach_result != JNI_OK) {
       return {false, KATHTTP_ERR_NO_TRUST_PROVIDER, "JNI attach failed"};
     }
     attached = true;
