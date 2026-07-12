@@ -1,5 +1,5 @@
-#ifndef KATHTPP_QUIC_CLIENT_H
-#define KATHTPP_QUIC_CLIENT_H
+#ifndef KATHTTP_QUIC_CLIENT_H
+#define KATHTTP_QUIC_CLIENT_H
 
 #include <atomic>
 #include <chrono>
@@ -69,6 +69,14 @@ public:
 
   bool is_ready() const { return handshake_confirmed_.load(); }
   bool is_closed() const { return closed_.load(); }
+
+  /* Human-readable BoringSSL/OpenSSL error queue (clears it). */
+  std::string lastTlsError() const { return tls_session_.lastTlsError(); }
+
+  /* Forwards to TlsClientSession::captureLastError. */
+  void captureTlsError(SSL *ssl, int rc) {
+    tls_session_.captureLastError(ssl, rc);
+  }
 
   const Url &origin() const { return origin_; }
   ngtcp2_conn *conn() { return conn_; }
@@ -154,4 +162,4 @@ private:
 
 } /* namespace kathttp */
 
-#endif /* KATHTPP_QUIC_CLIENT_H */
+#endif /* KATHTTP_QUIC_CLIENT_H */

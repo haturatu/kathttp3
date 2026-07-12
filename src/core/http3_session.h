@@ -1,5 +1,5 @@
-#ifndef KATHTPP_HTTP3_SESSION_H
-#define KATHTPP_HTTP3_SESSION_H
+#ifndef KATHTTP_HTTP3_SESSION_H
+#define KATHTTP_HTTP3_SESSION_H
 
 #include <cstdint>
 #include <unordered_map>
@@ -52,4 +52,4 @@ private:
 
 } /* namespace kathttp */
 
-#endif /* KATHTPP_HTTP3_SESSION_H */
+#endif /* KATHTTP_HTTP3_SESSION_H */

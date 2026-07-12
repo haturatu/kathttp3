@@ -1,5 +1,5 @@
-#ifndef KATHTPP_COOKIE_JAR_H
-#define KATHTPP_COOKIE_JAR_H
+#ifndef KATHTTP_COOKIE_JAR_H
+#define KATHTTP_COOKIE_JAR_H
 
 #include <mutex>
 #include <string>
@@ -51,4 +51,4 @@ private:
 
 } /* namespace kathttp */
 
-#endif /* KATHTPP_COOKIE_JAR_H */
+#endif /* KATHTTP_COOKIE_JAR_H */

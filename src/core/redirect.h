@@ -1,5 +1,5 @@
-#ifndef KATHTPP_REDIRECT_H
-#define KATHTPP_REDIRECT_H
+#ifndef KATHTTP_REDIRECT_H
+#define KATHTTP_REDIRECT_H
 
 #include <optional>
 #include <string>
@@ -30,4 +30,4 @@ public:
 
 } /* namespace kathttp */
 
-#endif /* KATHTPP_REDIRECT_H */
+#endif /* KATHTTP_REDIRECT_H */

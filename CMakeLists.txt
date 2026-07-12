@@ -27,14 +27,14 @@ if(ANDROID)
   set_target_properties(crypto PROPERTIES IMPORTED_LOCATION "${KATHTTP_DEPS_ROOT}/${ANDROID_ABI}/lib/libcrypto.a")
   set(KATHTTP_DEP_TARGETS ngtcp2 nghttp3 ngtcp2_crypto ssl crypto)
   include_directories("${KATHTTP_DEPS_ROOT}/${ANDROID_ABI}/include")
-  add_compile_definitions(KATHTPP_USE_BORINGSSL)
+  add_compile_definitions(KATHTTP_USE_BORINGSSL)
 else()
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(NGTCP2 REQUIRED IMPORTED_TARGET libngtcp2)
   pkg_check_modules(NGHTTP3 REQUIRED IMPORTED_TARGET libnghttp3)
   if(KATHTTP_USE_BORINGSSL)
     pkg_check_modules(NGTCP2_CRYPTO REQUIRED IMPORTED_TARGET libngtcp2_crypto_boringssl)
-    add_compile_definitions(KATHTPP_USE_BORINGSSL)
+    add_compile_definitions(KATHTTP_USE_BORINGSSL)
   else()
     pkg_check_modules(NGTCP2_CRYPTO REQUIRED IMPORTED_TARGET libngtcp2_crypto_ossl)
   endif()
@@ -45,7 +45,8 @@ set(KATHTTP_CORE_SOURCES
   src/core/cache.cc src/core/cookie_jar.cc src/core/dns.cc
   src/core/engine.cc src/core/header_list.cc src/core/http3_session.cc
   src/core/quic_client.cc src/core/redirect.cc src/core/request.cc
-  src/core/tls.cc src/core/udp_socket.cc src/core/url.cc)
+  src/core/tls.cc src/core/cert_verifier.cc
+  src/core/udp_socket.cc src/core/url.cc)
 
 add_library(kathttp SHARED ${KATHTTP_CORE_SOURCES})
 target_include_directories(kathttp PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
@@ -65,7 +66,8 @@ if(KATHTTP_SANITIZE AND NOT ANDROID)
 endif()
 
 if(KATHTTP_BUILD_JNI)
-  target_sources(kathttp PRIVATE src/jni/kathttp_jni.cc)
+  target_sources(kathttp PRIVATE src/jni/kathttp_jni.cc
+                             src/jni/android_cert_verifier.cc)
   if(NOT ANDROID)
     find_package(JNI REQUIRED)
     target_include_directories(kathttp PRIVATE ${JNI_INCLUDE_DIRS})

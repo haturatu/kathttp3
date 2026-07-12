@@ -1,5 +1,5 @@
-#ifndef KATHTPP_KATHTPP_H
-#define KATHTPP_KATHTPP_H
+#ifndef KATHTTP_KATHTTP_H
+#define KATHTTP_KATHTTP_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -15,7 +15,7 @@ extern "C" {
  * `struct_size` + `abi_version` header and never removing fields.
  * New optional fields are only appended.
  * ------------------------------------------------------------------ */
-#define KATHTPP_ABI_VERSION 1
+#define KATHTTP_ABI_VERSION 1
 
 #if defined(_WIN32)
 # define KATHTTP_API __declspec(dllexport)
@@ -24,17 +24,29 @@ extern "C" {
 #endif
 
 typedef enum {
-  KATHTPP_OK = 0,
-  KATHTPP_ERR_DNS = -1,
-  KATHTPP_ERR_TLS = -2,
-  KATHTPP_ERR_QUIC = -3,
-  KATHTPP_ERR_HTTP3 = -4,
-  KATHTPP_ERR_TIMEOUT = -5,
-  KATHTPP_ERR_CANCELLED = -6,
-  KATHTPP_ERR_INVALID_ARG = -7,
-  KATHTPP_ERR_NOMEM = -8,
-  KATHTPP_ERR_CLOSED = -9, /* client destroyed while request in flight */
+  KATHTTP_OK = 0,
+  KATHTTP_ERR_DNS = -1,
+  /* -2 reserved */
+  KATHTTP_ERR_QUIC = -3,              /* QUIC transport error */
+  KATHTTP_ERR_TLS = -4,               /* TLS handshake failure (non-cert) */
+  KATHTTP_ERR_CERTIFICATE_VERIFY = -5, /* certificate trust failure */
+  KATHTTP_ERR_HOSTNAME_MISMATCH = -6,  /* peer cert does not match hostname */
+  KATHTTP_ERR_NO_TRUST_PROVIDER = -7,  /* no verifier available / JNI verifier failed */
+  KATHTTP_ERR_HTTP3 = -8,
+  KATHTTP_ERR_TIMEOUT = -9,
+  KATHTTP_ERR_CANCELLED = -10,
+  KATHTTP_ERR_INVALID_ARG = -11,
+  KATHTTP_ERR_NOMEM = -12,
+  KATHTTP_ERR_CLOSED = -13, /* client destroyed while request in flight */
 } kathttp_error;
+
+/* How the peer certificate is verified. Default is PLATFORM. */
+typedef enum {
+  KATHTTP_TRUST_PLATFORM = 0,            /* Android: X509TrustManager;
+                                          * else: system trust store */
+  KATHTTP_TRUST_EMBEDDED_MOZILLA = 1,  /* bundled Mozilla CA bundle */
+  KATHTTP_TRUST_CUSTOM_CA = 2,          /* PEM bundle at ca_cert_file */
+} kathttp_trust_mode;
 
 /* Client construction options. Always initialize with
  * kathttp_client_options_init() so struct_size/abi_version are set. */
@@ -49,8 +61,13 @@ typedef struct kathttp_client_options {
   uint32_t max_connections_per_origin;
   uint8_t enable_0rtt;     /* 0 = off. 0-RTT is off by default; replayable
                               requests (GET/HEAD, no Authorization) only. */
-  const char *ca_cert_file; /* PEM CA bundle; NULL = built-in roots */
-  uint8_t verify_cert;      /* 1 = verify peer certificate */
+  const char *ca_cert_file; /* PEM CA bundle; used when trust_mode ==
+                                  KATHTTP_TRUST_CUSTOM_CA. NULL otherwise. */
+  uint8_t verify_cert;      /* deprecated: kept for ABI; 1 = verify peer
+                              * (default). 0 is superseded by insecure_cert. */
+  uint8_t insecure_cert;    /* 1 = disable verification (tests only). Takes
+                              * precedence over trust_mode. */
+  uint32_t trust_mode;      /* kathttp_trust_mode; default PLATFORM */
   const char *keylog_file;  /* NULL = disabled */
   uint32_t quic_version;    /* 0 = let ngtcp2 negotiate */
 } kathttp_client_options;
@@ -82,10 +99,10 @@ typedef struct kathttp_request kathttp_request;
  *    APIs that mutate shared state while running.
  * ------------------------------------------------------------------ */
 typedef enum kathttp_event_type {
-  KATHTPP_EVENT_HEADERS = 1,  /* status_code + names/values/header_count */
-  KATHTPP_EVENT_BODY = 2,     /* data + data_len (may be called 0..n times) */
-  KATHTPP_EVENT_COMPLETE = 3, /* success; error_code == 0 */
-  KATHTPP_EVENT_ERROR = 4,    /* failure; error_code != 0 */
+  KATHTTP_EVENT_HEADERS = 1,  /* status_code + names/values/header_count */
+  KATHTTP_EVENT_BODY = 2,     /* data + data_len (may be called 0..n times) */
+  KATHTTP_EVENT_COMPLETE = 3, /* success; error_code == 0 */
+  KATHTTP_EVENT_ERROR = 4,    /* failure; error_code != 0 */
 } kathttp_event_type;
 
 typedef struct kathttp_event {
@@ -157,4 +174,4 @@ KATHTTP_API void kathttp_client_cancel(kathttp_client *client, int64_t request_i
 }
 #endif
 
-#endif /* KATHTPP_KATHTPP_H */
+#endif /* KATHTTP_KATHTTP_H */

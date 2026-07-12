@@ -15,10 +15,24 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); setContent { MaterialTheme { Screen() } } }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val initialUrl = intent?.getStringExtra("url")
+        setContent { MaterialTheme { Screen(initialUrl = initialUrl) } }
+    }
 }
 
-@Composable private fun Screen(vm: MainViewModel = viewModel()) {
+@Composable private fun Screen(vm: MainViewModel = viewModel(), initialUrl: String? = null) {
+    val autoTriggered = remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!autoTriggered.value) {
+            autoTriggered.value = true
+            if (!initialUrl.isNullOrBlank()) {
+                vm.setUrl(initialUrl)
+                vm.execute()
+            }
+        }
+    }
     val s by vm.state.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Kathttp HTTP/3", style = MaterialTheme.typography.headlineSmall)

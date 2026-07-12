@@ -1,5 +1,5 @@
-#ifndef KATHTPP_CACHE_H
-#define KATHTPP_CACHE_H
+#ifndef KATHTTP_CACHE_H
+#define KATHTTP_CACHE_H
 
 #include <list>
 #include <mutex>
@@ -47,4 +47,4 @@ private:
 
 } /* namespace kathttp */
 
-#endif /* KATHTPP_CACHE_H */
+#endif /* KATHTTP_CACHE_H */

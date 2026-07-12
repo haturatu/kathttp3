@@ -1,5 +1,5 @@
-#ifndef KATHTPP_DNS_H
-#define KATHTPP_DNS_H
+#ifndef KATHTTP_DNS_H
+#define KATHTTP_DNS_H
 
 #include <cstdint>
 #include <string>
@@ -33,4 +33,4 @@ public:
 
 } /* namespace kathttp */
 
-#endif /* KATHTPP_DNS_H */
+#endif /* KATHTTP_DNS_H */

@@ -5,6 +5,7 @@
 #include <nghttp3/nghttp3.h>
 
 #include <openssl/rand.h>
+#include <openssl/ssl.h>
 
 #include <chrono>
 #include <cstring>
@@ -69,8 +70,18 @@ int recv_crypto_data_cb(ngtcp2_conn *conn, ngtcp2_encryption_level level,
                         uint64_t offset, const uint8_t *data, size_t datalen,
                         void *user_data) {
   (void)user_data;
-  return ngtcp2_crypto_recv_crypto_data_cb(conn, level, offset, data,
+  int rv = ngtcp2_crypto_recv_crypto_data_cb(conn, level, offset, data,
                                             datalen, user_data);
+  if (rv != 0) {
+    auto *c = static_cast<QuicClient *>(user_data);
+    SSL *ssl =
+        static_cast<SSL *>(ngtcp2_conn_get_tls_native_handle2(conn));
+    if (ssl) c->captureTlsError(ssl, rv);
+    KATHTTP_LOG_ERR(
+        "recv_crypto_data_cb: level=%d rv=%d ngtcp2=%s ssl='%s'\n",
+        level, rv, ngtcp2_strerror(rv), c->lastTlsError().c_str());
+  }
+  return rv;
 }
 
 int handshake_completed_cb(ngtcp2_conn *conn, void *user_data) {
@@ -424,7 +435,7 @@ bool QuicClient::setup_connection() {
       NGTCP2_CALLBACKS_VERSION, &kCallbacks, NGTCP2_SETTINGS_VERSION,
       &settings, NGTCP2_TRANSPORT_PARAMS_VERSION, &params, nullptr, this);
   if (rv != 0) {
-    KATHTPP_LOG_ERR("ngtcp2_conn_client_new: %s\n", ngtcp2_strerror(rv));
+    KATHTTP_LOG_ERR("ngtcp2_conn_client_new: %s\n", ngtcp2_strerror(rv));
     return false;
   }
 
@@ -441,17 +452,28 @@ bool QuicClient::setup_connection() {
 
 void QuicClient::run() {
   if (!prepare_endpoints()) {
-    fail_all_pending(KATHTPP_ERR_DNS);
+    KATHTTP_LOG_ERR("run: prepare_endpoints failed -> DNS err\n");
+    fail_all_pending(KATHTTP_ERR_DNS);
     return;
   }
   while (endpoint_idx_ < endpoints_.size() && !stop_ &&
          !handshake_confirmed_) {
+    tls_session_.resetFailure();
     if (!connect_to_endpoint() || !setup_connection()) {
+      KATHTTP_LOG_ERR("run: endpoint idx=%zu connect/setup failed\n", endpoint_idx_);
       endpoint_idx_++;
       continue;
     }
     if (event_loop() != 0) {
-      // handshake failure / fatal; try next endpoint
+      // handshake failure / fatal. A certificate / hostname / trust
+      // failure is not endpoint-specific, so stop retrying (the
+      // captured code is already the right one).
+      int code = tls_session_.lastFailure().code;
+      if (code == KATHTTP_ERR_CERTIFICATE_VERIFY ||
+          code == KATHTTP_ERR_HOSTNAME_MISMATCH ||
+          code == KATHTTP_ERR_NO_TRUST_PROVIDER) {
+        break;
+      }
       endpoint_idx_++;
       if (conn_) {
         ngtcp2_conn_del(conn_);
@@ -463,7 +485,8 @@ void QuicClient::run() {
     break;
   }
   if (!handshake_confirmed_) {
-    fail_all_pending(KATHTPP_ERR_QUIC);
+    int code = tls_session_.lastFailure().code;
+    fail_all_pending(code != 0 ? code : KATHTTP_ERR_QUIC);
   }
   if (conn_) {
     ngtcp2_conn_del(conn_);
@@ -513,7 +536,7 @@ int QuicClient::event_loop() {
             NGTCP2_PKT_INFO_VERSION, &pi, pkt,
             static_cast<size_t>(n), now);
         if (rv != 0) {
-          KATHTPP_LOG_ERR("ngtcp2_conn_read_pkt: %s\n",
+          KATHTTP_LOG_ERR("ngtcp2_conn_read_pkt: %s\n",
                           ngtcp2_strerror(rv));
           return -1;
         }
@@ -522,7 +545,7 @@ int QuicClient::event_loop() {
 
     int rv = ngtcp2_conn_handle_expiry(conn_, now);
     if (rv != 0) {
-      KATHTPP_LOG_ERR("ngtcp2_conn_handle_expiry: %s\n",
+      KATHTTP_LOG_ERR("ngtcp2_conn_handle_expiry: %s\n",
                       ngtcp2_strerror(rv));
       return -1;
     }
@@ -571,7 +594,7 @@ void QuicClient::write_pending() {
         conn_, &path_, NGTCP2_PKT_INFO_VERSION, &pi, pkt, sizeof(pkt), now);
     if (n == NGTCP2_ERR_WRITE_MORE) continue;
     if (n < 0) {
-      KATHTPP_LOG_ERR("ngtcp2_conn_write_pkt: %s\n", ngtcp2_strerror((int)n));
+      KATHTTP_LOG_ERR("ngtcp2_conn_write_pkt: %s\n", ngtcp2_strerror((int)n));
       return;
     }
     if (n == 0) break;
@@ -601,14 +624,14 @@ void QuicClient::try_submit_pending() {
       break;  // wait for extend_max_local_streams_bidi
     }
     if (rv != 0) {
-      notify_job_error(job, KATHTPP_ERR_QUIC);
+      notify_job_error(job, KATHTTP_ERR_QUIC);
       it = pending_jobs_.erase(it);
       continue;
     }
     job->stream_id = stream_id;
     job->http3_ready = true;
     if (!http3_->submit_request(job)) {
-      notify_job_error(job, KATHTPP_ERR_HTTP3);
+      notify_job_error(job, KATHTTP_ERR_HTTP3);
       it = pending_jobs_.erase(it);
       continue;
     }
@@ -617,7 +640,14 @@ void QuicClient::try_submit_pending() {
   }
 }
 
+void QuicClient::on_handshake_confirmed() {
+  handshake_confirmed_.store(true);
+  last_active_ = now_ns();
+  KATHTTP_LOG_ERR("handshake confirmed\n");
+}
+
 bool QuicClient::on_handshake_completed() {
+  KATHTTP_LOG_ERR("handshake completed\n");
   if (!http3_ready_ && http3_) {
     if (http3_->setup_codec()) {
       http3_ready_ = true;
@@ -625,11 +655,6 @@ bool QuicClient::on_handshake_completed() {
     }
   }
   return true;
-}
-
-void QuicClient::on_handshake_confirmed() {
-  handshake_confirmed_.store(true);
-  last_active_ = now_ns();
 }
 
 void QuicClient::setup_codec() { on_handshake_completed(); }

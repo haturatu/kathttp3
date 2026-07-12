@@ -9,6 +9,7 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "cert_verifier.h"
 #include "cookie_jar.h"
 #include "header_list.h"
 #include "log.h"
@@ -28,9 +29,12 @@ int case_eq(const std::string &a, const char *b) {
 
 Engine::Engine(const kathttp_client_options &opt) : opt_(opt) {
   resolver_ = std::make_shared<GetAddrInfoResolver>();
-  if (!tls_ctx_.init(opt_.verify_cert != 0,
-                  opt_.ca_cert_file ? opt_.ca_cert_file : std::string(),
-                  opt_.keylog_file ? opt_.keylog_file : std::string())) {
+  if (!tls_ctx_.init(
+          static_cast<kathttp_trust_mode>(opt_.trust_mode),
+          opt_.insecure_cert != 0,
+          opt_.ca_cert_file ? opt_.ca_cert_file : std::string(),
+          opt_.keylog_file ? opt_.keylog_file : std::string(),
+          platform_cert_verifier())) {
     throw std::runtime_error("TLS context initialization failed");
   }
   wakeup_fd_ = eventfd(0, EFD_NONBLOCK);
@@ -69,8 +73,8 @@ void Engine::execute(kathttp_request *req, int64_t request_id,
                      kathttp_event_callback cb, void *user_data) {
   std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
   if (destroyed_.load()) {
-    kathttp_event ev{}; ev.type = KATHTPP_EVENT_ERROR;
-    ev.request_id = request_id; ev.error_code = KATHTPP_ERR_CLOSED;
+    kathttp_event ev{}; ev.type = KATHTTP_EVENT_ERROR;
+    ev.request_id = request_id; ev.error_code = KATHTTP_ERR_CLOSED;
     if (cb) { try { cb(user_data, &ev); } catch (...) {} }
     delete req;
     return;
@@ -78,9 +82,9 @@ void Engine::execute(kathttp_request *req, int64_t request_id,
   Url url;
   if (!parse_url(req->url, url)) {
     kathttp_event ev{};
-    ev.type = KATHTPP_EVENT_ERROR;
+    ev.type = KATHTTP_EVENT_ERROR;
     ev.request_id = request_id;
-    ev.error_code = KATHTPP_ERR_INVALID_ARG;
+    ev.error_code = KATHTTP_ERR_INVALID_ARG;
     if (cb) cb(user_data, &ev);
     delete req;
     return;
@@ -120,8 +124,8 @@ void Engine::cancel(int64_t request_id) {
     if (c) c->cancel_job(request_id);
   }
   if (cb) {
-    kathttp_event ev{}; ev.type = KATHTPP_EVENT_ERROR;
-    ev.request_id = request_id; ev.error_code = KATHTPP_ERR_CANCELLED;
+    kathttp_event ev{}; ev.type = KATHTTP_EVENT_ERROR;
+    ev.request_id = request_id; ev.error_code = KATHTTP_ERR_CANCELLED;
     cb(ud, &ev);
   }
 }
@@ -155,9 +159,9 @@ void Engine::destroy() {
     if (!pending[i].second) continue;
     std::lock_guard<std::recursive_mutex> callback_lock(callback_mutex_);
     kathttp_event ev{};
-    ev.type = KATHTPP_EVENT_ERROR;
+    ev.type = KATHTTP_EVENT_ERROR;
     ev.request_id = pending[i].first;
-    ev.error_code = KATHTPP_ERR_CLOSED;
+    ev.error_code = KATHTTP_ERR_CLOSED;
     pending[i].second(pending_ud[i], &ev);
   }
 }
@@ -238,7 +242,7 @@ void Engine::dispatch_headers(Job *job, int status, const HeaderList &headers) {
     values.push_back(h.value.c_str());
   }
   kathttp_event ev{};
-  ev.type = KATHTPP_EVENT_HEADERS;
+  ev.type = KATHTTP_EVENT_HEADERS;
   ev.request_id = job->id;
   ev.status_code = status;
   ev.names = names.data();
@@ -249,7 +253,7 @@ void Engine::dispatch_headers(Job *job, int status, const HeaderList &headers) {
 
 void Engine::dispatch_body(Job *job, const uint8_t *data, size_t len) {
   kathttp_event ev{};
-  ev.type = KATHTPP_EVENT_BODY;
+  ev.type = KATHTTP_EVENT_BODY;
   ev.request_id = job->id;
   ev.data = data;
   ev.data_len = len;
@@ -258,7 +262,7 @@ void Engine::dispatch_body(Job *job, const uint8_t *data, size_t len) {
 
 void Engine::dispatch_complete(Job *job) {
   kathttp_event ev{};
-  ev.type = KATHTPP_EVENT_COMPLETE;
+  ev.type = KATHTTP_EVENT_COMPLETE;
   ev.request_id = job->id;
   ev.error_code = 0;
   deliver(ev);
@@ -266,7 +270,7 @@ void Engine::dispatch_complete(Job *job) {
 
 void Engine::dispatch_error(Job *job, int err, const char *msg) {
   kathttp_event ev{};
-  ev.type = KATHTPP_EVENT_ERROR;
+  ev.type = KATHTTP_EVENT_ERROR;
   ev.request_id = job->id;
   ev.error_code = err;
   (void)msg;
@@ -278,8 +282,8 @@ void Engine::deliver(const kathttp_event &ev) {
   ReqEntry e;
   kathttp_event_callback cb = nullptr;
   void *ud = nullptr;
-  bool terminal = (ev.type == KATHTPP_EVENT_COMPLETE ||
-                    ev.type == KATHTPP_EVENT_ERROR);
+  bool terminal = (ev.type == KATHTTP_EVENT_COMPLETE ||
+                    ev.type == KATHTTP_EVENT_ERROR);
   {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = registry_.find(ev.request_id);
@@ -329,21 +333,23 @@ void kathttp_client_options_init(kathttp_client_options *opt) {
   if (!opt) return;
   std::memset(opt, 0, sizeof(*opt));
   opt->struct_size = sizeof(kathttp_client_options);
-  opt->abi_version = KATHTPP_ABI_VERSION;
+  opt->abi_version = KATHTTP_ABI_VERSION;
   opt->connect_timeout_ms = 10000;
   opt->request_timeout_ms = 30000;
   opt->idle_timeout_ms = 30000;
   opt->max_redirects = 10;
   opt->max_connections_per_origin = 1;
   opt->verify_cert = 1;
+  opt->insecure_cert = 0;
+  opt->trust_mode = KATHTTP_TRUST_PLATFORM;
 }
 
-uint32_t kathttp_api_version(void) { return KATHTPP_ABI_VERSION; }
+uint32_t kathttp_api_version(void) { return KATHTTP_ABI_VERSION; }
 
 kathttp_client *kathttp_client_create(const kathttp_client_options *options) {
   if (!options) return nullptr;
   if (options->struct_size < sizeof(kathttp_client_options)) return nullptr;
-  if (options->abi_version != KATHTPP_ABI_VERSION) return nullptr;
+  if (options->abi_version != KATHTTP_ABI_VERSION) return nullptr;
   try {
     auto *e = new kathttp::Engine(*options);
     return reinterpret_cast<kathttp_client *>(e);
@@ -379,8 +385,8 @@ void kathttp_client_execute(kathttp_client *client, kathttp_request *request,
   }
   try { reinterpret_cast<kathttp::Engine *>(client)->execute(request, request_id, cb, user_data); }
   catch (...) {
-    kathttp_event ev{}; ev.type = KATHTPP_EVENT_ERROR; ev.request_id = request_id;
-    ev.error_code = KATHTPP_ERR_NOMEM; if (cb) cb(user_data, &ev); delete request;
+    kathttp_event ev{}; ev.type = KATHTTP_EVENT_ERROR; ev.request_id = request_id;
+    ev.error_code = KATHTTP_ERR_NOMEM; if (cb) cb(user_data, &ev); delete request;
   }
 }
 

@@ -3,6 +3,8 @@
 #include <mutex>
 #include <unordered_set>
 #include <vector>
+#include "android_cert_verifier.h"
+#include "cert_verifier.h"
 #include "kathttp.h"
 
 namespace {
@@ -47,7 +49,7 @@ void event_cb(void *opaque, const kathttp_event *event) noexcept {
   EnvScope scope; JNIEnv *env = scope.get(); if (!env) return;
   jclass cls = env->GetObjectClass(state->callback);
   if (!cls) { env->ExceptionClear(); return; }
-  if (event->type == KATHTPP_EVENT_HEADERS) {
+  if (event->type == KATHTTP_EVENT_HEADERS) {
     jclass str = env->FindClass("java/lang/String");
     jobjectArray names = env->NewObjectArray(event->header_count, str, nullptr);
     jobjectArray values = env->NewObjectArray(event->header_count, str, nullptr);
@@ -58,17 +60,17 @@ void event_cb(void *opaque, const kathttp_event *event) noexcept {
     jmethodID mid = env->GetMethodID(cls, "onHeaders", "(I[Ljava/lang/String;[Ljava/lang/String;)V");
     if (mid) env->CallVoidMethod(state->callback, mid, event->status_code, names, values);
     env->DeleteLocalRef(names); env->DeleteLocalRef(values);
-  } else if (event->type == KATHTPP_EVENT_BODY) {
+  } else if (event->type == KATHTTP_EVENT_BODY) {
     jbyteArray data = env->NewByteArray(event->data_len);
     if (data) env->SetByteArrayRegion(data, 0, event->data_len, reinterpret_cast<const jbyte *>(event->data));
     jmethodID mid = env->GetMethodID(cls, "onBody", "([B)V"); if (mid && data) env->CallVoidMethod(state->callback, mid, data);
     if (data) env->DeleteLocalRef(data);
   } else {
     if (!state->terminal.exchange(true, std::memory_order_acq_rel)) {
-      const char *name = event->type == KATHTPP_EVENT_COMPLETE ? "onComplete" : "onError";
-      const char *sig = event->type == KATHTPP_EVENT_COMPLETE ? "()V" : "(I)V";
+      const char *name = event->type == KATHTTP_EVENT_COMPLETE ? "onComplete" : "onError";
+      const char *sig = event->type == KATHTTP_EVENT_COMPLETE ? "()V" : "(I)V";
       jmethodID mid = env->GetMethodID(cls, name, sig);
-      if (mid) { if (event->type == KATHTPP_EVENT_COMPLETE) env->CallVoidMethod(state->callback, mid); else env->CallVoidMethod(state->callback, mid, event->error_code); }
+      if (mid) { if (event->type == KATHTTP_EVENT_COMPLETE) env->CallVoidMethod(state->callback, mid); else env->CallVoidMethod(state->callback, mid, event->error_code); }
       if (env->ExceptionCheck()) env->ExceptionClear();
       env->DeleteLocalRef(cls); release_state(env, state); return;
     }
@@ -78,10 +80,19 @@ void event_cb(void *opaque, const kathttp_event *event) noexcept {
 }
 }
 
-extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) { g_vm = vm; return JNI_VERSION_1_6; }
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
+  g_vm = vm;
+  // Build the platform (Android) certificate verifier and register it so
+  // the core uses X509TrustManager for TRUST_PLATFORM.
+  if (auto *v = kathttp::create_android_platform_verifier(vm)) {
+    kathttp::set_platform_cert_verifier(v);
+  }
+  return JNI_VERSION_1_6;
+}
 
-extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp_internal_NativeBridge_createClient(JNIEnv *env, jobject, jlong connect, jlong request, jlong idle, jint redirects, jstring caFile) {
+extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp_internal_NativeBridge_createClient(JNIEnv *env, jobject, jlong connect, jlong request, jlong idle, jint redirects, jint trustMode, jboolean insecure, jstring caFile) {
   kathttp_client_options o; kathttp_client_options_init(&o); o.connect_timeout_ms=connect; o.request_timeout_ms=request; o.idle_timeout_ms=idle; o.max_redirects=redirects;
+  o.trust_mode = static_cast<uint32_t>(trustMode); o.insecure_cert = insecure ? 1 : 0;
   const char *ca = caFile ? env->GetStringUTFChars(caFile, nullptr) : nullptr; if (caFile && !ca) return 0; o.ca_cert_file = ca;
   auto *p=kathttp_client_create(&o); if (ca) env->ReleaseStringUTFChars(caFile, ca); if (p) { try { std::lock_guard<std::mutex> lock(g_handles_mutex); g_handles.insert(p); } catch (...) { kathttp_client_destroy(p); return 0; } } return static_cast<jlong>(reinterpret_cast<uintptr_t>(p));
 }

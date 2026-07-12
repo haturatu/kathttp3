@@ -1,5 +1,5 @@
-#ifndef KATHTPP_UDP_SOCKET_H
-#define KATHTPP_UDP_SOCKET_H
+#ifndef KATHTTP_UDP_SOCKET_H
+#define KATHTTP_UDP_SOCKET_H
 
 #include <cstdint>
 #include <string>
@@ -52,4 +52,4 @@ private:
 
 } /* namespace kathttp */
 
-#endif /* KATHTPP_UDP_SOCKET_H */
+#endif /* KATHTTP_UDP_SOCKET_H */

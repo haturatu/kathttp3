@@ -19,16 +19,16 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
     private val ids = AtomicLong(1)
     private val active = ConcurrentHashMap.newKeySet<Long>()
     private val nativeLock = Any()
-    private val handle = NativeBridge.createClient(config.connectTimeoutMillis, config.requestTimeoutMillis, config.idleTimeoutMillis, config.maxRedirects, config.caCertificateFile).also { check(it != 0L) }
+    private         val handle = NativeBridge.createClient(config.connectTimeoutMillis, config.requestTimeoutMillis, config.idleTimeoutMillis, config.maxRedirects, config.trustMode.native, config.insecureCert, config.caCertificateFile).also { check(it != 0L) }
 
     suspend fun execute(request: KatHttpRequest): KatHttpResponse = suspendCancellableCoroutine { continuation ->
-        if (closed.get()) { continuation.resumeWithException(KatHttpException.Closed()); return@suspendCancellableCoroutine }
+        if (closed.get()) { continuation.resumeWithException(KathttpException.Closed()); return@suspendCancellableCoroutine }
         val id = ids.getAndIncrement()
         val callback = BufferedCallback(id, continuation)
         active += id
         continuation.invokeOnCancellation { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle, id) }; active.remove(id) }
         val ok = synchronized(nativeLock) { if (closed.get()) false else NativeBridge.execute(handle, id, request.method, request.url, request.headers.map { it.name }.toTypedArray(), request.headers.map { it.value }.toTypedArray(), request.body, config.followRedirects, callback) }
-        if (!ok) callback.fail(KatHttpException.Native(-7))
+        if (!ok) callback.fail(KathttpException.Native(-7))
     }
 
     fun executeStreaming(request: KatHttpRequest): KatHttpCall {
@@ -64,7 +64,7 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
         override fun onHeaders(status: Int, names: Array<String>, values: Array<String>) { if (!terminal.get()) { this.status = status; headers = names.indices.map { KatHttpHeader(names[it], values[it]) } } }
         override fun onBody(data: ByteArray) {
             if (terminal.get()) return
-            if (body.size().toLong() + data.size > config.maxBufferedBodyBytes) { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle, id) }; fail(KatHttpException.BodyTooLarge()) } else body.write(data)
+            if (body.size().toLong() + data.size > config.maxBufferedBodyBytes) { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle, id) }; fail(KathttpException.BodyTooLarge()) } else body.write(data)
         }
         override fun onComplete() { if (terminal.compareAndSet(false, true)) { active.remove(id); if (continuation.isActive) continuation.resume(KatHttpResponse(status, headers, body.toByteArray())) } }
         override fun onError(code: Int) = fail(mapError(code))
@@ -83,7 +83,14 @@ class KatHttpCall internal constructor(val events: Flow<KatHttpStreamEvent>, pri
     override fun close() = cancel()
 }
 
-private fun mapError(code: Int): KatHttpException = when (code) { -1 -> KatHttpException.Dns(); -2 -> KatHttpException.Tls(); -5 -> KatHttpException.Timeout(); -9 -> KatHttpException.Closed(); else -> KatHttpException.Native(code) }
+private fun mapError(code: Int): KathttpException = when (code) {
+    -1 -> KathttpException.Dns()
+    -3 -> QuicTransportException("QUIC transport error")
+    -4 -> TlsHandshakeException("TLS handshake error")
+    -5, -6, -7 -> CertificateVerificationException("Certificate verification failed (code $code)")
+    -9 -> KathttpException.Closed()
+    else -> KathttpException.Native(code)
+}
 
 suspend fun KatHttpClient.get(url: String, headers: List<KatHttpHeader> = emptyList()) = execute(KatHttpRequest("GET", url, headers))
 suspend fun KatHttpClient.post(url: String, body: ByteArray, headers: List<KatHttpHeader> = emptyList()) = execute(KatHttpRequest("POST", url, headers, body))

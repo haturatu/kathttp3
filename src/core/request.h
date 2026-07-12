@@ -1,5 +1,5 @@
-#ifndef KATHTPP_REQUEST_H
-#define KATHTPP_REQUEST_H
+#ifndef KATHTTP_REQUEST_H
+#define KATHTTP_REQUEST_H
 
 #include <cstdint>
 #include <string>
@@ -21,4 +21,4 @@ struct kathttp_request {
   std::vector<std::pair<std::string, uint16_t>> addresses;
 };
 
-#endif /* KATHTPP_REQUEST_H */
+#endif /* KATHTTP_REQUEST_H */

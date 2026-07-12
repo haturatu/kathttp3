@@ -1,5 +1,5 @@
-#ifndef KATHTPP_ENGINE_H
-#define KATHTPP_ENGINE_H
+#ifndef KATHTTP_ENGINE_H
+#define KATHTTP_ENGINE_H
 
 #include <atomic>
 #include <cstdint>
@@ -82,4 +82,4 @@ private:
 
 }  /* namespace kathttp */
 
-#endif /* KATHTPP_ENGINE_H */
+#endif /* KATHTTP_ENGINE_H */

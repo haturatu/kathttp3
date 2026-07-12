@@ -83,7 +83,7 @@ int stream_close_cb(nghttp3_conn *, int64_t stream_id, uint64_t app_error_code,
   auto *c = static_cast<Http3Session *>(conn_user_data);
   auto *job = c->find_job(stream_id);
   if (job && !job->completed) {
-    c->client()->notify_job_error(job, KATHTPP_ERR_HTTP3);
+    c->client()->notify_job_error(job, KATHTTP_ERR_HTTP3);
   }
   c->unmap_stream(stream_id);
   return 0;
@@ -194,7 +194,7 @@ bool Http3Session::setup_codec() {
       &conn, NGHTTP3_CALLBACKS_VERSION, &kH3Callbacks,
       NGHTTP3_SETTINGS_VERSION, &settings, nullptr, this);
   if (rv != 0) {
-    KATHTPP_LOG_ERR("nghttp3_conn_client_new: %s\n",
+    KATHTTP_LOG_ERR("nghttp3_conn_client_new: %s\n",
                      nghttp3_strerror(rv));
     return false;
   }
@@ -205,7 +205,7 @@ bool Http3Session::setup_codec() {
       ngtcp2_conn_open_uni_stream(conn_, &decoder_id, nullptr) != 0 ||
       nghttp3_conn_bind_control_stream(httpconn_, control_id) != 0 ||
       nghttp3_conn_bind_qpack_streams(httpconn_, encoder_id, decoder_id) != 0) {
-    KATHTPP_LOG_ERR("failed to bind HTTP/3 critical streams\n");
+    KATHTTP_LOG_ERR("failed to bind HTTP/3 critical streams\n");
     nghttp3_conn_del(httpconn_);
     httpconn_ = nullptr;
     return false;
@@ -269,7 +269,7 @@ bool Http3Session::submit_request(Job *job) {
   int rv = nghttp3_conn_submit_request(httpconn_, job->stream_id, nva.data(),
                                        nva.size(), drp, job);
   if (rv != 0) {
-    KATHTPP_LOG_ERR("nghttp3_conn_submit_request: %s\n",
+    KATHTTP_LOG_ERR("nghttp3_conn_submit_request: %s\n",
                      nghttp3_strerror(rv));
     return false;
   }
@@ -290,7 +290,7 @@ void Http3Session::pump_write(ngtcp2_tstamp ts) {
     nghttp3_ssize n =
         nghttp3_conn_writev_stream(httpconn_, &stream_id, &fin, &vec, 1);
     if (n < 0) {
-      KATHTPP_LOG_ERR("nghttp3_conn_writev_stream: %s\n",
+      KATHTTP_LOG_ERR("nghttp3_conn_writev_stream: %s\n",
                        nghttp3_strerror((int)n));
       return;
     }
@@ -309,7 +309,7 @@ void Http3Session::pump_write(ngtcp2_tstamp ts) {
       continue;
     }
     if (w < 0) {
-      KATHTPP_LOG_ERR("ngtcp2_conn_writev_stream: %s\n",
+      KATHTTP_LOG_ERR("ngtcp2_conn_writev_stream: %s\n",
                        ngtcp2_strerror((int)w));
       return;
     }
@@ -326,7 +326,7 @@ bool Http3Session::recv_stream_data(uint32_t, int64_t stream_id,
   int rv = nghttp3_conn_read_stream(httpconn_, stream_id, data, len,
                                     fin ? 1 : 0);
   if (rv < 0) {
-    KATHTPP_LOG_ERR("nghttp3_conn_read_stream: %s\n",
+    KATHTTP_LOG_ERR("nghttp3_conn_read_stream: %s\n",
                      nghttp3_strerror(rv));
     return false;
   }

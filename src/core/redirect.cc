@@ -16,7 +16,7 @@ RedirectDecision RedirectPolicy::evaluate(const std::string &method,
   if (!auto_redirect) return d;
   if (!is_redirect_status(resp.status_code)) return d;
   if (remaining == 0) {
-    KATHTPP_LOG_WARN("redirect budget exhausted for %s\n", from.host.c_str());
+    KATHTTP_LOG_WARN("redirect budget exhausted for %s\n", from.host.c_str());
     return d;
   }
 

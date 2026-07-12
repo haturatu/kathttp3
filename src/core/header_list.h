@@ -1,5 +1,5 @@
-#ifndef KATHTPP_HEADER_LIST_H
-#define KATHTPP_HEADER_LIST_H
+#ifndef KATHTTP_HEADER_LIST_H
+#define KATHTTP_HEADER_LIST_H
 
 #include <string>
 #include <vector>
@@ -39,4 +39,4 @@ private:
 
 } /* namespace kathttp */
 
-#endif /* KATHTPP_HEADER_LIST_H */
+#endif /* KATHTTP_HEADER_LIST_H */

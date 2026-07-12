@@ -1,5 +1,5 @@
-#ifndef KATHTPP_TIME_UTIL_H
-#define KATHTPP_TIME_UTIL_H
+#ifndef KATHTTP_TIME_UTIL_H
+#define KATHTTP_TIME_UTIL_H
 
 #include <cstdint>
 #include <ctime>
@@ -15,4 +15,4 @@ inline uint64_t timestamp_now_ns() {
 
 } /* namespace kathttp */
 
-#endif /* KATHTPP_TIME_UTIL_H */
+#endif /* KATHTTP_TIME_UTIL_H */

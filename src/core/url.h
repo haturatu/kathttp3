@@ -1,5 +1,5 @@
-#ifndef KATHTPP_URL_H
-#define KATHTPP_URL_H
+#ifndef KATHTTP_URL_H
+#define KATHTTP_URL_H
 
 #include <cstdint>
 #include <string>
@@ -32,4 +32,4 @@ bool parse_url(std::string_view raw, Url &out);
 
 } /* namespace kathttp */
 
-#endif /* KATHTPP_URL_H */
+#endif /* KATHTTP_URL_H */

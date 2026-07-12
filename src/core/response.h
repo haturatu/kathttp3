@@ -1,5 +1,5 @@
-#ifndef KATHTPP_RESPONSE_H
-#define KATHTPP_RESPONSE_H
+#ifndef KATHTTP_RESPONSE_H
+#define KATHTTP_RESPONSE_H
 
 #include <cstdint>
 #include <string>
@@ -26,4 +26,4 @@ struct Response {
 
 } /* namespace kathttp */
 
-#endif /* KATHTPP_RESPONSE_H */
+#endif /* KATHTTP_RESPONSE_H */
