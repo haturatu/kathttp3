@@ -2,7 +2,8 @@
 set -euo pipefail
 
 readonly ANDROID_API=26
-readonly BUILD_RECIPE_VERSION=1
+readonly BUILD_RECIPE_VERSION=2
+readonly ANDROID_CMAKE_VERSION=3.22.1
 readonly ALL_ABIS=(arm64-v8a armeabi-v7a x86_64 x86)
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -77,6 +78,56 @@ find_ndk() {
 
 NDK="$(find_ndk)"
 TOOLCHAIN="${NDK}/build/cmake/android.toolchain.cmake"
+
+find_sdkmanager() {
+  local candidate sdk ndk_sdk
+  # Prefer explicit SDK locations, but also derive the SDK root from an NDK
+  # installed at <sdk>/ndk/<revision>.  The latter is useful on JitPack where
+  # AGP resolves the NDK before this script is invoked.
+  ndk_sdk="$(cd "${NDK}/../.." && pwd)"
+  for sdk in "${ANDROID_SDK_ROOT:-}" "${ANDROID_HOME:-}" "${ndk_sdk}"; do
+    [[ -n "${sdk}" ]] || continue
+    for candidate in "${sdk}/cmdline-tools/latest/bin/sdkmanager" \
+      "${sdk}/cmdline-tools/bin/sdkmanager" "${sdk}/tools/bin/sdkmanager"; do
+      if [[ -x "${candidate}" ]]; then
+        printf '%s\n' "${candidate}"
+        return
+      fi
+    done
+  done
+  return 1
+}
+
+ensure_cmake() {
+  local candidate sdk sdkmanager ndk_sdk
+  if command -v cmake >/dev/null 2>&1; then
+    return
+  fi
+
+  if ! sdkmanager="$(find_sdkmanager)"; then
+    echo "CMake was not found and Android SDK Manager is unavailable." >&2
+    echo "Install CMake ${ANDROID_CMAKE_VERSION}, or set ANDROID_HOME/ANDROID_SDK_ROOT." >&2
+    exit 2
+  fi
+
+  echo "CMake was not found; installing Android SDK CMake ${ANDROID_CMAKE_VERSION}." >&2
+  "${sdkmanager}" --install "cmake;${ANDROID_CMAKE_VERSION}"
+
+  ndk_sdk="$(cd "${NDK}/../.." && pwd)"
+  for sdk in "${ANDROID_SDK_ROOT:-}" "${ANDROID_HOME:-}" "${ndk_sdk}"; do
+    [[ -n "${sdk}" ]] || continue
+    candidate="${sdk}/cmake/${ANDROID_CMAKE_VERSION}/bin"
+    if [[ -x "${candidate}/cmake" ]]; then
+      export PATH="${candidate}:${PATH}"
+      return
+    fi
+  done
+
+  echo "Android SDK CMake ${ANDROID_CMAKE_VERSION} was installed but could not be located." >&2
+  exit 2
+}
+
+ensure_cmake
 echo "Using Android NDK: ${NDK}"
 if command -v ninja >/dev/null 2>&1; then
   CMAKE_GENERATOR=("-G" "Ninja")

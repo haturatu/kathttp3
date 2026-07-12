@@ -2,9 +2,8 @@ jdk:
   - openjdk17
 
 before_install:
-  # JitPack's build image runs this as root and does not provide sudo.
-  - apt-get update -qq
-  - apt-get install -y cmake ninja-build
+  # JitPack runs builds without apt privileges.  The dependency script uses
+  # sdkmanager to install the pinned Android CMake package when needed.
   - chmod +x gradlew
   - chmod +x scripts/build-android-deps.sh
 
