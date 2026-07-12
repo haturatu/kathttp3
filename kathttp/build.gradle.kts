@@ -29,6 +29,9 @@ android {
                 arguments(
                     "-DKATHTTP_BUILD_TESTS=OFF",
                     "-DKATHTTP_BUILD_JNI=ON",
+                    // NDK r27 needs this opt-in to produce 16 KB page-size
+                    // compatible ELF shared libraries on Android 15+.
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
                     "-DKATHTTP_DEPS_ROOT=${
                         project.findProperty("kathttpDepsRoot")
                             ?: rootProject.file("third_party/android-deps")

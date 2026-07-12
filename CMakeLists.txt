@@ -97,6 +97,15 @@ endif()
 if(ANDROID AND NOT KATHTTP_ANALYSIS_ONLY)
   target_link_libraries(kathttp PRIVATE log)
 endif()
+if(ANDROID)
+  # NDK r27 defaults to 4 KB ELF load-segment alignment.  Android 15 devices
+  # can use 16 KB pages, where an unaligned libkathttp.so fails to load.
+  # Keep both linker options explicit so the AAR is compatible regardless of
+  # whether this CMake project is invoked through Gradle or directly.
+  target_link_options(kathttp PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384")
+endif()
 if(KATHTTP_SANITIZE AND NOT ANDROID)
   target_compile_options(kathttp PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_link_options(kathttp PRIVATE -fsanitize=address,undefined)
