@@ -48,6 +48,21 @@ typedef enum {
   KATHTTP_TRUST_CUSTOM_CA = 2,          /* PEM bundle at ca_cert_file */
 } kathttp_trust_mode;
 
+/* A single resolved candidate address, as returned by a custom resolver. */
+typedef struct kathttp_resolved_address {
+  char ip[64];   /* textual IPv4 or IPv6 */
+  uint16_t port;
+  int family;    /* AF_INET / AF_INET6 */
+} kathttp_resolved_address;
+
+/* Custom name-resolution hook. `out` must be filled with up to *out_count
+ * entries and *out_count updated to the count written (0 on failure).
+ * Returns 0 on success. */
+typedef int (*kathttp_resolve_cb)(const char *host, uint16_t port,
+                                  void *userdata,
+                                  kathttp_resolved_address *out,
+                                  size_t *out_count);
+
 /* Client construction options. Always initialize with
  * kathttp_client_options_init() so struct_size/abi_version are set. */
 typedef struct kathttp_client_options {
@@ -70,6 +85,13 @@ typedef struct kathttp_client_options {
   uint32_t trust_mode;      /* kathttp_trust_mode; default PLATFORM */
   const char *keylog_file;  /* NULL = disabled */
   uint32_t quic_version;    /* 0 = let ngtcp2 negotiate */
+
+  /* Custom DNS resolver hook. When non-null it overrides the built-in
+   * getaddrinfo resolution (this is how a DNS-over-HTTPS / custom resolver is
+   * plugged in). The callback fills `out` with up to *out_count candidate
+   * addresses and sets *out_count to the number written; return 0 on success. */
+  kathttp_resolve_cb resolve_cb;
+  void *resolve_cb_userdata; /* opaque, passed to resolve_cb */
 } kathttp_client_options;
 
 KATHTTP_API uint32_t kathttp_api_version(void);

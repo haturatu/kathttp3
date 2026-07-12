@@ -367,7 +367,9 @@ bool QuicClient::prepare_endpoints() {
       endpoints_.push_back({a.first, a.second, family});
     }
   } else {
-    endpoints_ = resolver_->resolve(origin_.host, origin_.port ? origin_.port : default_port(origin_.scheme));
+    endpoints_ = resolver_->resolve(
+        origin_.host, origin_.port ? origin_.port : default_port(origin_.scheme),
+        &stop_);
   }
   return !endpoints_.empty();
 }

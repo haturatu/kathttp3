@@ -28,7 +28,26 @@ int case_eq(const std::string &a, const char *b) {
 }  // namespace
 
 Engine::Engine(const kathttp_client_options &opt) : opt_(opt) {
-  resolver_ = std::make_shared<GetAddrInfoResolver>();
+  if (opt.resolve_cb) {
+    kathttp_resolve_cb cb = opt.resolve_cb;
+    void *ud = opt.resolve_cb_userdata;
+    resolver_ = std::make_shared<CallbackResolver>(
+        [cb, ud](const std::string &host, uint16_t port,
+                 const std::atomic<bool> *) {
+          std::vector<ResolvedEndpoint> out;
+          std::vector<kathttp_resolved_address> buf(64);
+          size_t n = buf.size();
+          int rc = cb(host.c_str(), port, ud, buf.data(), &n);
+          if (rc != 0) return out;
+          out.reserve(n);
+          for (size_t i = 0; i < n; ++i)
+            out.push_back(
+                {std::string(buf[i].ip), buf[i].port, buf[i].family});
+          return out;
+        });
+  } else {
+    resolver_ = std::make_shared<GetAddrInfoResolver>();
+  }
   if (!tls_ctx_.init(
           static_cast<kathttp_trust_mode>(opt_.trust_mode),
           opt_.insecure_cert != 0,
