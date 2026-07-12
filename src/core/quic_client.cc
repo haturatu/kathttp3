@@ -612,6 +612,39 @@ void QuicClient::process_wakeup() {
       if (job->cancelled && job->stream_id >= 0) streams.push_back(job->stream_id);
   }
   if (http3_ && http3_->ready()) for (int64_t id : streams) http3_->reset_stream(id);
+
+  // Apply queued streaming receive-window extensions (backpressure ack).
+  std::vector<std::pair<int64_t, size_t>> pending;
+  {
+    std::lock_guard<std::mutex> lk(consume_mutex_);
+    pending.swap(pending_consumes_);
+  }
+  if (conn_ && !pending.empty()) {
+    for (auto &kv : pending) {
+      ngtcp2_conn_extend_max_stream_offset(conn_, kv.first, kv.second);
+      ngtcp2_conn_extend_max_offset(conn_, kv.second);
+    }
+  }
+}
+
+void QuicClient::consume(int64_t request_id, size_t bytes) {
+  if (bytes == 0) return;
+  int64_t stream_id = -1;
+  {
+    std::lock_guard<std::mutex> lk(job_mutex_);
+    for (auto &job : active_jobs_) {
+      if (job->id == request_id) {
+        stream_id = job->stream_id;
+        break;
+      }
+    }
+  }
+  if (stream_id < 0) return;
+  {
+    std::lock_guard<std::mutex> lk(consume_mutex_);
+    pending_consumes_.emplace_back(stream_id, bytes);
+  }
+  wakeup();
 }
 
 void QuicClient::try_submit_pending() {

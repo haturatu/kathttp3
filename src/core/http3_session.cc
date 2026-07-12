@@ -58,12 +58,19 @@ int end_headers_cb(nghttp3_conn *, int64_t stream_id, int /*fin*/,
 }
 
 int recv_data_cb(nghttp3_conn *, int64_t stream_id, const uint8_t *data,
-                  size_t len, void *conn_user_data, void * /*stream_user_data*/) {
+                   size_t len, void *conn_user_data, void * /*stream_user_data*/) {
   auto *c = static_cast<Http3Session *>(conn_user_data);
   auto *job = c->find_job(stream_id);
-  if (job) c->client()->notify_job_body(job, data, len);
-  ngtcp2_conn_extend_max_stream_offset(c->client()->conn(), stream_id, len);
-  ngtcp2_conn_extend_max_offset(c->client()->conn(), len);
+  if (!job) return 0;
+  c->client()->notify_job_body(job, data, len);
+  // Streaming (Flow) requests apply HTTP/3 receive flow-control: the window
+  // is extended only as the application consumes chunks (via consume()),
+  // so a slow consumer exerts backpressure on the peer. Buffered requests
+  // extend immediately.
+  if (!job->streaming) {
+    ngtcp2_conn_extend_max_stream_offset(c->client()->conn(), stream_id, len);
+    ngtcp2_conn_extend_max_offset(c->client()->conn(), len);
+  }
   return 0;
 }
 
@@ -83,7 +90,14 @@ int stream_close_cb(nghttp3_conn *, int64_t stream_id, uint64_t app_error_code,
   auto *c = static_cast<Http3Session *>(conn_user_data);
   auto *job = c->find_job(stream_id);
   if (job && !job->completed) {
-    c->client()->notify_job_error(job, KATHTTP_ERR_HTTP3);
+    int err = KATHTTP_ERR_HTTP3;
+    // The stream ended without end_stream while a Content-Length was promised:
+    // treat as a truncated/length-mismatched body.
+    if (job->declared_content_length >= 0 &&
+        job->received_body_bytes < static_cast<uint64_t>(job->declared_content_length)) {
+      err = KATHTTP_ERR_BODY;
+    }
+    c->client()->notify_job_error(job, err);
   }
   c->unmap_stream(stream_id);
   return 0;

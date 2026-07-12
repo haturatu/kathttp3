@@ -45,18 +45,19 @@ RedirectDecision RedirectPolicy::evaluate(const std::string &method,
       to.path = to.path.substr(0, q);
     }
   }
+  // Refuse downgrades to plaintext (Kathttp is HTTPS-only).
+  if (to.scheme != "https") return d;
   if (!to.valid()) return d;
 
-  // 303 => GET. 307/308 keep the method. 301/302 keep the method per spec
-  // (browsers historically switch to GET, but we follow the strict reading).
-  if (resp.status_code == 303) {
+  // 301/302/303 switch to GET (dropping the body); 307/308 preserve method.
+  if (resp.status_code == 301 || resp.status_code == 302 ||
+      resp.status_code == 303) {
     d.new_method = "GET";
   } else {
     d.new_method = method;
   }
 
-  d.new_url = to.scheme + "://" + to.authority() + to.request_target();
-  // Re-parse to populate the full Url for the caller if needed.
+  d.new_url = to.to_string();
   d.follow = true;
   return d;
 }

@@ -38,6 +38,7 @@ typedef enum {
   KATHTTP_ERR_INVALID_ARG = -11,
   KATHTTP_ERR_NOMEM = -12,
   KATHTTP_ERR_CLOSED = -13, /* client destroyed while request in flight */
+  KATHTTP_ERR_BODY = -14,   /* response body length mismatch / truncation */
 } kathttp_error;
 
 /* How the peer certificate is verified. Default is PLATFORM. */
@@ -172,6 +173,7 @@ KATHTTP_API int kathttp_request_add_header(kathttp_request *request, const char 
 KATHTTP_API int kathttp_request_set_body(kathttp_request *request, const uint8_t *data,
                              size_t len);
 KATHTTP_API void kathttp_request_set_follow_redirects(kathttp_request *request, int enable);
+KATHTTP_API void kathttp_request_set_streaming(kathttp_request *request, int enable);
 
 /* Pre-resolved address (IPv4/IPv6 string). When one or more addresses
  * are supplied the engine skips its own DNS resolution and races them
@@ -191,6 +193,12 @@ KATHTTP_API void kathttp_client_execute(kathttp_client *client, kathttp_request 
  * has already completed, this is a no-op. If still in flight, the
  * engine will stop delivering further events for `request_id`. */
 KATHTTP_API void kathttp_client_cancel(kathttp_client *client, int64_t request_id);
+
+/* Streaming flow-control: acknowledge that `bytes` of a streamed response
+ * body have been consumed by the application. Extends the HTTP/3 receive
+ * window so the peer can send more. Safe to call from any thread. */
+KATHTTP_API void kathttp_client_consume(kathttp_client *client, int64_t request_id,
+                            size_t bytes);
 
 #ifdef __cplusplus
 }

@@ -43,6 +43,11 @@ struct Job {
   bool saw_headers = false;
   size_t body_sent = 0;  /* request body bytes already offered to nghttp3 */
   int redirect_count = 0;
+  /* Response body length accounting for Content-Length validation. */
+  int64_t declared_content_length = -1; /* from Content-Length header, or -1 */
+  uint64_t received_body_bytes = 0;     /* running total of BODY bytes */
+  bool streaming = false;               /* streaming (Flow) request: apply
+                                           HTTP/3 receive flow-control */
   ~Job() { delete request; }
 };
 
@@ -92,6 +97,11 @@ public:
 
   void set_wakeup_fd(int fd);
 
+  /* Streaming flow-control: record that `bytes` of a streamed response body
+   * were consumed by the application; the window extension is applied on the
+   * worker thread. Looks up the job's stream id from `request_id`. */
+  void consume(int64_t request_id, size_t bytes);
+
   /* Invoked by ngtcp2/nghttp3 C callbacks (defined as free functions in
    * quic_client.cc / http3_session.cc). Public so those callbacks can reach
    * them without friendship gymnastics. */
@@ -120,6 +130,11 @@ private:
   void drain_wakeup();
   void on_readable();
   void process_wakeup();
+
+  /* Pending HTTP/3 receive-window extensions (streaming backpressure),
+   * drained on the worker thread. Pair = (stream_id, bytes). */
+  std::mutex consume_mutex_;
+  std::vector<std::pair<int64_t, size_t>> pending_consumes_;
 
   void fail_all_pending(int err);
   void wakeup();

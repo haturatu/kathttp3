@@ -50,8 +50,12 @@ int kathttp_request_set_body(kathttp_request *request, const uint8_t *data,
 }
 
 void kathttp_request_set_follow_redirects(kathttp_request *request,
-                                          int enable) {
+                                           int enable) {
   if (request) request->follow_redirects = enable ? 1 : 0;
+}
+
+void kathttp_request_set_streaming(kathttp_request *request, int enable) {
+  if (request) request->streaming = enable ? 1 : 0;
 }
 
 int kathttp_request_add_address(kathttp_request *request, const char *ip,

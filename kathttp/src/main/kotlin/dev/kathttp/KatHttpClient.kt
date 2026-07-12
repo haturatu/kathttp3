@@ -6,6 +6,7 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.receiveAsFlow
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
@@ -35,7 +36,7 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
         val callback = BufferedCallback(id, continuation)
         active += id
         continuation.invokeOnCancellation { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle, id) }; active.remove(id) }
-        val ok = synchronized(nativeLock) { if (closed.get()) false else NativeBridge.execute(handle, id, request.method, request.url, request.headers.map { it.name }.toTypedArray(), request.headers.map { it.value }.toTypedArray(), request.body, config.followRedirects, callback) }
+        val ok = synchronized(nativeLock) { if (closed.get()) false else NativeBridge.execute(handle, id, request.method, request.url, request.headers.map { it.name }.toTypedArray(), request.headers.map { it.value }.toTypedArray(), request.body, config.followRedirects, false, callback) }
         if (!ok) callback.fail(KathttpException.Native(-7))
     }
 
@@ -43,17 +44,36 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
         check(!closed.get()) { "Client is closed" }
         val id = ids.getAndIncrement()
         val channel = Channel<KatHttpStreamEvent>(capacity = 8)
-        val call = KatHttpCall(channel.receiveAsFlow()) { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle, id) } }
+        val stashLock = Any()
+        val stash = ArrayDeque<ByteArray>()
+        val call = KatHttpCall(channel.receiveAsFlow()
+            .onEach {
+                if (it is KatHttpStreamEvent.Body) {
+                    // Refill the channel from the stash (space just freed), extending
+                    // the receive window for each chunk the app is about to consume.
+                    val drained = synchronized(stashLock) { val l = stash.toList(); stash.clear(); l }
+                    for (s in drained) {
+                        if (channel.trySend(KatHttpStreamEvent.Body(s)).isSuccess) {
+                            NativeBridge.consume(handle, id, s.size.toLong())
+                        } else {
+                            synchronized(stashLock) { stash.addFirst(s) }
+                            break
+                        }
+                    }
+                    NativeBridge.consume(handle, id, it.bytes.size.toLong())
+                }
+            }
+        ) { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle, id) } }
         val terminal = AtomicBoolean(false)
         val callback = object : NativeCallback {
             override fun onHeaders(status: Int, names: Array<String>, values: Array<String>) { if (!channel.trySend(KatHttpStreamEvent.Headers(status, names.indices.map { KatHttpHeader(names[it], values[it]) })).isSuccess) cancel() }
-            override fun onBody(data: ByteArray) { if (!channel.trySend(KatHttpStreamEvent.Body(data)).isSuccess) cancel() }
+            override fun onBody(data: ByteArray) { if (!channel.trySend(KatHttpStreamEvent.Body(data)).isSuccess) synchronized(stashLock) { stash.addLast(data) } }
             override fun onComplete() { if (terminal.compareAndSet(false,true)) { active.remove(id); channel.close() } }
             override fun onError(code: Int) { if (terminal.compareAndSet(false,true)) { active.remove(id); channel.close(mapError(code)) } }
             fun cancel() { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle,id) }; onError(-6) }
         }
         active += id
-        if (!synchronized(nativeLock) { if (closed.get()) false else NativeBridge.execute(handle,id,request.method,request.url,request.headers.map{it.name}.toTypedArray(),request.headers.map{it.value}.toTypedArray(),request.body,config.followRedirects,callback) }) callback.onError(-7)
+        if (!synchronized(nativeLock) { if (closed.get()) false else NativeBridge.execute(handle,id,request.method,request.url,request.headers.map{it.name}.toTypedArray(),request.headers.map{it.value}.toTypedArray(),request.body,config.followRedirects,true,callback) }) callback.onError(-7)
         return call
     }
 

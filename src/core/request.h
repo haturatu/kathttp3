@@ -16,6 +16,9 @@ struct kathttp_request {
   kathttp::HeaderList headers;
   std::vector<uint8_t> body;
   int follow_redirects = 1;
+  int streaming = 0;        /* 1 = streaming (Flow) request: apply HTTP/3
+                              receive flow-control (window extended only as
+                              the application consumes body chunks) */
   /* Optional pre-resolved endpoints (IPv4/IPv6 string + port). When
    * non-empty the engine skips its own DNS resolver and races these. */
   std::vector<std::pair<std::string, uint16_t>> addresses;

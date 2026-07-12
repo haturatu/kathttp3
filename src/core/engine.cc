@@ -11,6 +11,7 @@
 
 #include "cert_verifier.h"
 #include "cookie_jar.h"
+#include "redirect.h"
 #include "header_list.h"
 #include "log.h"
 #include "request.h"
@@ -24,6 +25,20 @@ constexpr int kDefaultMaxRedirects = 10;
 
 int case_eq(const std::string &a, const char *b) {
   return strcasecmp(a.c_str(), b) == 0;
+}
+
+/* Parse the first non-negative integer found in a header value (e.g. the
+ * leading number of a "Content-Length: 1234" field, ignoring junk/weight). */
+bool parse_leading_uint(std::string_view s, uint64_t &out) {
+  size_t i = 0;
+  while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
+  if (i >= s.size() || s[i] < '0' || s[i] > '9') return false;
+  uint64_t v = 0;
+  for (; i < s.size() && s[i] >= '0' && s[i] <= '9'; ++i) {
+    v = v * 10 + static_cast<uint64_t>(s[i] - '0');
+  }
+  out = v;
+  return true;
 }
 }  // namespace
 
@@ -114,6 +129,7 @@ void Engine::execute(kathttp_request *req, int64_t request_id,
   job->id = request_id;
   job->request = req;
   job->url = url;
+  job->streaming = req->streaming != 0;
 
   QuicClient *c = get_or_create_client(url);
   {
@@ -121,6 +137,17 @@ void Engine::execute(kathttp_request *req, int64_t request_id,
     registry_[request_id] = ReqEntry{cb, user_data, c, false, false, 0};
   }
   c->submit_job(std::move(job));
+}
+
+void Engine::consume(int64_t request_id, size_t bytes) {
+  QuicClient *c = nullptr;
+  {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = registry_.find(request_id);
+    if (it == registry_.end()) return;
+    c = it->second.client;
+  }
+  if (c) c->consume(request_id, bytes);
 }
 
 void Engine::cancel(int64_t request_id) {
@@ -187,64 +214,85 @@ void Engine::destroy() {
 
 void Engine::on_job_headers(Job *job, int status, const HeaderList &headers) {
   // Redirect handling (RFC 9114 allows 3xx to be followed).
-  if (status / 100 == 3 && status != 304 && job->request->follow_redirects &&
-      job->redirect_count < kDefaultMaxRedirects) {
-    std::string location;
-    for (const auto &h : headers.list()) {
-      if (case_eq(h.name, "location")) {
-        location = h.value;
-        break;
-      }
-    }
-    Url new_url;
-    if (!location.empty() && parse_url(location, new_url) &&
-        new_url.valid()) {
-      store_cookies(job->url, headers);
-      // Mark the current hop so its own completion is ignored.
-      job->redirected = true;
+  if (status / 100 == 3 && status != 304 && job->request->follow_redirects) {
+    Response tmp;
+    tmp.status_code = status;
+    tmp.headers = headers;
+    RedirectPolicy policy;
+    RedirectDecision dec = policy.evaluate(job->request->method, job->url, tmp,
+                                           true,
+                                           kDefaultMaxRedirects - job->redirect_count);
+    if (dec.follow && !dec.new_url.empty()) {
+      Url new_url;
+      if (parse_url(dec.new_url, new_url) && new_url.valid()) {
+        store_cookies(job->url, headers);
+        // Mark the current hop so its own completion is ignored.
+        job->redirected = true;
 
-      auto *nr = new kathttp_request;
-      nr->method = (status == 303) ? std::string("GET") : job->request->method;
-      nr->url = new_url.to_string();
-      if (nr->method == "GET" || nr->method == "HEAD") {
-        nr->body.clear();
-      } else {
-        nr->body = job->request->body;
-      }
-      nr->follow_redirects = 1;
-
-      add_cookie_header(nr, new_url);
-
-      auto njob = std::make_unique<Job>();
-      njob->id = job->id;
-      njob->request = nr;
-      njob->url = new_url;
-      njob->redirect_count = job->redirect_count + 1;
-
-      QuicClient *nc = get_or_create_client(new_url);
-      {
-        std::lock_guard<std::mutex> lk(mtx_);
-        auto it = registry_.find(job->id);
-        if (it != registry_.end()) {
-          it->second.client = nc;
-          it->second.redirect_count = njob->redirect_count;
+        auto *nr = new kathttp_request;
+        nr->method = dec.new_method;
+        nr->url = new_url.to_string();
+        if (nr->method == "GET" || nr->method == "HEAD") {
+          nr->body.clear();
+        } else {
+          nr->body = job->request->body;
         }
+        nr->follow_redirects = 1;
+
+        add_cookie_header(nr, new_url);
+
+        auto njob = std::make_unique<Job>();
+        njob->id = job->id;
+        njob->request = nr;
+        njob->url = new_url;
+        njob->redirect_count = job->redirect_count + 1;
+
+        QuicClient *nc = get_or_create_client(new_url);
+        {
+          std::lock_guard<std::mutex> lk(mtx_);
+          auto it = registry_.find(job->id);
+          if (it != registry_.end()) {
+            it->second.client = nc;
+            it->second.redirect_count = njob->redirect_count;
+          }
+        }
+        nc->submit_job(std::move(njob));
+        return;
       }
-      nc->submit_job(std::move(njob));
-      return;
     }
   }
 
   store_cookies(job->url, headers);
+  // Record declared Content-Length for later body-length validation.
+  std::string_view cl = headers.get("content-length");
+  if (!cl.empty()) {
+    uint64_t v = 0;
+    if (parse_leading_uint(cl, v)) job->declared_content_length = static_cast<int64_t>(v);
+  }
   dispatch_headers(job, status, headers);
 }
 
 void Engine::on_job_body(Job *job, const uint8_t *data, size_t len) {
+  job->received_body_bytes += len;
   dispatch_body(job, data, len);
 }
 
 void Engine::on_job_complete(Job *job) {
   if (job->redirected) return;  // intermediate redirect hop
+  if (job->declared_content_length >= 0) {
+    int st = job->response.status_code;
+    bool exempt = (job->request->method == "HEAD") || st == 204 || st == 304 ||
+                  (st / 100 == 1);
+    if (!exempt &&
+        job->received_body_bytes != static_cast<uint64_t>(job->declared_content_length)) {
+      kathttp_event ev{};
+      ev.type = KATHTTP_EVENT_ERROR;
+      ev.request_id = job->id;
+      ev.error_code = KATHTTP_ERR_BODY;
+      deliver(ev);
+      return;
+    }
+  }
   dispatch_complete(job);
 }
 
@@ -413,6 +461,14 @@ void kathttp_client_cancel(kathttp_client *client, int64_t request_id) {
   if (!client) return;
   try { reinterpret_cast<kathttp::Engine *>(client)->cancel(request_id); }
   catch (...) {}
+}
+
+void kathttp_client_consume(kathttp_client *client, int64_t request_id,
+                            size_t bytes) {
+  if (!client) return;
+  try {
+    reinterpret_cast<kathttp::Engine *>(client)->consume(request_id, bytes);
+  } catch (...) {}
 }
 
 }  /* extern "C" */
