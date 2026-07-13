@@ -19,7 +19,7 @@ private const val HTTP3_TEST_ORIGIN = "https://nghttp2.org/httpbin"
 val HTTP_METHODS = listOf("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD")
 private val BODY_METHODS = setOf("POST", "PUT", "PATCH", "DELETE")
 
-/** A complete request which can be sent immediately to the public HTTP/3 test service. */
+/** Editable URL, headers, and body values used as the sample's method presets. */
 data class RequestPreset(val url: String, val headers: String, val body: String)
 
 fun requestPreset(method: String): RequestPreset = when (method) {
