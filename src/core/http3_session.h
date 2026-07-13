@@ -5,6 +5,7 @@
 #include <ngtcp2/ngtcp2.h>
 
 #include <cstdint>
+#include <cstddef>
 #include <unordered_map>
 
 #include "quic_client.h"
@@ -29,6 +30,7 @@ class Http3Session {
                           bool fin, ngtcp2_tstamp ts);
     bool acked_stream_data_offset(int64_t stream_id, uint64_t datalen);
     bool extend_max_stream_data(int64_t stream_id, uint64_t max_data);
+    bool deferred_consume(int64_t stream_id, size_t consumed);
     bool on_stream_close(int64_t stream_id, uint64_t app_error_code);
     bool on_stream_reset(int64_t stream_id);
     bool on_stream_stop_sending(int64_t stream_id);

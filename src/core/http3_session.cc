@@ -118,6 +118,15 @@ int recv_data_cb(nghttp3_conn*, int64_t stream_id, const uint8_t* data, size_t l
     return 0;
 }
 
+// nghttp3 can defer consumption of HTTP/3 wire bytes while synchronizing
+// QPACK state between streams. These bytes are not payload delivered through
+// recv_data_cb, but they still consume QUIC stream and connection credit.
+int deferred_consume_cb(nghttp3_conn*, int64_t stream_id, size_t consumed, void* conn_user_data,
+                        void* /*stream_user_data*/) {
+    auto* c = static_cast<Http3Session*>(conn_user_data);
+    return c->deferred_consume(stream_id, consumed) ? 0 : NGHTTP3_ERR_CALLBACK_FAILURE;
+}
+
 int end_stream_cb(nghttp3_conn*, int64_t stream_id, void* conn_user_data,
                   void* /*stream_user_data*/) {
     auto* c = static_cast<Http3Session*>(conn_user_data);
@@ -238,7 +247,7 @@ constexpr nghttp3_callbacks kH3Callbacks = {
     .acked_stream_data = acked_stream_data_cb,
     .stream_close = stream_close_cb,
     .recv_data = recv_data_cb,
-    .deferred_consume = nullptr,
+    .deferred_consume = deferred_consume_cb,
     .begin_headers = begin_headers_cb,
     .recv_header = recv_header_cb,
     .end_headers = end_headers_cb,
@@ -448,6 +457,17 @@ bool Http3Session::acked_stream_data_offset(int64_t stream_id, uint64_t n) {
 }
 
 bool Http3Session::extend_max_stream_data(int64_t, uint64_t) {
+    return true;
+}
+
+bool Http3Session::deferred_consume(int64_t stream_id, size_t consumed) {
+    if (!conn_ || consumed == 0) return true;
+    const int rv = ngtcp2_conn_extend_max_stream_offset(conn_, stream_id, consumed);
+    if (rv != 0) {
+        KATHTTP3_LOG_ERR("ngtcp2_conn_extend_max_stream_offset: %s\n", ngtcp2_strerror(rv));
+        return false;
+    }
+    ngtcp2_conn_extend_max_offset(conn_, consumed);
     return true;
 }
 
