@@ -11,6 +11,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 
 #include "engine.h"
@@ -281,7 +282,7 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
       dns_timeout_ms_(dns_timeout_ms ? dns_timeout_ms : connect_timeout_ms),
       handshake_timeout_ms_(handshake_timeout_ms ? handshake_timeout_ms : connect_timeout_ms),
       response_headers_timeout_ms_(response_headers_timeout_ms ? response_headers_timeout_ms
-                                                                : request_timeout_ms),
+                                                               : request_timeout_ms),
       read_timeout_ms_(read_timeout_ms ? read_timeout_ms : idle_timeout_ms),
       write_timeout_ms_(write_timeout_ms ? write_timeout_ms : idle_timeout_ms),
       call_timeout_ms_(call_timeout_ms ? call_timeout_ms : request_timeout_ms),
@@ -345,24 +346,72 @@ void QuicClient::cancel_job(int64_t job_id) {
 }
 
 bool QuicClient::prepare_endpoints() {
-    std::lock_guard<std::mutex> lk(job_mutex_);
-    if (pending_jobs_.empty()) return false;
+    struct ResolutionResult {
+        std::mutex mutex;
+        std::condition_variable ready;
+        bool complete = false;
+        std::vector<ResolvedEndpoint> endpoints;
+    };
+
+    std::vector<std::pair<std::string, uint16_t>> supplied_addresses;
+    {
+        std::lock_guard<std::mutex> lock(job_mutex_);
+        if (pending_jobs_.empty()) return false;
+        supplied_addresses = pending_jobs_.front()->request->addresses;
+    }
     const uint64_t started = now_ns();
-    const auto* req = pending_jobs_.front()->request;
-    if (!req->addresses.empty()) {
-        for (const auto& a : req->addresses) {
+    if (!supplied_addresses.empty()) {
+        for (const auto& a : supplied_addresses) {
             int family = a.first.find(':') == std::string::npos ? AF_INET : AF_INET6;
             endpoints_.push_back({a.first, a.second, family});
         }
     } else {
-        endpoints_ = resolver_->resolve(
-            origin_.host, origin_.port ? origin_.port : default_port(origin_.scheme), &stop_);
+        auto result = std::make_shared<ResolutionResult>();
+        auto cancelled = std::make_shared<std::atomic<bool>>(false);
+        if (!resolve_async(resolver_, origin_.host,
+                           origin_.port ? origin_.port : default_port(origin_.scheme), cancelled,
+                           [result](std::vector<ResolvedEndpoint> endpoints) {
+                               std::lock_guard<std::mutex> lock(result->mutex);
+                               result->endpoints = std::move(endpoints);
+                               result->complete = true;
+                               result->ready.notify_one();
+                           })) {
+            terminal_error_ = KATHTTP_ERR_DNS;
+            return false;
+        }
+
+        // This connection worker waits only for its asynchronous resolver;
+        // getaddrinfo itself is always executed by the bounded DNS pool.
+        // Wake at short intervals so cancellation, close and DNS deadlines
+        // do not depend on a resolver implementation cooperating promptly.
+        std::unique_lock<std::mutex> lock(result->mutex);
+        while (!result->complete) {
+            if (stop_.load(std::memory_order_acquire) || !has_live_pending_job()) {
+                cancelled->store(true, std::memory_order_release);
+                return false;
+            }
+            if (dns_timeout_ms_ != 0 &&
+                now_ns() - started >= dns_timeout_ms_ * NGTCP2_MILLISECONDS) {
+                cancelled->store(true, std::memory_order_release);
+                terminal_error_ = KATHTTP_ERR_DNS_TIMEOUT;
+                return false;
+            }
+            result->ready.wait_for(lock, std::chrono::milliseconds(10));
+        }
+        endpoints_ = std::move(result->endpoints);
     }
     if (dns_timeout_ms_ != 0 && now_ns() - started >= dns_timeout_ms_ * NGTCP2_MILLISECONDS) {
         endpoints_.clear();
         terminal_error_ = KATHTTP_ERR_DNS_TIMEOUT;
     }
     return !endpoints_.empty();
+}
+
+bool QuicClient::has_live_pending_job() {
+    std::lock_guard<std::mutex> lock(job_mutex_);
+    for (const auto& job : pending_jobs_)
+        if (!job->cancelled) return true;
+    return false;
 }
 
 bool QuicClient::connect_to_endpoint() {
@@ -674,10 +723,6 @@ int QuicClient::consume(int64_t request_id, size_t bytes) {
     int64_t stream_id = -1;
     {
         std::lock_guard<std::mutex> lk(job_mutex_);
-        for (auto& job : pending_jobs_) {
-            job->cancelled = true;
-            rejected.push_back(job.get());
-        }
         for (auto& job : active_jobs_) {
             if (job->id == request_id) {
                 if (job->cancelled || job->completed || bytes > job->delivered_unconsumed_bytes) {

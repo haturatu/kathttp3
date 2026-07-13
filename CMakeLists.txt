@@ -130,9 +130,10 @@ if(KATHTTP_BUILD_TESTS AND NOT ANDROID)
   enable_testing()
   add_executable(kathttp_core_tests tests/core/core_tests.cc
     src/core/url.cc src/core/header_list.cc src/core/redirect.cc
-    src/core/cookie_jar.cc)
+    src/core/cookie_jar.cc src/core/dns.cc)
   target_include_directories(kathttp_core_tests PRIVATE src/core)
   target_compile_options(kathttp_core_tests PRIVATE -Wall -Wextra -Wpedantic)
+  target_link_libraries(kathttp_core_tests PRIVATE pthread)
   if(KATHTTP_SANITIZE)
     target_compile_options(kathttp_core_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(kathttp_core_tests PRIVATE -fsanitize=address,undefined)

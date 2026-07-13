@@ -1,7 +1,15 @@
+#include <sys/socket.h>
+
+#include <atomic>
 #include <cassert>
+#include <chrono>
+#include <condition_variable>
 #include <iostream>
+#include <memory>
+#include <mutex>
 
 #include "cookie_jar.h"
+#include "dns.h"
 #include "header_list.h"
 #include "redirect.h"
 #include "url.h"
@@ -31,5 +39,31 @@ int main() {
     jar.store(from, set);
     const auto cookie = jar.cookie_header(from);
     assert(cookie == "a=b");
+
+    // Resolver work is deliberately dispatched off the QUIC worker.  The
+    // callback receives owned values, and cancellation suppresses delivery.
+    auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    std::mutex dns_mutex;
+    std::condition_variable dns_ready;
+    bool dns_done = false;
+    std::vector<ResolvedEndpoint> endpoints;
+    auto resolver = std::make_shared<CallbackResolver>(
+        [](const std::string&, uint16_t port, const std::atomic<bool>*) {
+            return std::vector<ResolvedEndpoint>{{"2001:db8::1", port, AF_INET6},
+                                                 {"192.0.2.1", port, AF_INET}};
+        });
+    const bool scheduled = resolve_async(resolver, "example.test", 443, cancelled,
+                                         [&](std::vector<ResolvedEndpoint> result) {
+                                             std::lock_guard<std::mutex> lock(dns_mutex);
+                                             endpoints = std::move(result);
+                                             dns_done = true;
+                                             dns_ready.notify_one();
+                                         });
+    assert(scheduled);
+    {
+        std::unique_lock<std::mutex> lock(dns_mutex);
+        assert(dns_ready.wait_for(lock, std::chrono::seconds(1), [&] { return dns_done; }));
+    }
+    assert(endpoints.size() == 2 && endpoints.front().family == AF_INET6);
     std::cout << "core tests passed\n";
 }

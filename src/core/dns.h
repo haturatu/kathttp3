@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,14 @@ class CallbackResolver : public Resolver {
    private:
     Fn fn_;
 };
+
+/* Submit resolution to KatHttp's bounded DNS worker pool.  The callback runs
+ * on a DNS worker, therefore it must not touch a QuicClient directly.  The
+ * caller owns its result state and can discard it by setting `cancelled`.
+ * Returning false means that the bounded queue is full. */
+using DnsResolveCallback = std::function<void(std::vector<ResolvedEndpoint>)>;
+bool resolve_async(std::shared_ptr<Resolver> resolver, std::string host, uint16_t port,
+                   std::shared_ptr<std::atomic<bool>> cancelled, DnsResolveCallback callback);
 
 } /* namespace kathttp */
 

@@ -241,7 +241,11 @@ The worker drives `ngtcp2_conn_get_expiry2`/`ngtcp2_conn_handle_expiry` with mon
   asynchronous resolver work in a future release.
 - Graceful GOAWAY draining, response Content-Length validation, trailer exposure, strict response-field validation and robust packet send backpressure are incomplete.
 - Streaming uses a bounded JNI-to-Kotlin channel but native QUIC flow-control credit is currently returned on callback delivery, not downstream Flow consumption.
-- DNS uses blocking `getaddrinfo`; it enumerates IPv6/IPv4 candidates sequentially but does not implement timed Happy Eyeballs or cancellable resolution.
+- DNS lookups run in a bounded two-thread resolver pool rather than on a QUIC
+  worker. Cancellation and DNS deadlines discard late results. IPv6 and IPv4
+  records are interleaved in RFC 8305 order; connection attempts are still
+  sequential, so fully parallel, timed Happy Eyeballs racing is not yet
+  provided.
 - Redirect handling is partial; cross-origin sensitive-header policy needs further hardening. The cookie jar is intentionally minimal and has no public-suffix database.
 - The cache implementation is disconnected and experimental because it is not a compliant HTTP cache.
 - 0-RTT is disabled by default and session resumption persistence is not complete.

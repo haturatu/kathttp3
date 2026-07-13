@@ -96,7 +96,9 @@ class QuicClient {
     bool is_closed() const {
         return closed_.load();
     }
-    bool is_draining() const { return state_.load() == ConnectionState::Draining; }
+    bool is_draining() const {
+        return state_.load() == ConnectionState::Draining;
+    }
 
     /* Human-readable BoringSSL/OpenSSL error queue (clears it). */
     const std::string& lastTlsError() const {
@@ -154,6 +156,7 @@ class QuicClient {
 
    private:
     bool prepare_endpoints();
+    bool has_live_pending_job();
     bool connect_to_endpoint();
     bool setup_connection();
     void run();
