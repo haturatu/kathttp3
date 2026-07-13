@@ -59,7 +59,7 @@ else()
 endif()
 
 set(KATHTTP_CORE_SOURCES
-  src/core/cache.cc src/core/cookie_jar.cc src/core/dns.cc
+  src/core/cookie_jar.cc src/core/dns.cc
   src/core/engine.cc src/core/header_list.cc src/core/http3_session.cc
   src/core/quic_client.cc src/core/redirect.cc src/core/request.cc
   src/core/tls.cc src/core/cert_verifier.cc
