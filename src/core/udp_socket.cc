@@ -208,21 +208,28 @@ ssize_t UdpSocket::send_now_gso(const uint8_t* data, size_t len, uint16_t segmen
 #endif
 }
 
-ssize_t UdpSocket::send(const uint8_t* data, size_t len, unsigned int ecn) {
-    ssize_t n = send_now(data, len, ecn);
-    if (n == static_cast<ssize_t>(len)) return n;
+ssize_t UdpSocket::send(UdpSendDatagram datagram) {
+    if (!datagram.data || datagram.size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    const unsigned int ecn = datagram.ecn;
+    ssize_t n = send_now(datagram.data, datagram.size, ecn);
+    if (n == static_cast<ssize_t>(datagram.size)) return n;
     if (n >= 0) {
         errno = EIO;
         return -1;
     }
     if (errno != EAGAIN && errno != EWOULDBLOCK && errno != ENOBUFS) return -1;
-    if (send_queue_.size() >= kMaxQueuedPackets || queued_bytes_ + len > kMaxQueuedBytes) {
+    if (send_queue_.size() >= kMaxQueuedPackets ||
+        queued_bytes_ + datagram.size > kMaxQueuedBytes) {
         errno = ENOBUFS;
         return -1;
     }
-    send_queue_.push_back({std::vector<uint8_t>(data, data + len), ecn});
-    queued_bytes_ += len;
-    return static_cast<ssize_t>(len);
+    send_queue_.push_back(
+        {std::vector<uint8_t>(datagram.data, datagram.data + datagram.size), ecn});
+    queued_bytes_ += datagram.size;
+    return static_cast<ssize_t>(datagram.size);
 }
 
 bool UdpSocket::flush_send_queue() {
@@ -274,16 +281,19 @@ bool UdpSocket::flush_send_queue() {
     return true;
 }
 
-ssize_t UdpSocket::recv(uint8_t* buf, size_t buflen, sockaddr_storage& from, socklen_t& fromlen,
-                        unsigned int& ecn) {
+ssize_t UdpSocket::recv(UdpReceiveDatagram& datagram) {
     if (fd_ == -1) return -1;
-    fromlen = sizeof(from);
+    if (!datagram.data || datagram.capacity == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    datagram.peer_length = sizeof(datagram.peer);
     msghdr msg{};
     iovec iov{};
-    iov.iov_base = buf;
-    iov.iov_len = buflen;
-    msg.msg_name = &from;
-    msg.msg_namelen = fromlen;
+    iov.iov_base = datagram.data;
+    iov.iov_len = datagram.capacity;
+    msg.msg_name = &datagram.peer;
+    msg.msg_namelen = datagram.peer_length;
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
 
@@ -292,15 +302,15 @@ ssize_t UdpSocket::recv(uint8_t* buf, size_t buflen, sockaddr_storage& from, soc
     msg.msg_controllen = sizeof(ctrl);
 
     ssize_t n = ::recvmsg(fd_, &msg, 0);
-    ecn = 0;
+    datagram.ecn = 0;
     if (n <= 0) return n;
-    fromlen = msg.msg_namelen;
+    datagram.peer_length = msg.msg_namelen;
     for (auto* cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
         if (family_ == AF_INET && cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_TOS) {
-            ecn = static_cast<unsigned int>(*reinterpret_cast<int*>(CMSG_DATA(cm)));
+            datagram.ecn = static_cast<uint8_t>(*reinterpret_cast<int*>(CMSG_DATA(cm)));
         } else if (family_ == AF_INET6 && cm->cmsg_level == IPPROTO_IPV6 &&
                    cm->cmsg_type == IPV6_TCLASS) {
-            ecn = static_cast<unsigned int>(*reinterpret_cast<int*>(CMSG_DATA(cm)));
+            datagram.ecn = static_cast<uint8_t>(*reinterpret_cast<int*>(CMSG_DATA(cm)));
         }
     }
     return n;

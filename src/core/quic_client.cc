@@ -511,30 +511,23 @@ constexpr ngtcp2_callbacks kCandidateCallbacks = {
 }  // namespace
 
 QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& origin,
-                       std::shared_ptr<Resolver> resolver, bool enable_0rtt,
-                       uint64_t connect_timeout_ms, uint64_t request_timeout_ms,
-                       uint64_t idle_timeout_ms, uint64_t dns_timeout_ms,
-                       uint64_t handshake_timeout_ms, uint64_t response_headers_timeout_ms,
-                       uint64_t read_timeout_ms, uint64_t write_timeout_ms,
-                       uint64_t call_timeout_ms, uint32_t quic_version,
-                       std::string qlog_path_prefix)
+                       std::shared_ptr<Resolver> resolver, bool enable_0rtt, QuicTimeouts timeouts,
+                       uint32_t quic_version, std::string qlog_path_prefix)
     : engine_(engine),
       tls_ctx_(tls_ctx),
       origin_(origin),
       resolver_(std::move(resolver)),
       enable_0rtt_(enable_0rtt),
-      connect_timeout_ms_(connect_timeout_ms),
-      request_timeout_ms_(request_timeout_ms),
-      idle_timeout_ms_(idle_timeout_ms),
-      dns_timeout_ms_(dns_timeout_ms ? dns_timeout_ms : connect_timeout_ms),
-      handshake_timeout_ms_(handshake_timeout_ms ? handshake_timeout_ms : connect_timeout_ms),
-      response_headers_timeout_ms_(response_headers_timeout_ms ? response_headers_timeout_ms
-                                                               : request_timeout_ms),
-      read_timeout_ms_(read_timeout_ms ? read_timeout_ms : idle_timeout_ms),
-      write_timeout_ms_(write_timeout_ms ? write_timeout_ms : idle_timeout_ms),
-      call_timeout_ms_(call_timeout_ms ? call_timeout_ms : request_timeout_ms),
+      timeouts_(timeouts),
       quic_version_(quic_version),
       qlog_path_prefix_(std::move(qlog_path_prefix)) {
+    timeouts_.dns_ms = timeouts_.dns_ms ? timeouts_.dns_ms : timeouts_.connect_ms;
+    timeouts_.handshake_ms = timeouts_.handshake_ms ? timeouts_.handshake_ms : timeouts_.connect_ms;
+    timeouts_.response_headers_ms =
+        timeouts_.response_headers_ms ? timeouts_.response_headers_ms : timeouts_.request_ms;
+    timeouts_.read_ms = timeouts_.read_ms ? timeouts_.read_ms : timeouts_.idle_ms;
+    timeouts_.write_ms = timeouts_.write_ms ? timeouts_.write_ms : timeouts_.idle_ms;
+    timeouts_.call_ms = timeouts_.call_ms ? timeouts_.call_ms : timeouts_.request_ms;
     conn_ref_.get_conn = get_conn_cb;
     conn_ref_.user_data = this;
     wakeup_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -677,8 +670,8 @@ bool QuicClient::prepare_endpoints() {
                 cancelled->store(true, std::memory_order_release);
                 return false;
             }
-            if (dns_timeout_ms_ != 0 &&
-                now_ns() - started >= dns_timeout_ms_ * NGTCP2_MILLISECONDS) {
+            if (timeouts_.dns_ms != 0 &&
+                now_ns() - started >= timeouts_.dns_ms * NGTCP2_MILLISECONDS) {
                 cancelled->store(true, std::memory_order_release);
                 terminal_error_ = KATHTTP3_ERR_DNS_TIMEOUT;
                 return false;
@@ -687,7 +680,7 @@ bool QuicClient::prepare_endpoints() {
         }
         endpoints_ = std::move(result->endpoints);
     }
-    if (dns_timeout_ms_ != 0 && now_ns() - started >= dns_timeout_ms_ * NGTCP2_MILLISECONDS) {
+    if (timeouts_.dns_ms != 0 && now_ns() - started >= timeouts_.dns_ms * NGTCP2_MILLISECONDS) {
         endpoints_.clear();
         terminal_error_ = KATHTTP3_ERR_DNS_TIMEOUT;
     }
@@ -755,7 +748,7 @@ bool QuicClient::setup_connection() {
     ngtcp2_settings settings;
     ngtcp2_settings_default(&settings);
     settings.initial_ts = now_ns();
-    settings.handshake_timeout = handshake_timeout_ms_ * NGTCP2_MILLISECONDS;
+    settings.handshake_timeout = timeouts_.handshake_ms * NGTCP2_MILLISECONDS;
     // PMTUD is deliberately enabled. ngtcp2 uses its safe built-in probe
     // sequence unless a future platform-specific policy supplies probes.
     settings.no_pmtud = 0;
@@ -770,7 +763,7 @@ bool QuicClient::setup_connection() {
     configure_receive_windows(&params);
     params.initial_max_streams_bidi = 16;
     params.initial_max_streams_uni = 3;
-    params.max_idle_timeout = idle_timeout_ms_ * NGTCP2_MILLISECONDS;
+    params.max_idle_timeout = timeouts_.idle_ms * NGTCP2_MILLISECONDS;
     params.active_connection_id_limit = 4;
 
     // path: point ngtcp2 at our persistent address storage, then copy the
@@ -848,7 +841,7 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
     ngtcp2_settings_default(&settings);
     candidate->started_at = now_ns();
     settings.initial_ts = candidate->started_at;
-    settings.handshake_timeout = handshake_timeout_ms_ * NGTCP2_MILLISECONDS;
+    settings.handshake_timeout = timeouts_.handshake_ms * NGTCP2_MILLISECONDS;
     settings.no_pmtud = 0;
     if (candidate->qlog_fd != -1) settings.qlog_write = candidate_qlog_write_cb;
 
@@ -857,7 +850,7 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
     configure_receive_windows(&params);
     params.initial_max_streams_bidi = 16;
     params.initial_max_streams_uni = 3;
-    params.max_idle_timeout = idle_timeout_ms_ * NGTCP2_MILLISECONDS;
+    params.max_idle_timeout = timeouts_.idle_ms * NGTCP2_MILLISECONDS;
     params.active_connection_id_limit = 4;
 
     candidate->path.local.addr = reinterpret_cast<ngtcp2_sockaddr*>(&candidate->local_addr);
@@ -1036,7 +1029,7 @@ bool QuicClient::run_handshake_race() {
             if (n == NGTCP2_ERR_WRITE_MORE) continue;
             if (n < 0) return false;
             if (n == 0) return true;
-            if (candidate.sock.send(packet, static_cast<size_t>(n), info.ecn) < 0) return false;
+            if (candidate.sock.send({packet, static_cast<size_t>(n), info.ecn}) < 0) return false;
         }
     };
 
@@ -1060,8 +1053,8 @@ bool QuicClient::run_handshake_race() {
         if (winner_index != kNoHandshakeRaceWinner) {
             return adopt_handshake_winner(*handshake_candidates_[winner_index]);
         }
-        if (connect_timeout_ms_ != 0 &&
-            now - connection_started_at_ >= connect_timeout_ms_ * NGTCP2_MILLISECONDS) {
+        if (timeouts_.connect_ms != 0 &&
+            now - connection_started_at_ >= timeouts_.connect_ms * NGTCP2_MILLISECONDS) {
             terminal_error_ = KATHTTP3_ERR_CONNECT_TIMEOUT;
             return false;
         }
@@ -1095,13 +1088,11 @@ bool QuicClient::run_handshake_race() {
             if (fds[i].revents & POLLIN) {
                 for (int packets = 0; packets < 16; ++packets) {
                     uint8_t packet[NGTCP2_MAX_PKTLEN];
-                    sockaddr_storage from{};
-                    socklen_t fromlen = sizeof(from);
-                    unsigned int ecn = 0;
-                    ssize_t n = candidate.sock.recv(packet, sizeof(packet), from, fromlen, ecn);
+                    UdpReceiveDatagram datagram{packet, sizeof(packet)};
+                    ssize_t n = candidate.sock.recv(datagram);
                     if (n <= 0) break;
                     ngtcp2_pkt_info info{};
-                    info.ecn = static_cast<uint8_t>(ecn);
+                    info.ecn = datagram.ecn;
                     if (ngtcp2_conn_read_pkt_versioned(
                             candidate.conn, &candidate.path, NGTCP2_PKT_INFO_VERSION, &info, packet,
                             static_cast<size_t>(n), progressed_at) != 0) {
@@ -1120,9 +1111,9 @@ bool QuicClient::run_handshake_race() {
             }
             if (!candidate.failed && !write_candidate(candidate, progressed_at))
                 candidate.failed = true;
-            if (!candidate.failed && handshake_timeout_ms_ != 0 &&
+            if (!candidate.failed && timeouts_.handshake_ms != 0 &&
                 progressed_at - candidate.started_at >=
-                    handshake_timeout_ms_ * NGTCP2_MILLISECONDS) {
+                    timeouts_.handshake_ms * NGTCP2_MILLISECONDS) {
                 candidate.failed = true;
                 terminal_error_ = KATHTTP3_ERR_HANDSHAKE_TIMEOUT;
             }
@@ -1180,8 +1171,8 @@ void QuicClient::run() {
     }
 
     while (endpoint_idx_ < endpoints_.size() && !stop_ && !handshake_confirmed_) {
-        if (connect_timeout_ms_ != 0 &&
-            now_ns() - connection_started_at_ >= connect_timeout_ms_ * NGTCP2_MILLISECONDS) {
+        if (timeouts_.connect_ms != 0 &&
+            now_ns() - connection_started_at_ >= timeouts_.connect_ms * NGTCP2_MILLISECONDS) {
             terminal_error_ = KATHTTP3_ERR_CONNECT_TIMEOUT;
             break;
         }
@@ -1228,15 +1219,12 @@ int QuicClient::event_loop() {
     uint8_t pkt[NGTCP2_MAX_PKTLEN];
     uint8_t h3pkt[NGTCP2_MAX_PKTLEN];
     (void)h3pkt;
-    sockaddr_storage from{};
-    socklen_t fromlen = sizeof(from);
-    unsigned int ecn = 0;
     last_active_ = now_ns();
 
     while (!stop_) {
         uint64_t now = now_ns();
-        if (!handshake_confirmed_.load() && handshake_timeout_ms_ != 0 &&
-            now - handshake_started_at_ >= handshake_timeout_ms_ * NGTCP2_MILLISECONDS) {
+        if (!handshake_confirmed_.load() && timeouts_.handshake_ms != 0 &&
+            now - handshake_started_at_ >= timeouts_.handshake_ms * NGTCP2_MILLISECONDS) {
             terminal_error_ = KATHTTP3_ERR_HANDSHAKE_TIMEOUT;
             return -1;
         }
@@ -1259,10 +1247,11 @@ int QuicClient::event_loop() {
         }
         if (pfds[0].revents & POLLIN) {
             for (int i = 0; i < 16; ++i) {
-                ssize_t n = sock_.recv(pkt, sizeof(pkt), from, fromlen, ecn);
+                UdpReceiveDatagram datagram{pkt, sizeof(pkt)};
+                ssize_t n = sock_.recv(datagram);
                 if (n <= 0) break;
                 ngtcp2_pkt_info pi{};
-                pi.ecn = ecn;
+                pi.ecn = datagram.ecn;
                 int rv = ngtcp2_conn_read_pkt_versioned(
                     conn_, const_cast<const ngtcp2_path*>(&path_), NGTCP2_PKT_INFO_VERSION, &pi,
                     pkt, static_cast<size_t>(n), now);
@@ -1306,23 +1295,23 @@ void QuicClient::expire_requests(uint64_t now) {
             for (auto& job : jobs) {
                 if (job->cancelled || job->submitted_at == 0) continue;
                 int error = KATHTTP3_OK;
-                if (call_timeout_ms_ != 0 &&
-                    now - job->submitted_at >= call_timeout_ms_ * NGTCP2_MILLISECONDS) {
+                if (timeouts_.call_ms != 0 &&
+                    now - job->submitted_at >= timeouts_.call_ms * NGTCP2_MILLISECONDS) {
                     error = KATHTTP3_ERR_CALL_TIMEOUT;
                 } else if (job->stream_id >= 0 && !job->saw_headers &&
-                           response_headers_timeout_ms_ != 0 &&
+                           timeouts_.response_headers_ms != 0 &&
                            now - job->submitted_at >=
-                               response_headers_timeout_ms_ * NGTCP2_MILLISECONDS) {
+                               timeouts_.response_headers_ms * NGTCP2_MILLISECONDS) {
                     error = KATHTTP3_ERR_RESPONSE_HEADERS_TIMEOUT;
                 } else if (job->saw_headers && job->last_read_progress_at != 0 &&
-                           read_timeout_ms_ != 0 &&
+                           timeouts_.read_ms != 0 &&
                            now - job->last_read_progress_at >=
-                               read_timeout_ms_ * NGTCP2_MILLISECONDS) {
+                               timeouts_.read_ms * NGTCP2_MILLISECONDS) {
                     error = KATHTTP3_ERR_READ_TIMEOUT;
                 } else if (job->request && job->body_sent < job->request->body.size() &&
-                           job->last_write_progress_at != 0 && write_timeout_ms_ != 0 &&
+                           job->last_write_progress_at != 0 && timeouts_.write_ms != 0 &&
                            now - job->last_write_progress_at >=
-                               write_timeout_ms_ * NGTCP2_MILLISECONDS) {
+                               timeouts_.write_ms * NGTCP2_MILLISECONDS) {
                     error = KATHTTP3_ERR_WRITE_TIMEOUT;
                 }
                 if (error != KATHTTP3_OK) {
@@ -1391,7 +1380,7 @@ void QuicClient::write_pending() {
             return;
         }
         if (n == 0) break;
-        sock_.send(pkt, static_cast<size_t>(n), pi.ecn);
+        sock_.send({pkt, static_cast<size_t>(n), pi.ecn});
         bytes_sent_in_quantum_ += static_cast<size_t>(n);
         sent_packet_in_quantum_ = true;
         if (send_quantum_exhausted()) break;

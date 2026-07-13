@@ -444,9 +444,9 @@ void Http3Session::pump_write(ngtcp2_tstamp ts) {
 bool Http3Session::recv_stream_data(uint32_t, int64_t stream_id, const uint8_t* data, size_t len,
                                     bool fin, ngtcp2_tstamp ts) {
     if (!httpconn_) return false;
-    int rv = nghttp3_conn_read_stream(httpconn_, stream_id, data, len, fin ? 1 : 0);
+    const nghttp3_ssize rv = nghttp3_conn_read_stream(httpconn_, stream_id, data, len, fin ? 1 : 0);
     if (rv < 0) {
-        KATHTTP3_LOG_ERR("nghttp3_conn_read_stream: %s\n", nghttp3_strerror(rv));
+        KATHTTP3_LOG_ERR("nghttp3_conn_read_stream: %s\n", nghttp3_strerror(static_cast<int>(rv)));
         return false;
     }
     Job* job = find_job(stream_id);

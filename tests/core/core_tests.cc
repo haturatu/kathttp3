@@ -108,7 +108,7 @@ int main() {
     assert(!can_fail_over_before_request_commit(true, true, false));
     assert(!can_fail_over_before_request_commit(true, false, true));
 
-    DnsCache cache(1, 1000, 1000);
+    DnsCache cache({.max_entries = 1, .positive_ttl_ms = 1000, .negative_ttl_ms = 1000});
     cache.put_success("one.test", 443, 1, endpoints);
     std::vector<ResolvedEndpoint> cached;
     const bool positive_cache_hit = cache.lookup("one.test", 443, 1, cached);

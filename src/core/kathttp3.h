@@ -149,6 +149,7 @@ typedef struct kathttp3_request kathttp3_request;
  *    APIs that mutate shared state while running.
  * ------------------------------------------------------------------ */
 typedef enum kathttp3_event_type {
+    KATHTTP3_EVENT_NONE = 0,     /* zero-initialized event; never delivered */
     KATHTTP3_EVENT_HEADERS = 1,  /* status_code + names/values/header_count */
     KATHTTP3_EVENT_BODY = 2,     /* data + data_len (may be called 0..n times) */
     KATHTTP3_EVENT_COMPLETE = 3, /* success; error_code == 0 */

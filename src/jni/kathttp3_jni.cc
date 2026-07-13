@@ -11,6 +11,7 @@
 #include "android_cert_verifier.h"
 #include "cert_verifier.h"
 #include "kathttp3.h"
+#include "log.h"
 
 namespace {
 JavaVM* g_vm = nullptr;
@@ -279,6 +280,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp3_internal_NativeBridge_creat
             g_handles.insert(p);
             if (rctx) g_resolvers[p] = rctx;
         } catch (...) {
+            KATHTTP3_LOG_ERR("NativeBridge.createClient failed while registering native handle\n");
             if (rctx) {
                 free_resolver_ctx(env, rctx);
                 g_resolvers.erase(p);

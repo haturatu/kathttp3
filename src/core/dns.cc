@@ -117,10 +117,12 @@ uint64_t monotonic_ms() {
 }
 }  // namespace
 
-DnsCache::DnsCache(size_t max_entries, uint64_t positive_ttl_ms, uint64_t negative_ttl_ms)
-    : max_entries_(std::max<size_t>(1, max_entries)),
-      positive_ttl_ms_(positive_ttl_ms),
-      negative_ttl_ms_(negative_ttl_ms) {}
+DnsCache::DnsCache() : DnsCache(Config{}) {}
+
+DnsCache::DnsCache(Config config)
+    : max_entries_(std::max<size_t>(1, config.max_entries)),
+      positive_ttl_ms_(config.positive_ttl_ms),
+      negative_ttl_ms_(config.negative_ttl_ms) {}
 
 std::string DnsCache::key(const std::string& host, uint16_t port,
                           uint64_t network_generation) const {
@@ -149,18 +151,17 @@ bool DnsCache::lookup(const std::string& host, uint16_t port, uint64_t network_g
 void DnsCache::put_success(const std::string& host, uint16_t port, uint64_t network_generation,
                            const std::vector<ResolvedEndpoint>& endpoints) {
     if (endpoints.empty()) return put_failure(host, port, network_generation);
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto cache_key = key(host, port, network_generation);
-    entries_.remove_if([&](const Entry& entry) { return entry.key == cache_key; });
-    entries_.push_front({cache_key, monotonic_ms() + positive_ttl_ms_, false, endpoints});
-    while (entries_.size() > max_entries_) entries_.pop_back();
+    put({key(host, port, network_generation), monotonic_ms() + positive_ttl_ms_, false, endpoints});
 }
 
 void DnsCache::put_failure(const std::string& host, uint16_t port, uint64_t network_generation) {
+    put({key(host, port, network_generation), monotonic_ms() + negative_ttl_ms_, true, {}});
+}
+
+void DnsCache::put(Entry entry) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto cache_key = key(host, port, network_generation);
-    entries_.remove_if([&](const Entry& entry) { return entry.key == cache_key; });
-    entries_.push_front({cache_key, monotonic_ms() + negative_ttl_ms_, true, {}});
+    entries_.remove_if([&](const Entry& existing) { return existing.key == entry.key; });
+    entries_.push_front(std::move(entry));
     while (entries_.size() > max_entries_) entries_.pop_back();
 }
 

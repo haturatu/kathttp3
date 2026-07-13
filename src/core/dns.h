@@ -57,8 +57,14 @@ class GetAddrInfoResolver : public Resolver {
  * Certificate and protocol failures must never be inserted here. */
 class DnsCache {
    public:
-    explicit DnsCache(size_t max_entries = 128, uint64_t positive_ttl_ms = 30000,
-                      uint64_t negative_ttl_ms = 2000);
+    struct Config {
+        size_t max_entries = 128;
+        uint64_t positive_ttl_ms = 30000;
+        uint64_t negative_ttl_ms = 2000;
+    };
+
+    DnsCache();
+    explicit DnsCache(Config config);
     bool lookup(const std::string& host, uint16_t port, uint64_t network_generation,
                 std::vector<ResolvedEndpoint>& endpoints);
     void put_success(const std::string& host, uint16_t port, uint64_t network_generation,
@@ -74,6 +80,7 @@ class DnsCache {
         std::vector<ResolvedEndpoint> endpoints;
     };
     std::string key(const std::string& host, uint16_t port, uint64_t network_generation) const;
+    void put(Entry entry);
     size_t max_entries_;
     uint64_t positive_ttl_ms_;
     uint64_t negative_ttl_ms_;

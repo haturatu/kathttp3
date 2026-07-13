@@ -1,9 +1,11 @@
 #include "request.h"
 
 #include <cstring>
+#include <exception>
 #include <new>
 
 #include "kathttp3.h"
+#include "log.h"
 
 namespace {
 bool valid_header(const char* name, const char* value) {
@@ -16,6 +18,16 @@ bool valid_header(const char* name, const char* value) {
     return std::strcmp(name, "connection") != 0 && std::strcmp(name, "proxy-connection") != 0 &&
            std::strcmp(name, "transfer-encoding") != 0 && std::strcmp(name, "upgrade") != 0 &&
            std::strcmp(name, "host") != 0;
+}
+
+void log_request_exception(const char* operation) noexcept {
+    try {
+        throw;
+    } catch (const std::exception& error) {
+        KATHTTP3_LOG_WARN("%s failed: %s\n", operation, error.what());
+    } catch (...) {
+        KATHTTP3_LOG_WARN("%s failed with a non-standard exception\n", operation);
+    }
 }
 }  // namespace
 
@@ -30,6 +42,7 @@ kathttp3_request* kathttp3_request_create(const char* method, const char* url) {
         r->url = url;
         return r;
     } catch (...) {
+        log_request_exception("kathttp3_request_create");
         delete r;
         return nullptr;
     }
@@ -45,6 +58,7 @@ int kathttp3_request_add_header(kathttp3_request* request, const char* name, con
         request->headers.add(name, value);
         return KATHTTP3_OK;
     } catch (...) {
+        log_request_exception("kathttp3_request_add_header");
         return KATHTTP3_ERR_NOMEM;
     }
 }
@@ -55,6 +69,7 @@ int kathttp3_request_set_body(kathttp3_request* request, const uint8_t* data, si
         try {
             request->body.assign(data, data + len);
         } catch (...) {
+            log_request_exception("kathttp3_request_set_body");
             return KATHTTP3_ERR_NOMEM;
         }
     } else {
@@ -85,6 +100,7 @@ int kathttp3_request_add_address(kathttp3_request* request, const char* ip, uint
         request->addresses.emplace_back(std::string(ip), port);
         return KATHTTP3_OK;
     } catch (...) {
+        log_request_exception("kathttp3_request_add_address");
         return KATHTTP3_ERR_NOMEM;
     }
 }

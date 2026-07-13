@@ -110,11 +110,12 @@ QuicClient* Engine::get_or_create_client(const Url& origin) {
             return it->second.get();
         }
     }
-    auto qc = std::make_unique<QuicClient>(
-        this, tls_ctx_, origin, resolver_, opt_.enable_0rtt != 0, opt_.connect_timeout_ms,
-        opt_.request_timeout_ms, opt_.idle_timeout_ms, opt_.dns_timeout_ms,
-        opt_.handshake_timeout_ms, opt_.response_headers_timeout_ms, opt_.read_timeout_ms,
-        opt_.write_timeout_ms, opt_.call_timeout_ms, opt_.quic_version, qlog_path_prefix_);
+    const QuicTimeouts timeouts{
+        opt_.connect_timeout_ms, opt_.request_timeout_ms,   opt_.idle_timeout_ms,
+        opt_.dns_timeout_ms,     opt_.handshake_timeout_ms, opt_.response_headers_timeout_ms,
+        opt_.read_timeout_ms,    opt_.write_timeout_ms,     opt_.call_timeout_ms};
+    auto qc = std::make_unique<QuicClient>(this, tls_ctx_, origin, resolver_, opt_.enable_0rtt != 0,
+                                           timeouts, opt_.quic_version, qlog_path_prefix_);
     QuicClient* p = qc.get();
     pool_.emplace(key, std::move(qc));
     return p;
@@ -132,6 +133,7 @@ void Engine::execute(kathttp3_request* req, int64_t request_id, kathttp3_event_c
             try {
                 cb(user_data, &ev);
             } catch (...) {
+                KATHTTP3_LOG_WARN("request callback threw while reporting closed client\n");
             }
         }
         delete req;
@@ -499,6 +501,7 @@ kathttp3_client* kathttp3_client_create(const kathttp3_client_options* options) 
         auto* e = new kathttp3::Engine(normalized);
         return reinterpret_cast<kathttp3_client*>(e);
     } catch (...) {
+        KATHTTP3_LOG_ERR("kathttp3_client_create caught a native exception\n");
         return nullptr;
     }
 }
@@ -510,6 +513,7 @@ void kathttp3_client_destroy(kathttp3_client* client) {
         e->destroy();
         delete e;
     } catch (...) {
+        KATHTTP3_LOG_WARN("kathttp3_client_destroy caught a native exception\n");
     }
 }
 
@@ -518,6 +522,7 @@ void kathttp3_client_close(kathttp3_client* client) {
     try {
         reinterpret_cast<kathttp3::Engine*>(client)->destroy();
     } catch (...) {
+        KATHTTP3_LOG_WARN("kathttp3_client_close caught a native exception\n");
     }
 }
 
@@ -527,6 +532,7 @@ void kathttp3_client_set_origin_policy(kathttp3_client* client, const char* poli
         reinterpret_cast<kathttp3::Engine*>(client)->set_origin_policy(policy_tag ? policy_tag
                                                                                   : "");
     } catch (...) {
+        KATHTTP3_LOG_WARN("kathttp3_client_set_origin_policy caught a native exception\n");
     }
 }
 
@@ -535,6 +541,7 @@ void kathttp3_client_network_changed(kathttp3_client* client, uint64_t generatio
     try {
         reinterpret_cast<kathttp3::Engine*>(client)->network_changed(generation);
     } catch (...) {
+        KATHTTP3_LOG_WARN("kathttp3_client_network_changed caught a native exception\n");
     }
 }
 
@@ -547,6 +554,7 @@ void kathttp3_client_execute(kathttp3_client* client, kathttp3_request* request,
     try {
         reinterpret_cast<kathttp3::Engine*>(client)->execute(request, request_id, cb, user_data);
     } catch (...) {
+        KATHTTP3_LOG_ERR("kathttp3_client_execute caught a native exception; reporting OOM\n");
         kathttp3_event ev{};
         ev.type = KATHTTP3_EVENT_ERROR;
         ev.request_id = request_id;
@@ -561,6 +569,7 @@ void kathttp3_client_cancel(kathttp3_client* client, int64_t request_id) {
     try {
         reinterpret_cast<kathttp3::Engine*>(client)->cancel(request_id);
     } catch (...) {
+        KATHTTP3_LOG_WARN("kathttp3_client_cancel caught a native exception\n");
     }
 }
 
@@ -569,6 +578,7 @@ void kathttp3_client_consume(kathttp3_client* client, int64_t request_id, size_t
     try {
         (void)reinterpret_cast<kathttp3::Engine*>(client)->consume(request_id, bytes);
     } catch (...) {
+        KATHTTP3_LOG_WARN("kathttp3_client_consume caught a native exception\n");
     }
 }
 
@@ -579,6 +589,8 @@ kathttp3_error kathttp3_client_consume_body(kathttp3_client* client, int64_t req
         return static_cast<kathttp3_error>(
             reinterpret_cast<kathttp3::Engine*>(client)->consume(request_id, bytes));
     } catch (...) {
+        KATHTTP3_LOG_WARN(
+            "kathttp3_client_consume_body caught a native exception; reporting closed\n");
         return KATHTTP3_ERR_CLOSED;
     }
 }
@@ -591,6 +603,8 @@ kathttp3_error kathttp3_client_request_body_append(kathttp3_client* client, int6
             reinterpret_cast<kathttp3::Engine*>(client)->append_request_body(request_id, data, len,
                                                                              finished != 0));
     } catch (...) {
+        KATHTTP3_LOG_WARN(
+            "kathttp3_client_request_body_append caught a native exception; reporting OOM\n");
         return KATHTTP3_ERR_NOMEM;
     }
 }

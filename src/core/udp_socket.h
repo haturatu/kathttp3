@@ -12,6 +12,20 @@
 
 namespace kathttp3 {
 
+struct UdpSendDatagram {
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+    uint8_t ecn = 0;
+};
+
+struct UdpReceiveDatagram {
+    uint8_t* data = nullptr;
+    size_t capacity = 0;
+    sockaddr_storage peer{};
+    socklen_t peer_length = sizeof(peer);
+    uint8_t ecn = 0;
+};
+
 /* Non-blocking UDP socket used by a QUIC connection. Optionally connected
  * to a single peer so send()/recv() can be used, with ECN support. */
 class UdpSocket {
@@ -42,7 +56,7 @@ class UdpSocket {
 
     /* Send a datagram. `ecn` is the explicit congestion notification byte
      * (0, 1, 2, 3). Returns bytes sent or -1 on error. */
-    ssize_t send(const uint8_t* data, size_t len, unsigned int ecn);
+    ssize_t send(UdpSendDatagram datagram);
     bool flush_send_queue();
     bool wants_write() const {
         return !send_queue_.empty();
@@ -50,8 +64,7 @@ class UdpSocket {
 
     /* Receive one datagram into buf. Fills `from` (sockaddr storage),
      * `fromlen` and `ecn`. Returns bytes received or -1. */
-    ssize_t recv(uint8_t* buf, size_t buflen, sockaddr_storage& from, socklen_t& fromlen,
-                 unsigned int& ecn);
+    ssize_t recv(UdpReceiveDatagram& datagram);
 
    private:
     ssize_t send_now(const uint8_t* data, size_t len, unsigned int ecn);

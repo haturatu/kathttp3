@@ -31,7 +31,19 @@ class Engine;
 class Http3Session;
 struct HandshakeCandidate;
 
-enum class ConnectionState { Connecting, Active, Draining, Closing, Closed };
+enum class ConnectionState { None = 0, Connecting, Active, Draining, Closing, Closed };
+
+struct QuicTimeouts {
+    uint64_t connect_ms = 0;
+    uint64_t request_ms = 0;
+    uint64_t idle_ms = 0;
+    uint64_t dns_ms = 0;
+    uint64_t handshake_ms = 0;
+    uint64_t response_headers_ms = 0;
+    uint64_t read_ms = 0;
+    uint64_t write_ms = 0;
+    uint64_t call_ms = 0;
+};
 
 /* One HTTP/3 request/response exchange multiplexed over a QuicClient. */
 struct Job {
@@ -84,10 +96,7 @@ struct Job {
 class QuicClient {
    public:
     QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& origin,
-               std::shared_ptr<Resolver> resolver, bool enable_0rtt, uint64_t connect_timeout_ms,
-               uint64_t request_timeout_ms, uint64_t idle_timeout_ms, uint64_t dns_timeout_ms,
-               uint64_t handshake_timeout_ms, uint64_t response_headers_timeout_ms,
-               uint64_t read_timeout_ms, uint64_t write_timeout_ms, uint64_t call_timeout_ms,
+               std::shared_ptr<Resolver> resolver, bool enable_0rtt, QuicTimeouts timeouts,
                uint32_t quic_version, std::string qlog_path_prefix);
     ~QuicClient();
 
@@ -131,7 +140,7 @@ class QuicClient {
         return path_;
     }
     void send_packet(const uint8_t* data, size_t len) {
-        sock_.send(data, len, 0);
+        sock_.send({data, len, 0});
         bytes_sent_in_quantum_ += len;
         sent_packet_in_quantum_ = true;
     }
@@ -220,15 +229,7 @@ class QuicClient {
     Url origin_;
     std::shared_ptr<Resolver> resolver_;
     bool enable_0rtt_;
-    uint64_t connect_timeout_ms_;
-    uint64_t request_timeout_ms_;
-    uint64_t idle_timeout_ms_;
-    uint64_t dns_timeout_ms_;
-    uint64_t handshake_timeout_ms_;
-    uint64_t response_headers_timeout_ms_;
-    uint64_t read_timeout_ms_;
-    uint64_t write_timeout_ms_;
-    uint64_t call_timeout_ms_;
+    QuicTimeouts timeouts_;
     uint32_t quic_version_;
     std::string qlog_path_prefix_;
     int qlog_fd_ = -1;
