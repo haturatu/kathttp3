@@ -285,9 +285,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp_internal_NativeBridge_create
 extern "C" JNIEXPORT void JNICALL Java_dev_kathttp_internal_NativeBridge_closeClient(JNIEnv*,
                                                                                      jobject,
                                                                                      jlong h) {
-    std::lock_guard<std::mutex> lock(g_handles_mutex);
-    auto* p = reinterpret_cast<kathttp_client*>(static_cast<uintptr_t>(h));
-    if (g_handles.count(p)) kathttp_client_close(p);
+    if (auto* p = checked(h)) kathttp_client_close(p);
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_kathttp_internal_NativeBridge_destroyClient(JNIEnv* env,
                                                                                        jobject,
@@ -303,20 +301,18 @@ extern "C" JNIEXPORT void JNICALL Java_dev_kathttp_internal_NativeBridge_destroy
             g_resolvers.erase(it);
         }
     }
-    if (rctx) free_resolver_ctx(env, rctx);
     kathttp_client_destroy(p);
+    // destroy joins all native workers before releasing resolver global refs;
+    // a resolver callback can otherwise observe freed JNI state.
+    if (rctx) free_resolver_ctx(env, rctx);
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_kathttp_internal_NativeBridge_cancel(JNIEnv*, jobject,
                                                                                 jlong h, jlong id) {
-    std::lock_guard<std::mutex> lock(g_handles_mutex);
-    auto* p = reinterpret_cast<kathttp_client*>(static_cast<uintptr_t>(h));
-    if (g_handles.count(p)) kathttp_client_cancel(p, id);
+    if (auto* p = checked(h)) kathttp_client_cancel(p, id);
 }
 extern "C" JNIEXPORT void JNICALL
 Java_dev_kathttp_internal_NativeBridge_networkChanged(JNIEnv*, jobject, jlong h, jlong generation) {
-    std::lock_guard<std::mutex> lock(g_handles_mutex);
-    auto* p = reinterpret_cast<kathttp_client*>(static_cast<uintptr_t>(h));
-    if (g_handles.count(p) && generation > 0)
+    if (auto* p = checked(h); p && generation > 0)
         kathttp_client_network_changed(p, static_cast<uint64_t>(generation));
 }
 
@@ -324,9 +320,8 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp_internal_NativeBridge_exe
     JNIEnv* env, jobject, jlong h, jlong id, jstring method, jstring url, jobjectArray names,
     jobjectArray values, jbyteArray body, jboolean redirects, jboolean streaming,
     jobject callback) {
-    std::lock_guard<std::mutex> handle_lock(g_handles_mutex);
-    auto* client = reinterpret_cast<kathttp_client*>(static_cast<uintptr_t>(h));
-    if (!g_handles.count(client) || !method || !url || !callback) return JNI_FALSE;
+    auto* client = checked(h);
+    if (!client || !method || !url || !callback) return JNI_FALSE;
     const char* m = env->GetStringUTFChars(method, nullptr);
     const char* u = env->GetStringUTFChars(url, nullptr);
     kathttp_request* req = kathttp_request_create(m, u);
@@ -382,9 +377,8 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp_internal_NativeBridge_exe
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_dev_kathttp_internal_NativeBridge_consume(JNIEnv*, jobject, jlong h, jlong id, jlong bytes) {
-    std::lock_guard<std::mutex> handle_lock(g_handles_mutex);
-    auto* client = reinterpret_cast<kathttp_client*>(static_cast<uintptr_t>(h));
-    if (!g_handles.count(client) || bytes < 0) return JNI_FALSE;
+    auto* client = checked(h);
+    if (!client || bytes < 0) return JNI_FALSE;
     return kathttp_client_consume_body(client, id, static_cast<size_t>(bytes)) == KATHTTP_OK
                ? JNI_TRUE
                : JNI_FALSE;
