@@ -512,6 +512,21 @@ void QuicClient::submit_job(std::unique_ptr<Job> job) {
     wakeup();
 }
 
+void QuicClient::update_keep_alive() {
+    if (!conn_) return;
+    bool active = false;
+    {
+        std::lock_guard<std::mutex> lock(job_mutex_);
+        active = !active_jobs_.empty();
+    }
+    const auto* peer = ngtcp2_conn_get_remote_transport_params(conn_);
+    if (!active || !peer || peer->max_idle_timeout == 0) {
+        ngtcp2_conn_set_keep_alive_timeout(conn_, UINT64_MAX);
+        return;
+    }
+    ngtcp2_conn_set_keep_alive_timeout(conn_, std::max<ngtcp2_duration>(1, peer->max_idle_timeout / 2));
+}
+
 void QuicClient::cancel_job(int64_t job_id) {
     std::lock_guard<std::mutex> lk(job_mutex_);
     for (auto& j : pending_jobs_) {
@@ -1033,6 +1048,7 @@ int QuicClient::event_loop() {
 
         expire_requests(now);
         try_submit_pending();
+        update_keep_alive();
         write_pending();
 
         // Keep the QUIC connection alive so it can be reused for more
@@ -1288,6 +1304,7 @@ bool QuicClient::on_handshake_completed() {
         if (http3_->setup_codec()) {
             http3_ready_ = true;
             try_submit_pending();
+            update_keep_alive();
         }
     }
     return true;
@@ -1319,14 +1336,19 @@ bool QuicClient::on_stream_close(int64_t stream_id, uint64_t app_error_code) {
     if (http3_) http3_->on_stream_close(stream_id, app_error_code);
     // Drop the Job from the active list. Its request object is owned by
     // the unique_ptr, so we must not touch it afterwards.
-    std::lock_guard<std::mutex> lk(job_mutex_);
-    for (auto it = active_jobs_.begin(); it != active_jobs_.end(); ++it) {
-        if ((*it)->stream_id == stream_id) {
-            active_jobs_.erase(it);
-            break;
+    {
+        std::lock_guard<std::mutex> lk(job_mutex_);
+        for (auto it = active_jobs_.begin(); it != active_jobs_.end(); ++it) {
+            if ((*it)->stream_id == stream_id) {
+                active_jobs_.erase(it);
+                break;
+            }
         }
+        if (is_draining() && active_jobs_.empty()) stop_.store(true);
     }
-    if (is_draining() && active_jobs_.empty()) stop_.store(true);
+    // update_keep_alive takes job_mutex_; call it only after the stream has
+    // been removed so an idle reusable connection stops emitting probes.
+    update_keep_alive();
     return true;
 }
 

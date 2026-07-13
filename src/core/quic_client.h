@@ -182,6 +182,7 @@ class QuicClient {
     void on_readable();
     void process_wakeup();
     void expire_requests(uint64_t now);
+    void update_keep_alive();
 
     /* Pending HTTP/3 receive-window extensions (streaming backpressure),
      * drained on the worker thread. Pair = (stream_id, bytes). */
