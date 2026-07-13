@@ -175,6 +175,11 @@ int recv_settings_cb(nghttp3_conn*, const nghttp3_settings*, void* conn_user_dat
     return 0;
 }
 
+int shutdown_cb(nghttp3_conn*, int64_t stream_id, void* conn_user_data) {
+    static_cast<Http3Session*>(conn_user_data)->client()->on_goaway(stream_id);
+    return 0;
+}
+
 nghttp3_ssize data_read_cb(nghttp3_conn*, int64_t stream_id, nghttp3_vec* vec, size_t veccnt,
                            uint32_t* pflags, void* stream_user_data, void* conn_user_data) {
     (void)conn_user_data;
@@ -211,7 +216,7 @@ constexpr nghttp3_callbacks kH3Callbacks = {
     .stop_sending = stop_sending_cb,
     .end_stream = end_stream_cb,
     .reset_stream = reset_stream_cb,
-    .shutdown = nullptr,
+    .shutdown = shutdown_cb,
     .recv_settings = recv_settings_cb,
     .recv_origin = nullptr,
     .end_origin = nullptr,

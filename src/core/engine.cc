@@ -81,7 +81,7 @@ QuicClient* Engine::get_or_create_client(const Url& origin) {
     std::lock_guard<std::mutex> lk(pool_mutex_);
     auto it = pool_.find(key);
     if (it != pool_.end()) {
-        if (it->second->is_closed()) {
+        if (it->second->is_closed() || it->second->is_draining()) {
             it->second.reset();
         } else {
             return it->second.get();

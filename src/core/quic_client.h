@@ -29,6 +29,8 @@ namespace kathttp {
 class Engine;
 class Http3Session;
 
+enum class ConnectionState { Connecting, Active, Draining, Closing, Closed };
+
 /* One HTTP/3 request/response exchange multiplexed over a QuicClient. */
 struct Job {
     int64_t id = 0;
@@ -94,6 +96,7 @@ class QuicClient {
     bool is_closed() const {
         return closed_.load();
     }
+    bool is_draining() const { return state_.load() == ConnectionState::Draining; }
 
     /* Human-readable BoringSSL/OpenSSL error queue (clears it). */
     const std::string& lastTlsError() const {
@@ -144,6 +147,7 @@ class QuicClient {
     bool on_stream_stop_sending(int64_t stream_id, uint64_t app_error_code);
     void generate_reset_token(uint8_t* token, const ngtcp2_cid* cid);
     void on_early_data_rejected();
+    void on_goaway(int64_t stream_id);
     void try_submit_pending();
     void write_pending();
     void note_write_progress(int64_t stream_id);
@@ -189,6 +193,7 @@ class QuicClient {
     std::atomic<bool> closed_{false};
     std::atomic<bool> handshake_confirmed_{false};
     std::atomic<bool> stop_{false};
+    std::atomic<ConnectionState> state_{ConnectionState::Connecting};
 
     UdpSocket sock_;
     int wakeup_fd_ = -1;

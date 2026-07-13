@@ -438,6 +438,7 @@ bool QuicClient::setup_connection() {
     path_ = path;
     http3_ = std::make_unique<Http3Session>(this, conn_);
     handshake_confirmed_.store(false);
+    state_.store(ConnectionState::Connecting);
     return true;
 }
 
@@ -490,6 +491,7 @@ void QuicClient::run() {
     }
     sock_.close();
     closed_.store(true);
+    state_.store(ConnectionState::Closed);
 }
 
 int QuicClient::event_loop() {
@@ -669,6 +671,10 @@ int QuicClient::consume(int64_t request_id, size_t bytes) {
     int64_t stream_id = -1;
     {
         std::lock_guard<std::mutex> lk(job_mutex_);
+        for (auto& job : pending_jobs_) {
+            job->cancelled = true;
+            rejected.push_back(job.get());
+        }
         for (auto& job : active_jobs_) {
             if (job->id == request_id) {
                 if (job->cancelled || job->completed || bytes > job->delivered_unconsumed_bytes) {
@@ -701,6 +707,7 @@ void QuicClient::note_write_progress(int64_t stream_id) {
 }
 
 void QuicClient::try_submit_pending() {
+    if (is_draining()) return;
     if (!http3_ready_ || !http3_ || !http3_->ready()) return;
     // Engine callbacks may synchronously invoke cancel()/close().  Never call
     // them while job_mutex_ is held: that formerly made a failed body request
@@ -741,6 +748,7 @@ void QuicClient::try_submit_pending() {
 void QuicClient::on_handshake_confirmed() {
     handshake_confirmed_.store(true);
     last_active_ = now_ns();
+    state_.store(ConnectionState::Active);
     KATHTTP_LOG_ERR("handshake confirmed\n");
 }
 
@@ -788,7 +796,24 @@ bool QuicClient::on_stream_close(int64_t stream_id, uint64_t app_error_code) {
             break;
         }
     }
+    if (is_draining() && active_jobs_.empty()) stop_.store(true);
     return true;
+}
+
+void QuicClient::on_goaway(int64_t stream_id) {
+    state_.store(ConnectionState::Draining);
+    std::vector<Job*> rejected;
+    {
+        std::lock_guard<std::mutex> lk(job_mutex_);
+        for (auto& job : active_jobs_) {
+            if (stream_id != NGHTTP3_SHUTDOWN_NOTICE_STREAM_ID && job->stream_id >= stream_id) {
+                job->cancelled = true;
+                rejected.push_back(job.get());
+            }
+        }
+    }
+    for (auto* job : rejected) notify_job_error(job, KATHTTP_ERR_HTTP3);
+    wakeup();
 }
 
 bool QuicClient::on_stream_reset(int64_t stream_id, uint64_t app_error_code) {
