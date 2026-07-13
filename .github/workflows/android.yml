@@ -37,6 +37,9 @@ on:
 jobs:
   example:
     runs-on: ubuntu-24.04
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     strategy:
       fail-fast: false
       matrix:
@@ -53,7 +56,6 @@ jobs:
           java-version: "17"
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v6
-      - uses: android-actions/setup-android@v4
       - name: Restore Android SDK packages
         uses: actions/cache@v6
         with:
@@ -65,7 +67,9 @@ jobs:
             /usr/local/lib/android/sdk/build-tools/36.0.0
           key: android-sdk-${{ runner.os }}-api36-ndk27.0.12077973-cmake3.22.1
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973" "cmake;3.22.1"
+        run: >-
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973" "cmake;3.22.1"
       - name: Restore pinned native dependency sources
         uses: actions/cache@v6
         with:
