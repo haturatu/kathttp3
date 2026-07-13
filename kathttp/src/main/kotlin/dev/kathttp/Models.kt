@@ -27,6 +27,9 @@ data class KatHttpClientConfig(
     val caCertificateFile: String? = null,
     val trustMode: TrustMode = TrustMode.PLATFORM,
     val insecureCert: Boolean = false,
+    /** Experimental: enables KatHttp's in-memory cookie jar. It deliberately
+     * has no PSL integration, so it is off by default. */
+    val enableCookies: Boolean = false,
     val expectSuccess: Boolean = false,
     val interceptors: List<HttpInterceptor> = emptyList(),
     val resolver: DnsResolver? = null,

@@ -48,6 +48,13 @@ int main() {
     jar.store(from, set);
     const auto cookie = jar.cookie_header(from);
     assert(cookie == "a=b");
+    jar.store(from, "scoped=yes; Domain=example.com; Path=/a; Secure");
+    assert(jar.cookie_header(from).find("scoped=yes") != std::string::npos);
+    Url other;
+    assert(parse_url("https://evil.example/a", other));
+    assert(jar.cookie_header(other).find("scoped=yes") == std::string::npos);
+    jar.store(from, "scoped=gone; Domain=example.com; Path=/a; Max-Age=0");
+    assert(jar.cookie_header(from).find("scoped=") == std::string::npos);
 
     // Resolver work is deliberately dispatched off the QUIC worker.  The
     // callback receives owned values, and cancellation suppresses delivery.

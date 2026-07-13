@@ -1,6 +1,9 @@
 #include "cookie_jar.h"
 
+#include <arpa/inet.h>
+
 #include <algorithm>
+#include <charconv>
 #include <ctime>
 #include <string>
 
@@ -19,15 +22,26 @@ static std::string_view trim(std::string_view s) {
     return s.substr(b, e - b + 1);
 }
 
-static bool parse_uint(std::string_view s, uint64_t& out) {
-    if (s.empty()) return false;
-    uint64_t v = 0;
-    for (char c : s) {
-        if (c < '0' || c > '9') return false;
-        v = v * 10 + (c - '0');
+static bool valid_cookie_token(std::string_view value) {
+    if (value.empty()) return false;
+    for (char raw : value) {
+        const auto c = static_cast<unsigned char>(raw);
+        if (c <= 0x20 || c == 0x7f || c == ';' || c == ',' || c == '=') return false;
     }
-    out = v;
     return true;
+}
+
+static bool ip_literal(std::string_view host) {
+    std::string h(host);
+    in_addr v4{};
+    in6_addr v6{};
+    return inet_pton(AF_INET, h.c_str(), &v4) == 1 || inet_pton(AF_INET6, h.c_str(), &v6) == 1;
+}
+
+static std::string default_path(const Url& url) {
+    if (url.path.empty() || url.path.front() != '/') return "/";
+    const auto slash = url.path.find_last_of('/');
+    return slash == 0 || slash == std::string::npos ? "/" : url.path.substr(0, slash);
 }
 
 bool CookieJar::domain_matches(std::string_view cookie_domain, bool host_only,
@@ -62,6 +76,8 @@ void CookieJar::store(const Url& url, std::string_view set_cookie) {
     Cookie c;
     c.name = std::string(trim(first.substr(0, eq)));
     c.value = std::string(trim(first.substr(eq + 1)));
+    if (!valid_cookie_token(c.name) || c.value.find_first_of("\r\n;") != std::string::npos) return;
+    c.path = default_path(url);
 
     std::string_view rest = semi == std::string_view::npos ? "" : set_cookie.substr(semi + 1);
     while (!rest.empty()) {
@@ -74,18 +90,24 @@ void CookieJar::store(const Url& url, std::string_view set_cookie) {
         if (anl == "domain") {
             c.domain = std::string(trim(av));
             if (!c.domain.empty() && c.domain.front() == '.') c.domain.erase(0, 1);
+            if (c.domain.empty() || ip_literal(url.host)) return;
             c.host_only = false;
         } else if (anl == "path") {
-            c.path = av.empty() ? "/" : std::string(av);
+            c.path = (!av.empty() && av.front() == '/') ? std::string(av) : default_path(url);
         } else if (anl == "secure") {
             c.secure = true;
         } else if (anl == "httponly") {
             c.http_only = true;
         } else if (anl == "max-age") {
-            uint64_t secs = 0;
-            if (parse_uint(trim(av), secs)) {
+            int64_t secs = 0;
+            const auto value = trim(av);
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), secs);
+            if (!value.empty() && parsed.ec == std::errc{} &&
+                parsed.ptr == value.data() + value.size()) {
                 c.persistent = true;
-                c.expiry = static_cast<uint64_t>(std::time(nullptr)) + secs;
+                c.expiry = secs <= 0 ? 1
+                                     : static_cast<uint64_t>(std::time(nullptr)) +
+                                           static_cast<uint64_t>(secs);
             }
         } else if (anl == "expires") {
             // Best-effort: rely on max-age if present; otherwise store as
@@ -111,6 +133,11 @@ void CookieJar::store(const Url& url, std::string_view set_cookie) {
             return;
         }
     }
+    size_t domain_count = 0;
+    for (const auto& existing : cookies_)
+        if (existing.domain == c.domain) ++domain_count;
+    if (domain_count >= 50) return;
+    if (cookies_.size() >= 300) cookies_.erase(cookies_.begin());
     cookies_.push_back(std::move(c));
 }
 

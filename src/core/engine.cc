@@ -143,7 +143,7 @@ void Engine::execute(kathttp_request* req, int64_t request_id, kathttp_event_cal
         delete req;
         return;
     }
-    add_cookie_header(req, url);
+    if (opt_.enable_cookies) add_cookie_header(req, url);
 
     auto job = std::make_unique<Job>();
     job->id = request_id;
@@ -246,7 +246,7 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
         if (dec.follow && !dec.new_url.empty()) {
             Url new_url;
             if (parse_url(dec.new_url, new_url) && new_url.valid()) {
-                store_cookies(job->url, headers);
+                if (opt_.enable_cookies) store_cookies(job->url, headers);
                 // Mark the current hop so its own completion is ignored.
                 job->redirected = true;
 
@@ -273,7 +273,7 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
                 }
                 nr->follow_redirects = 1;
 
-                add_cookie_header(nr, new_url);
+                if (opt_.enable_cookies) add_cookie_header(nr, new_url);
 
                 auto njob = std::make_unique<Job>();
                 njob->id = job->id;
@@ -296,7 +296,7 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
         }
     }
 
-    store_cookies(job->url, headers);
+    if (opt_.enable_cookies) store_cookies(job->url, headers);
     // RFC 9110: repeated Content-Length is legal only if every field-value is
     // exactly the same valid decimal value.  Do this before exposing headers.
     bool saw_content_length = false;
