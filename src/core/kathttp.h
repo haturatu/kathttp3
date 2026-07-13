@@ -209,6 +209,10 @@ KATHTTP_API void kathttp_client_cancel(kathttp_client* client, int64_t request_i
  * body have been consumed by the application. Extends the HTTP/3 receive
  * window so the peer can send more. Safe to call from any thread. */
 KATHTTP_API void kathttp_client_consume(kathttp_client* client, int64_t request_id, size_t bytes);
+/* Returns KATHTTP_OK only when bytes correspond to body data that was
+ * delivered to this request and has not already been consumed. */
+KATHTTP_API kathttp_error kathttp_client_consume_body(kathttp_client* client,
+                                                      int64_t request_id, size_t bytes);
 
 #ifdef __cplusplus
 }

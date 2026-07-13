@@ -372,11 +372,12 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp_internal_NativeBridge_exe
     return JNI_TRUE;
 }
 
-extern "C" JNIEXPORT void JNICALL Java_dev_kathttp_internal_NativeBridge_consume(JNIEnv*, jobject,
-                                                                                 jlong h, jlong id,
-                                                                                 jlong bytes) {
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp_internal_NativeBridge_consume(
+    JNIEnv*, jobject, jlong h, jlong id, jlong bytes) {
     std::lock_guard<std::mutex> handle_lock(g_handles_mutex);
     auto* client = reinterpret_cast<kathttp_client*>(static_cast<uintptr_t>(h));
-    if (!g_handles.count(client)) return;
-    kathttp_client_consume(client, id, static_cast<size_t>(bytes));
+    if (!g_handles.count(client) || bytes < 0) return JNI_FALSE;
+    return kathttp_client_consume_body(client, id, static_cast<size_t>(bytes)) == KATHTTP_OK
+               ? JNI_TRUE
+               : JNI_FALSE;
 }

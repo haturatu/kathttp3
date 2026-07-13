@@ -23,6 +23,7 @@ data class KatHttpClientConfig(
     val followRedirects: Boolean = true,
     val maxRedirects: Int = 10,
     val maxBufferedBodyBytes: Long = 16L * 1024 * 1024,
+    val maxStreamingBufferedBodyBytes: Long = 4L * 1024 * 1024,
     val caCertificateFile: String? = null,
     val trustMode: TrustMode = TrustMode.PLATFORM,
     val insecureCert: Boolean = false,
@@ -35,7 +36,7 @@ data class KatHttpClientConfig(
         require(dnsTimeoutMillis > 0 && handshakeTimeoutMillis > 0)
         require(responseHeadersTimeoutMillis > 0 && readTimeoutMillis > 0)
         require(writeTimeoutMillis > 0 && callTimeoutMillis > 0)
-        require(maxRedirects >= 0 && maxBufferedBodyBytes > 0)
+        require(maxRedirects >= 0 && maxBufferedBodyBytes > 0 && maxStreamingBufferedBodyBytes > 0)
         require(caCertificateFile == null || caCertificateFile.isNotBlank())
     }
 }

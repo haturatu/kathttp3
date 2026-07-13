@@ -36,7 +36,7 @@ class Engine {
     void execute(kathttp_request* req, int64_t request_id, kathttp_event_callback cb,
                  void* user_data);
     void cancel(int64_t request_id);
-    void consume(int64_t request_id, size_t bytes);
+    int consume(int64_t request_id, size_t bytes);
     void destroy();
 
     /* Called from QuicClient worker threads. */

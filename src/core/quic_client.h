@@ -46,6 +46,9 @@ struct Job {
     uint64_t response_headers_at = 0;
     uint64_t last_read_progress_at = 0;
     uint64_t last_write_progress_at = 0;
+    size_t delivered_unconsumed_bytes = 0;
+    size_t delivered_body_bytes = 0;
+    size_t consumed_body_bytes = 0;
     int redirect_count = 0;
     /* Response body length accounting for Content-Length validation. */
     int64_t declared_content_length = -1; /* from Content-Length header, or -1 */
@@ -123,7 +126,7 @@ class QuicClient {
     /* Streaming flow-control: record that `bytes` of a streamed response body
      * were consumed by the application; the window extension is applied on the
      * worker thread. Looks up the job's stream id from `request_id`. */
-    void consume(int64_t request_id, size_t bytes);
+    int consume(int64_t request_id, size_t bytes);
 
     /* Invoked by ngtcp2/nghttp3 C callbacks (defined as free functions in
      * quic_client.cc / http3_session.cc). Public so those callbacks can reach

@@ -77,6 +77,8 @@ int recv_data_cb(nghttp3_conn*, int64_t stream_id, const uint8_t* data, size_t l
     auto* job = c->find_job(stream_id);
     if (!job) return 0;
     job->last_read_progress_at = timestamp_now_ns();
+    job->delivered_body_bytes += len;
+    if (job->streaming) job->delivered_unconsumed_bytes += len;
     c->client()->notify_job_body(job, data, len);
     // Streaming (Flow) requests apply HTTP/3 receive flow-control: the window
     // is extended only as the application consumes chunks (via consume()),
@@ -362,8 +364,11 @@ bool Http3Session::recv_stream_data(uint32_t, int64_t stream_id, const uint8_t* 
         KATHTTP_LOG_ERR("nghttp3_conn_read_stream: %s\n", nghttp3_strerror(rv));
         return false;
     }
-    ngtcp2_conn_extend_max_stream_offset(client_->conn(), stream_id, static_cast<uint64_t>(rv));
-    ngtcp2_conn_extend_max_offset(client_->conn(), static_cast<uint64_t>(rv));
+    Job* job = find_job(stream_id);
+    if (!job || !job->streaming) {
+        ngtcp2_conn_extend_max_stream_offset(client_->conn(), stream_id, static_cast<uint64_t>(rv));
+        ngtcp2_conn_extend_max_offset(client_->conn(), static_cast<uint64_t>(rv));
+    }
     return true;
 }
 

@@ -18,6 +18,6 @@ internal object NativeBridge {
     external fun closeClient(handle: Long)
     external fun destroyClient(handle: Long)
     external fun execute(handle: Long, id: Long, method: String, url: String, names: Array<String>, values: Array<String>, body: ByteArray?, followRedirects: Boolean, streaming: Boolean, callback: NativeCallback): Boolean
-    external fun consume(handle: Long, id: Long, bytes: Long)
+    external fun consume(handle: Long, id: Long, bytes: Long): Boolean
     external fun cancel(handle: Long, id: Long)
 }

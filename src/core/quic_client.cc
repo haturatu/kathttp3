@@ -664,24 +664,30 @@ void QuicClient::process_wakeup() {
     }
 }
 
-void QuicClient::consume(int64_t request_id, size_t bytes) {
-    if (bytes == 0) return;
+int QuicClient::consume(int64_t request_id, size_t bytes) {
+    if (bytes == 0) return KATHTTP_OK;
     int64_t stream_id = -1;
     {
         std::lock_guard<std::mutex> lk(job_mutex_);
         for (auto& job : active_jobs_) {
             if (job->id == request_id) {
+                if (job->cancelled || job->completed || bytes > job->delivered_unconsumed_bytes) {
+                    return KATHTTP_ERR_INVALID_ARG;
+                }
+                job->delivered_unconsumed_bytes -= bytes;
+                job->consumed_body_bytes += bytes;
                 stream_id = job->stream_id;
                 break;
             }
         }
     }
-    if (stream_id < 0) return;
+    if (stream_id < 0) return KATHTTP_ERR_CLOSED;
     {
         std::lock_guard<std::mutex> lk(consume_mutex_);
         pending_consumes_.emplace_back(stream_id, bytes);
     }
     wakeup();
+    return KATHTTP_OK;
 }
 
 void QuicClient::note_write_progress(int64_t stream_id) {

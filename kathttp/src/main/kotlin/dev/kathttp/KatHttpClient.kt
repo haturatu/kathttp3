@@ -52,29 +52,42 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
         val channel = Channel<KatHttpStreamEvent>(capacity = 8)
         val stashLock = Any()
         val stash = ArrayDeque<ByteArray>()
+        var stashedBytes = 0L
+        val completePending = AtomicBoolean(false)
+        fun drainOneStashedChunk() {
+            val next = synchronized(stashLock) {
+                if (stash.isEmpty()) null else stash.removeFirst().also { stashedBytes -= it.size }
+            }
+            if (next != null && !channel.trySend(KatHttpStreamEvent.Body(next)).isSuccess) {
+                synchronized(stashLock) { stash.addFirst(next); stashedBytes += next.size }
+            }
+        }
+        fun finishIfDrained() {
+            if (completePending.get() && synchronized(stashLock) { stash.isEmpty() }) channel.close()
+        }
         val call = KatHttpCall(channel.receiveAsFlow()
             .onEach {
                 if (it is KatHttpStreamEvent.Body) {
-                    // Refill the channel from the stash (space just freed), extending
-                    // the receive window for each chunk the app is about to consume.
-                    val drained = synchronized(stashLock) { val l = stash.toList(); stash.clear(); l }
-                    for (s in drained) {
-                        if (channel.trySend(KatHttpStreamEvent.Body(s)).isSuccess) {
-                            NativeBridge.consume(handle, id, s.size.toLong())
-                        } else {
-                            synchronized(stashLock) { stash.addFirst(s) }
-                            break
-                        }
-                    }
+                    // Credit is returned only after this Flow element has been
+                    // delivered to the collector, never when native invokes a callback.
                     NativeBridge.consume(handle, id, it.bytes.size.toLong())
+                    drainOneStashedChunk()
+                    finishIfDrained()
                 }
             }
         ) { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle, id) } }
         val terminal = AtomicBoolean(false)
         val callback = object : NativeCallback {
             override fun onHeaders(status: Int, names: Array<String>, values: Array<String>) { if (!channel.trySend(KatHttpStreamEvent.Headers(status, names.indices.map { KatHttpHeader(names[it], values[it]) })).isSuccess) cancel() }
-            override fun onBody(data: ByteArray) { if (!channel.trySend(KatHttpStreamEvent.Body(data)).isSuccess) synchronized(stashLock) { stash.addLast(data) } }
-            override fun onComplete() { if (terminal.compareAndSet(false,true)) { active.remove(id); channel.close() } }
+            override fun onBody(data: ByteArray) {
+                if (channel.trySend(KatHttpStreamEvent.Body(data)).isSuccess) return
+                val overflow = synchronized(stashLock) {
+                    if (stashedBytes + data.size > config.maxStreamingBufferedBodyBytes) true
+                    else { stash.addLast(data); stashedBytes += data.size; false }
+                }
+                if (overflow) cancel()
+            }
+            override fun onComplete() { if (terminal.compareAndSet(false,true)) { active.remove(id); completePending.set(true); finishIfDrained() } }
             override fun onError(code: Int) { if (terminal.compareAndSet(false,true)) { active.remove(id); channel.close(mapError(code)) } }
             fun cancel() { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle,id) }; onError(-6) }
         }

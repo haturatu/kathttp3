@@ -147,15 +147,15 @@ void Engine::execute(kathttp_request* req, int64_t request_id, kathttp_event_cal
     c->submit_job(std::move(job));
 }
 
-void Engine::consume(int64_t request_id, size_t bytes) {
+int Engine::consume(int64_t request_id, size_t bytes) {
     QuicClient* c = nullptr;
     {
         std::lock_guard<std::mutex> lk(mtx_);
         auto it = registry_.find(request_id);
-        if (it == registry_.end()) return;
+        if (it == registry_.end() || it->second.terminal) return KATHTTP_ERR_CLOSED;
         c = it->second.client;
     }
-    if (c) c->consume(request_id, bytes);
+    return c ? c->consume(request_id, bytes) : KATHTTP_ERR_CLOSED;
 }
 
 void Engine::cancel(int64_t request_id) {
@@ -501,8 +501,19 @@ void kathttp_client_cancel(kathttp_client* client, int64_t request_id) {
 void kathttp_client_consume(kathttp_client* client, int64_t request_id, size_t bytes) {
     if (!client) return;
     try {
-        reinterpret_cast<kathttp::Engine*>(client)->consume(request_id, bytes);
+        (void)reinterpret_cast<kathttp::Engine*>(client)->consume(request_id, bytes);
     } catch (...) {
+    }
+}
+
+kathttp_error kathttp_client_consume_body(kathttp_client* client, int64_t request_id,
+                                          size_t bytes) {
+    if (!client) return KATHTTP_ERR_INVALID_ARG;
+    try {
+        return static_cast<kathttp_error>(
+            reinterpret_cast<kathttp::Engine*>(client)->consume(request_id, bytes));
+    } catch (...) {
+        return KATHTTP_ERR_CLOSED;
     }
 }
 
