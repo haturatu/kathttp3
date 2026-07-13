@@ -460,6 +460,10 @@ void kathttp_client_options_init(kathttp_client_options* opt) {
     opt->call_timeout_ms = opt->request_timeout_ms;
 }
 
+void kathttp_client_config_init(kathttp_client_config* config) {
+    kathttp_client_options_init(config);
+}
+
 uint32_t kathttp_api_version(void) {
     return KATHTTP_ABI_VERSION;
 }
@@ -469,7 +473,7 @@ kathttp_client* kathttp_client_create(const kathttp_client_options* options) {
     constexpr size_t kRequiredOptionsSize =
         offsetof(kathttp_client_options, resolve_cb_userdata) + sizeof(void*);
     if (options->struct_size < kRequiredOptionsSize) return nullptr;
-    if (options->abi_version != KATHTTP_ABI_VERSION) return nullptr;
+    if (options->abi_version != KATHTTP_ABI_VERSION_CURRENT) return nullptr;
     try {
         kathttp_client_options normalized;
         kathttp_client_options_init(&normalized);

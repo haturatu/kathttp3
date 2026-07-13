@@ -231,14 +231,21 @@ By default dependencies are read from `third_party/android-deps`; override this 
 
 The worker drives `ngtcp2_conn_get_expiry2`/`ngtcp2_conn_handle_expiry` with monotonic nanoseconds and drains non-blocking UDP. After 1-RTT keys are available, it creates the nghttp3 client plus one control and two QPACK unidirectional streams. Requests use client bidirectional streams with `:method`, `:scheme`, `:authority`, and `:path`. Cancellation requests both read and write shutdown.
 
+## C ABI compatibility
+
+The C ABI uses `kathttp_client_config` (an alias of the retained
+`kathttp_client_options`) with `struct_size` and `abi_version`. Initialize it
+with `kathttp_client_config_init`. KatHttp accepts known smaller structs and
+defaults appended fields; it rejects future ABI versions. During the 0.x line,
+existing enum values and fields are not reordered and optional fields are
+appended only. Symbols are hidden by default except `kathttp_*` exports.
+
 ## Known limitations
 
 - Certificate trust defaults to the Android platform provider (`X509TrustManagerExtensions`); the embedded Mozilla bundle and a caller-supplied CA file are also available via `kathttp_trust_mode`.
 - Live GET/POST interoperability has not been verified against a local HTTP/3 server.
 - DNS, connect, handshake, response-header, read-idle, write-idle and call
-  deadlines use the monotonic QUIC clock. The built-in DNS resolver is still
-  blocking, so an in-progress `getaddrinfo()` cannot be interrupted until the
-  asynchronous resolver work in a future release.
+  deadlines use the monotonic QUIC clock.
 - Graceful GOAWAY draining, response Content-Length validation, trailer exposure, strict response-field validation and robust packet send backpressure are incomplete.
 - Streaming uses a bounded JNI-to-Kotlin channel but native QUIC flow-control credit is currently returned on callback delivery, not downstream Flow consumption.
 - DNS lookups run in a bounded two-thread resolver pool rather than on a QUIC

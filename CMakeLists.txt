@@ -73,6 +73,7 @@ if(KATHTTP_ANALYSIS_ONLY)
   add_library(kathttp OBJECT EXCLUDE_FROM_ALL ${KATHTTP_CORE_SOURCES})
 else()
   add_library(kathttp SHARED ${KATHTTP_CORE_SOURCES})
+  set_target_properties(kathttp PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0)
 endif()
 target_include_directories(kathttp PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_include_directories(kathttp PRIVATE src/core)
@@ -139,4 +140,9 @@ if(KATHTTP_BUILD_TESTS AND NOT ANDROID)
     target_link_options(kathttp_core_tests PRIVATE -fsanitize=address,undefined)
   endif()
   add_test(NAME kathttp_core_tests COMMAND kathttp_core_tests)
+  # Compiles the public header as C, guarding extern "C", fixed-width field
+  # declarations and the config-versioning aliases without needing a native
+  # HTTP/3 backend at test-link time.
+  add_library(kathttp_c_abi_header_test OBJECT tests/core/c_abi_header_test.c)
+  target_include_directories(kathttp_c_abi_header_test PRIVATE src/core)
 endif()

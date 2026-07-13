@@ -15,7 +15,10 @@ extern "C" {
  * `struct_size` + `abi_version` header and never removing fields.
  * New optional fields are only appended.
  * ------------------------------------------------------------------ */
-#define KATHTTP_ABI_VERSION 1
+#define KATHTTP_ABI_VERSION_0_1 1u
+#define KATHTTP_ABI_VERSION_CURRENT KATHTTP_ABI_VERSION_0_1
+/* Compatibility spelling retained for 0.x callers. */
+#define KATHTTP_ABI_VERSION KATHTTP_ABI_VERSION_CURRENT
 
 #if defined(_WIN32)
 #define KATHTTP_API __declspec(dllexport)
@@ -110,8 +113,14 @@ typedef struct kathttp_client_options {
     uint8_t enable_cookies; /* 0 = disabled (default); 1 = experimental jar */
 } kathttp_client_options;
 
+/* Stable name for new C callers. `kathttp_client_options` remains source
+ * compatible during 0.x. Fields are fixed-width values or create-time input
+ * pointers, and future optional fields are appended only. */
+typedef kathttp_client_options kathttp_client_config;
+
 KATHTTP_API uint32_t kathttp_api_version(void);
 KATHTTP_API void kathttp_client_options_init(kathttp_client_options* opt);
+KATHTTP_API void kathttp_client_config_init(kathttp_client_config* config);
 
 typedef struct kathttp_client kathttp_client;
 typedef struct kathttp_request kathttp_request;
