@@ -248,7 +248,9 @@ The worker drives `ngtcp2_conn_get_expiry2`/`ngtcp2_conn_handle_expiry` with mon
   provided.
 - Redirects reject HTTPS-to-HTTP downgrades and strip Authorization,
   Proxy-Authorization, Cookie, and Host on cross-origin hops. The cookie jar
-  remains intentionally minimal and has no public-suffix database.
+  is experimental and disabled by default (`enableCookies = true` is explicit
+  opt-in). It has no public-suffix database, so it must not be treated as a
+  browser-equivalent cookie implementation.
 - HTTP response caching is not provided. A former disconnected implementation
   is intentionally excluded from production builds; a future cache must cover
   Cache-Control, Vary, Age, Date, Expires, ETag/Last-Modified revalidation,

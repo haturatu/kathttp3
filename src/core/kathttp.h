@@ -107,6 +107,7 @@ typedef struct kathttp_client_options {
     uint64_t read_timeout_ms;
     uint64_t write_timeout_ms;
     uint64_t call_timeout_ms;
+    uint8_t enable_cookies; /* 0 = disabled (default); 1 = experimental jar */
 } kathttp_client_options;
 
 KATHTTP_API uint32_t kathttp_api_version(void);
@@ -212,8 +213,8 @@ KATHTTP_API void kathttp_client_cancel(kathttp_client* client, int64_t request_i
 KATHTTP_API void kathttp_client_consume(kathttp_client* client, int64_t request_id, size_t bytes);
 /* Returns KATHTTP_OK only when bytes correspond to body data that was
  * delivered to this request and has not already been consumed. */
-KATHTTP_API kathttp_error kathttp_client_consume_body(kathttp_client* client,
-                                                      int64_t request_id, size_t bytes);
+KATHTTP_API kathttp_error kathttp_client_consume_body(kathttp_client* client, int64_t request_id,
+                                                      size_t bytes);
 
 #ifdef __cplusplus
 }
