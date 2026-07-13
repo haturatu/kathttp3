@@ -302,7 +302,9 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   that arbitrary application work after collection has completed.
 - Native QUIC receive windows use fixed 1 MiB stream high / 512 KiB low
   watermarks, an 8 MiB connection limit, and 64 KiB credit batching. These
-  values are not yet public configuration knobs.
+  values are not yet public configuration knobs. The same limits are applied
+  to normal and Happy Eyeballs connection candidates before the winner is
+  adopted.
 - While at least one request stream is active, the worker configures ngtcp2
   keep-alive at half of the peer-advertised idle timeout. It disables probes
   when no request stream is active; keep-alive is therefore not a background

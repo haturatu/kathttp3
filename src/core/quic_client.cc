@@ -37,6 +37,15 @@ constexpr uint64_t kReceiveBufferPerStreamLowWatermark = 512 * 1024;
 constexpr uint64_t kReceiveBufferPerConnectionLimit = 8 * 1024 * 1024;
 constexpr size_t kReceiveCreditThreshold = 64 * 1024;
 constexpr size_t kMinimumSendQuantum = NGTCP2_MAX_PKTLEN;
+
+// Every route to a client connection must advertise the same bounded receive
+// capacity. In particular, Happy Eyeballs candidates are adopted in-place, so
+// their transport parameters become the parameters of the winning connection.
+void configure_receive_windows(ngtcp2_transport_params* params) {
+    params->initial_max_stream_data_bidi_local = kReceiveBufferPerStreamHighWatermark;
+    params->initial_max_stream_data_bidi_remote = kReceiveBufferPerStreamHighWatermark;
+    params->initial_max_data = kReceiveBufferPerConnectionLimit;
+}
 }  // namespace
 
 /* A pre-HTTP/3 connection attempt.  Each candidate owns every object which
@@ -699,9 +708,7 @@ bool QuicClient::setup_connection() {
     // Streaming payload is not credited until Kotlin consumes it. These
     // advertised limits cap unconsumed native/JNI delivery per stream and for
     // the connection as a whole; consume() re-opens the window in batches.
-    params.initial_max_stream_data_bidi_local = kReceiveBufferPerStreamHighWatermark;
-    params.initial_max_stream_data_bidi_remote = kReceiveBufferPerStreamHighWatermark;
-    params.initial_max_data = kReceiveBufferPerConnectionLimit;
+    configure_receive_windows(&params);
     params.initial_max_streams_bidi = 16;
     params.initial_max_streams_uni = 3;
     params.max_idle_timeout = idle_timeout_ms_ * NGTCP2_MILLISECONDS;
@@ -775,9 +782,7 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
 
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);
-    params.initial_max_stream_data_bidi_local = 256 * 1024;
-    params.initial_max_stream_data_bidi_remote = 256 * 1024;
-    params.initial_max_data = 16 * 1024 * 1024;
+    configure_receive_windows(&params);
     params.initial_max_streams_bidi = 16;
     params.initial_max_streams_uni = 3;
     params.max_idle_timeout = idle_timeout_ms_ * NGTCP2_MILLISECONDS;
