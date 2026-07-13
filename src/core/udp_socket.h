@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,8 @@ class UdpSocket {
     /* Send a datagram. `ecn` is the explicit congestion notification byte
      * (0, 1, 2, 3). Returns bytes sent or -1 on error. */
     ssize_t send(const uint8_t* data, size_t len, unsigned int ecn);
+    bool flush_send_queue();
+    bool wants_write() const { return !send_queue_.empty(); }
 
     /* Receive one datagram into buf. Fills `from` (sockaddr storage),
      * `fromlen` and `ecn`. Returns bytes received or -1. */
@@ -47,9 +50,15 @@ class UdpSocket {
                  unsigned int& ecn);
 
    private:
+    ssize_t send_now(const uint8_t* data, size_t len, unsigned int ecn);
     int fd_ = -1;
     int family_ = 0;
     bool connected_ = false;
+    struct QueuedPacket { std::vector<uint8_t> data; unsigned int ecn; };
+    std::deque<QueuedPacket> send_queue_;
+    size_t queued_bytes_ = 0;
+    static constexpr size_t kMaxQueuedPackets = 1024;
+    static constexpr size_t kMaxQueuedBytes = 4 * 1024 * 1024;
 };
 
 } /* namespace kathttp */

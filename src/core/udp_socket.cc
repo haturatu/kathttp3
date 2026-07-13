@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <cerrno>
 
 #include "log.h"
 
@@ -26,6 +27,8 @@ UdpSocket::~UdpSocket() {
 }
 
 void UdpSocket::close() {
+    send_queue_.clear();
+    queued_bytes_ = 0;
     if (fd_ != -1) {
         ::close(fd_);
         fd_ = -1;
@@ -101,7 +104,7 @@ bool UdpSocket::connect(const ResolvedEndpoint& ep) {
     return true;
 }
 
-ssize_t UdpSocket::send(const uint8_t* data, size_t len, unsigned int ecn) {
+ssize_t UdpSocket::send_now(const uint8_t* data, size_t len, unsigned int ecn) {
     if (fd_ == -1) return -1;
     msghdr msg{};
     iovec iov{};
@@ -126,8 +129,33 @@ ssize_t UdpSocket::send(const uint8_t* data, size_t len, unsigned int ecn) {
         *reinterpret_cast<int*>(CMSG_DATA(cm)) = static_cast<int>(ecn);
     }
 
-    ssize_t n = ::sendmsg(fd_, &msg, 0);
-    return n;
+    return ::sendmsg(fd_, &msg, 0);
+}
+
+ssize_t UdpSocket::send(const uint8_t* data, size_t len, unsigned int ecn) {
+    ssize_t n = send_now(data, len, ecn);
+    if (n == static_cast<ssize_t>(len)) return n;
+    if (n >= 0) { errno = EIO; return -1; }
+    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != ENOBUFS) return -1;
+    if (send_queue_.size() >= kMaxQueuedPackets || queued_bytes_ + len > kMaxQueuedBytes) {
+        errno = ENOBUFS;
+        return -1;
+    }
+    send_queue_.push_back({std::vector<uint8_t>(data, data + len), ecn});
+    queued_bytes_ += len;
+    return static_cast<ssize_t>(len);
+}
+
+bool UdpSocket::flush_send_queue() {
+    while (!send_queue_.empty()) {
+        auto& packet = send_queue_.front();
+        ssize_t n = send_now(packet.data.data(), packet.data.size(), packet.ecn);
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS)) return true;
+        if (n != static_cast<ssize_t>(packet.data.size())) return false;
+        queued_bytes_ -= packet.data.size();
+        send_queue_.pop_front();
+    }
+    return true;
 }
 
 ssize_t UdpSocket::recv(uint8_t* buf, size_t buflen, sockaddr_storage& from, socklen_t& fromlen,

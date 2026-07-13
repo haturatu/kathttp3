@@ -513,7 +513,7 @@ int QuicClient::event_loop() {
         int timeout_ms = compute_timeout(now);
         struct pollfd pfds[2];
         pfds[0].fd = sock_.fd();
-        pfds[0].events = POLLIN;
+        pfds[0].events = static_cast<short>(POLLIN | (sock_.wants_write() ? POLLOUT : 0));
         pfds[1].fd = wakeup_fd_;
         pfds[1].events = POLLIN;
         int nfd = wakeup_fd_ != -1 ? 2 : 1;
@@ -541,6 +541,9 @@ int QuicClient::event_loop() {
                     return -1;
                 }
             }
+        }
+        if (pfds[0].revents & POLLOUT) {
+            if (!sock_.flush_send_queue()) return -1;
         }
 
         int rv = ngtcp2_conn_handle_expiry(conn_, now);
