@@ -12,6 +12,7 @@
 #include "dns.h"
 #include "handshake_race.h"
 #include "header_list.h"
+#include "precommit_failover.h"
 #include "redirect.h"
 #include "url.h"
 
@@ -99,6 +100,13 @@ int main() {
     assert(select_earliest_1rtt_candidate({300, 100}) == 1);
     assert(select_earliest_1rtt_candidate({100, 100}) == 0);
     assert(select_earliest_1rtt_candidate({0, 0}) == kNoHandshakeRaceWinner);
+
+    // A fallback is permitted only before nghttp3 accepted request HEADERS;
+    // cancellation and an already committed request must never be replayed.
+    assert(can_fail_over_before_request_commit(true, false, false));
+    assert(!can_fail_over_before_request_commit(false, false, false));
+    assert(!can_fail_over_before_request_commit(true, true, false));
+    assert(!can_fail_over_before_request_commit(true, false, true));
 
     DnsCache cache(1, 1000, 1000);
     cache.put_success("one.test", 443, 1, endpoints);

@@ -20,6 +20,7 @@
 #include "handshake_race.h"
 #include "http3_session.h"
 #include "log.h"
+#include "precommit_failover.h"
 #include "request.h"
 #include "time_util.h"
 
@@ -701,7 +702,10 @@ bool QuicClient::has_live_pending_job() {
 }
 
 bool QuicClient::connect_to_endpoint() {
-    const auto& ep = endpoints_[endpoint_idx_];
+    return connect_to_endpoint(endpoints_[endpoint_idx_]);
+}
+
+bool QuicClient::connect_to_endpoint(const ResolvedEndpoint& ep) {
     if (!sock_.open(ep.family)) return false;
     sock_.set_nonblocking();
     if (!sock_.connect(ep)) {
@@ -819,7 +823,7 @@ bool QuicClient::setup_connection() {
         http3_ready_ = true;
         // Only replay-safe requests can become observable before the server
         // confirms the TLS handshake. Others remain in FIFO order for 1-RTT.
-        try_submit_pending();
+        if (!precommit_failover_window_) try_submit_pending();
     }
     handshake_confirmed_.store(false);
     state_.store(ConnectionState::Connecting);
@@ -919,6 +923,11 @@ bool QuicClient::adopt_handshake_winner(HandshakeCandidate& candidate) {
     path_.local.addr = reinterpret_cast<ngtcp2_sockaddr*>(&local_addr_);
     path_.remote.addr = reinterpret_cast<ngtcp2_sockaddr*>(&remote_addr_);
     handshake_started_at_ = candidate.started_at;
+    remember_precommit_fallbacks(candidate.endpoint);
+    // No request stream is committed until this selected connection is
+    // confirmed.  If it fails first, the stored alternate endpoint is safe to
+    // try because nghttp3 has not accepted any application request headers.
+    precommit_failover_window_ = true;
     http3_ = std::make_unique<Http3Session>(this, conn_);
     http3_ready_ = false;
     handshake_confirmed_.store(false);
@@ -943,6 +952,70 @@ bool QuicClient::adopt_handshake_winner(HandshakeCandidate& candidate) {
                       candidate.endpoint.ip.c_str(),
                       candidate.endpoint.family == AF_INET6 ? "IPv6" : "IPv4");
     return true;
+}
+
+void QuicClient::remember_precommit_fallbacks(const ResolvedEndpoint& winner) {
+    precommit_fallback_endpoints_.clear();
+    auto add_if_distinct = [&](const ResolvedEndpoint& endpoint) {
+        if (endpoint.family == winner.family && endpoint.ip == winner.ip &&
+            endpoint.port == winner.port)
+            return;
+        for (const auto& existing : precommit_fallback_endpoints_) {
+            if (existing.family == endpoint.family && existing.ip == endpoint.ip &&
+                existing.port == endpoint.port)
+                return;
+        }
+        precommit_fallback_endpoints_.push_back(endpoint);
+    };
+    for (const auto& candidate : handshake_candidates_) {
+        if (candidate && !candidate->abandoned) add_if_distinct(candidate->endpoint);
+    }
+    for (const auto& endpoint : endpoints_) add_if_distinct(endpoint);
+}
+
+bool QuicClient::can_fail_over_before_request_commit() {
+    if (!::kathttp3::can_fail_over_before_request_commit(
+            precommit_failover_window_, stop_.load(std::memory_order_acquire), false)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(job_mutex_);
+    for (const auto& job : active_jobs_) {
+        if (job->native_request_committed || job->body_sent != 0) return false;
+    }
+    // The pre-commit gate keeps all live requests pending.  Do not attempt a
+    // recovery if an unexpected active stream has appeared.
+    return active_jobs_.empty() && !precommit_fallback_endpoints_.empty();
+}
+
+void QuicClient::discard_current_connection() {
+    http3_.reset();
+    http3_ready_ = false;
+    // Free SSL before the candidate containing its conn_ref is released.
+    tls_session_ = TlsClientSession{};
+    if (conn_) {
+        ngtcp2_conn_del(conn_);
+        conn_ = nullptr;
+    }
+    sock_.close();
+    handshake_winner_.reset();
+    handshake_confirmed_.store(false);
+    state_.store(ConnectionState::Connecting);
+    early_data_enabled_ = false;
+}
+
+bool QuicClient::restart_precommit_fallback() {
+    while (!precommit_fallback_endpoints_.empty() && !stop_.load(std::memory_order_acquire)) {
+        const ResolvedEndpoint endpoint = precommit_fallback_endpoints_.front();
+        precommit_fallback_endpoints_.erase(precommit_fallback_endpoints_.begin());
+        discard_current_connection();
+        tls_session_.resetFailure();
+        if (!connect_to_endpoint(endpoint) || !setup_connection()) continue;
+        handshake_started_at_ = now_ns();
+        KATHTTP3_LOG_INFO("Happy Eyeballs retrying %s (%s) before request commit\n",
+                          endpoint.ip.c_str(), endpoint.family == AF_INET6 ? "IPv6" : "IPv4");
+        return true;
+    }
+    return false;
 }
 
 bool QuicClient::run_handshake_race() {
@@ -1077,8 +1150,17 @@ void QuicClient::run() {
             /* Exactly one candidate owns the connection now.  Requests have
              * remained pending until this point, so this is safe for POST and
              * other non-idempotent methods. */
-            const int loop_result = event_loop();
-            if (loop_result != 0 && !stop_.load(std::memory_order_acquire)) {
+            int final_loop_result = event_loop();
+            if (final_loop_result != 0 && !stop_.load(std::memory_order_acquire) &&
+                can_fail_over_before_request_commit()) {
+                while (restart_precommit_fallback()) {
+                    final_loop_result = event_loop();
+                    if (final_loop_result == 0 || stop_.load(std::memory_order_acquire)) break;
+                    if (!can_fail_over_before_request_commit()) break;
+                }
+            }
+            if (final_loop_result != 0 && !stop_.load(std::memory_order_acquire) &&
+                !can_fail_over_before_request_commit()) {
                 const int tls_error = tls_session_.lastFailure().code;
                 fail_all_pending(tls_error != 0 ? tls_error : KATHTTP3_ERR_QUIC);
             }
@@ -1464,6 +1546,7 @@ void QuicClient::try_submit_pending() {
                 it = pending_jobs_.erase(it);
                 continue;
             }
+            job->native_request_committed = true;
             active_jobs_.push_back(std::move(*it));
             it = pending_jobs_.erase(it);
         }
@@ -1475,7 +1558,12 @@ void QuicClient::on_handshake_confirmed() {
     handshake_confirmed_.store(true);
     last_active_ = now_ns();
     state_.store(ConnectionState::Active);
-    KATHTTP3_LOG_ERR("handshake confirmed\n");
+    if (precommit_failover_window_) {
+        precommit_failover_window_ = false;
+        precommit_fallback_endpoints_.clear();
+        try_submit_pending();
+    }
+    KATHTTP3_LOG_INFO("handshake confirmed\n");
 }
 
 bool QuicClient::on_handshake_completed() {
@@ -1484,8 +1572,10 @@ bool QuicClient::on_handshake_completed() {
     if (!http3_ready_ && http3_) {
         if (http3_->setup_codec()) {
             http3_ready_ = true;
-            try_submit_pending();
+            if (!precommit_failover_window_) try_submit_pending();
             update_keep_alive();
+        } else {
+            return false;
         }
     }
     return true;

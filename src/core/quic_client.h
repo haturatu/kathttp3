@@ -40,6 +40,9 @@ struct Job {
     Url url;
     int64_t stream_id = -1;
     bool http3_ready = false;
+    // Set immediately after nghttp3 accepts request HEADERS.  A connection
+    // failover is forbidden from that point, even before UDP packet output.
+    bool native_request_committed = false;
     bool cancelled = false;
     bool completed = false;
     bool redirected = false;
@@ -174,6 +177,7 @@ class QuicClient {
     bool prepare_endpoints();
     bool has_live_pending_job();
     bool connect_to_endpoint();
+    bool connect_to_endpoint(const ResolvedEndpoint& endpoint);
     bool setup_connection();
     /* Run the first IPv6 and IPv4 candidates as independent QUIC/TLS
      * handshakes.  No request stream is opened until one candidate has
@@ -182,6 +186,10 @@ class QuicClient {
     bool run_handshake_race();
     bool start_handshake_candidate(const ResolvedEndpoint& endpoint);
     bool adopt_handshake_winner(HandshakeCandidate& candidate);
+    void remember_precommit_fallbacks(const ResolvedEndpoint& winner);
+    bool can_fail_over_before_request_commit();
+    bool restart_precommit_fallback();
+    void discard_current_connection();
     void run();
     int event_loop();
     int compute_timeout(uint64_t now);
@@ -264,6 +272,11 @@ class QuicClient {
     uint64_t connection_started_at_ = 0;
     uint64_t handshake_started_at_ = 0;
     int terminal_error_ = KATHTTP3_ERR_QUIC;
+    // The race keeps request streams uncommitted until the selected QUIC
+    // connection is confirmed.  A fatal error in this window may use one of
+    // these uncommitted alternate endpoints.
+    bool precommit_failover_window_ = false;
+    std::vector<ResolvedEndpoint> precommit_fallback_endpoints_;
 };
 
 } /* namespace kathttp3 */
