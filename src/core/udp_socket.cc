@@ -5,6 +5,9 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <linux/udp.h>
+#endif
 
 #include <cerrno>
 #include <cstring>
@@ -31,11 +34,13 @@ UdpSocket::UdpSocket(UdpSocket&& other) noexcept
       family_(other.family_),
       connected_(other.connected_),
       send_queue_(std::move(other.send_queue_)),
-      queued_bytes_(other.queued_bytes_) {
+      queued_bytes_(other.queued_bytes_),
+      gso_supported_(other.gso_supported_) {
     other.fd_ = -1;
     other.family_ = 0;
     other.connected_ = false;
     other.queued_bytes_ = 0;
+    other.gso_supported_ = true;
 }
 
 UdpSocket& UdpSocket::operator=(UdpSocket&& other) noexcept {
@@ -46,10 +51,12 @@ UdpSocket& UdpSocket::operator=(UdpSocket&& other) noexcept {
     connected_ = other.connected_;
     send_queue_ = std::move(other.send_queue_);
     queued_bytes_ = other.queued_bytes_;
+    gso_supported_ = other.gso_supported_;
     other.fd_ = -1;
     other.family_ = 0;
     other.connected_ = false;
     other.queued_bytes_ = 0;
+    other.gso_supported_ = true;
     return *this;
 }
 
@@ -160,6 +167,45 @@ ssize_t UdpSocket::send_now(const uint8_t* data, size_t len, unsigned int ecn) {
     return ::sendmsg(fd_, &msg, 0);
 }
 
+ssize_t UdpSocket::send_now_gso(const uint8_t* data, size_t len, uint16_t segment_size,
+                                unsigned int ecn) {
+#if defined(__linux__) && defined(UDP_SEGMENT)
+    if (fd_ == -1 || segment_size == 0) return -1;
+    msghdr msg{};
+    iovec iov{};
+    iov.iov_base = const_cast<uint8_t*>(data);
+    iov.iov_len = len;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+
+    alignas(cmsghdr) uint8_t ctrl[CMSG_SPACE(sizeof(int)) + CMSG_SPACE(sizeof(uint16_t))]{};
+    msg.msg_control = ctrl;
+    msg.msg_controllen = sizeof(ctrl);
+    auto* ecn_cm = CMSG_FIRSTHDR(&msg);
+    ecn_cm->cmsg_level = family_ == AF_INET ? IPPROTO_IP : IPPROTO_IPV6;
+    ecn_cm->cmsg_type = family_ == AF_INET ? IP_TOS : IPV6_TCLASS;
+    ecn_cm->cmsg_len = CMSG_LEN(sizeof(int));
+    *reinterpret_cast<int*>(CMSG_DATA(ecn_cm)) = static_cast<int>(ecn);
+    auto* gso_cm = CMSG_NXTHDR(&msg, ecn_cm);
+    if (!gso_cm) {
+        errno = EINVAL;
+        return -1;
+    }
+    gso_cm->cmsg_level = SOL_UDP;
+    gso_cm->cmsg_type = UDP_SEGMENT;
+    gso_cm->cmsg_len = CMSG_LEN(sizeof(uint16_t));
+    *reinterpret_cast<uint16_t*>(CMSG_DATA(gso_cm)) = segment_size;
+    return ::sendmsg(fd_, &msg, 0);
+#else
+    (void)data;
+    (void)len;
+    (void)segment_size;
+    (void)ecn;
+    errno = ENOTSUP;
+    return -1;
+#endif
+}
+
 ssize_t UdpSocket::send(const uint8_t* data, size_t len, unsigned int ecn) {
     ssize_t n = send_now(data, len, ecn);
     if (n == static_cast<ssize_t>(len)) return n;
@@ -180,6 +226,43 @@ ssize_t UdpSocket::send(const uint8_t* data, size_t len, unsigned int ecn) {
 bool UdpSocket::flush_send_queue() {
     while (!send_queue_.empty()) {
         auto& packet = send_queue_.front();
+        // Linux/Android UDP GSO may only combine identically sized datagrams.
+        // Batch only queued packets, preserving strict FIFO order and falling
+        // back permanently after a runtime capability error.
+        if (gso_supported_ && packet.data.size() <= UINT16_MAX && send_queue_.size() > 1) {
+            const size_t segment_size = packet.data.size();
+            const unsigned int ecn = packet.ecn;
+            size_t count = 1;
+            size_t bytes = segment_size;
+            for (auto it = std::next(send_queue_.begin()); it != send_queue_.end() && count < 16;
+                 ++it) {
+                if (it->ecn != ecn || it->data.size() != segment_size) break;
+                ++count;
+                bytes += segment_size;
+            }
+            if (count > 1) {
+                std::vector<uint8_t> aggregate;
+                aggregate.reserve(bytes);
+                for (size_t i = 0; i < count; ++i) {
+                    const auto& queued = send_queue_[i];
+                    aggregate.insert(aggregate.end(), queued.data.begin(), queued.data.end());
+                }
+                ssize_t n = send_now_gso(aggregate.data(), aggregate.size(),
+                                         static_cast<uint16_t>(segment_size), ecn);
+                if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS))
+                    return true;
+                if (n < 0 && (errno == EINVAL || errno == ENOPROTOOPT || errno == ENOTSUP)) {
+                    gso_supported_ = false;
+                    continue;
+                }
+                if (n != static_cast<ssize_t>(aggregate.size())) return false;
+                for (size_t i = 0; i < count; ++i) {
+                    queued_bytes_ -= send_queue_.front().data.size();
+                    send_queue_.pop_front();
+                }
+                continue;
+            }
+        }
         ssize_t n = send_now(packet.data.data(), packet.data.size(), packet.ecn);
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS)) return true;
         if (n != static_cast<ssize_t>(packet.data.size())) return false;

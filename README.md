@@ -311,9 +311,10 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   connection-pooling heartbeat.
 - PMTUD is explicitly enabled through ngtcp2's built-in safe probe sequence.
   Packet generation is capped by ngtcp2's current send quantum and updates
-  its pacing timestamp after each quantum. Linux/Android UDP GSO is not yet
-  enabled because it requires equal-sized aggregate datagrams and runtime
-  kernel capability probing; the non-GSO path remains the portable default.
+  its pacing timestamp after each quantum. When the bounded UDP retry queue
+  contains adjacent equal-sized packets, Linux/Android uses `UDP_SEGMENT` GSO
+  to flush up to 16 in one syscall. Unsupported kernels permanently fall back
+  to FIFO single-datagram sends; the non-GSO path remains the portable default.
 - qlog is disabled by default. Set `KatHttp3ClientConfig.qlogPathPrefix` to an
   app-private writable path prefix to produce one mode-0600 ngtcp2 `.qlog`
   diagnostic file per QUIC connection (including Happy Eyeballs candidates).
