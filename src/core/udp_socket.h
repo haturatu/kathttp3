@@ -42,7 +42,9 @@ class UdpSocket {
      * (0, 1, 2, 3). Returns bytes sent or -1 on error. */
     ssize_t send(const uint8_t* data, size_t len, unsigned int ecn);
     bool flush_send_queue();
-    bool wants_write() const { return !send_queue_.empty(); }
+    bool wants_write() const {
+        return !send_queue_.empty();
+    }
 
     /* Receive one datagram into buf. Fills `from` (sockaddr storage),
      * `fromlen` and `ecn`. Returns bytes received or -1. */
@@ -54,7 +56,10 @@ class UdpSocket {
     int fd_ = -1;
     int family_ = 0;
     bool connected_ = false;
-    struct QueuedPacket { std::vector<uint8_t> data; unsigned int ecn; };
+    struct QueuedPacket {
+        std::vector<uint8_t> data;
+        unsigned int ecn = 0;
+    };
     std::deque<QueuedPacket> send_queue_;
     size_t queued_bytes_ = 0;
     static constexpr size_t kMaxQueuedPackets = 1024;

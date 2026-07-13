@@ -49,12 +49,15 @@ int main() {
     const auto cookie = jar.cookie_header(from);
     assert(cookie == "a=b");
     jar.store(from, "scoped=yes; Domain=example.com; Path=/a; Secure");
-    assert(jar.cookie_header(from).find("scoped=yes") != std::string::npos);
+    const auto scoped_at_origin = jar.cookie_header(from);
+    assert(scoped_at_origin.find("scoped=yes") != std::string::npos);
     Url other;
     assert(parse_url("https://evil.example/a", other));
-    assert(jar.cookie_header(other).find("scoped=yes") == std::string::npos);
+    const auto scoped_at_other = jar.cookie_header(other);
+    assert(scoped_at_other.find("scoped=yes") == std::string::npos);
     jar.store(from, "scoped=gone; Domain=example.com; Path=/a; Max-Age=0");
-    assert(jar.cookie_header(from).find("scoped=") == std::string::npos);
+    const auto expired_cookie = jar.cookie_header(from);
+    assert(expired_cookie.find("scoped=") == std::string::npos);
 
     // Resolver work is deliberately dispatched off the QUIC worker.  The
     // callback receives owned values, and cancellation suppresses delivery.
@@ -85,11 +88,14 @@ int main() {
     DnsCache cache(1, 1000, 1000);
     cache.put_success("one.test", 443, 1, endpoints);
     std::vector<ResolvedEndpoint> cached;
-    assert(cache.lookup("one.test", 443, 1, cached) && cached.size() == 2);
+    const bool positive_cache_hit = cache.lookup("one.test", 443, 1, cached);
+    assert(positive_cache_hit && cached.size() == 2);
     cache.put_failure("missing.test", 443, 1);
     cached.clear();
-    assert(cache.lookup("missing.test", 443, 1, cached) && cached.empty());
+    const bool negative_cache_hit = cache.lookup("missing.test", 443, 1, cached);
+    assert(negative_cache_hit && cached.empty());
     cache.invalidate_network(2);
-    assert(!cache.lookup("one.test", 443, 1, cached));
+    const bool invalidated_cache_hit = cache.lookup("one.test", 443, 1, cached);
+    assert(!invalidated_cache_hit);
     std::cout << "core tests passed\n";
 }

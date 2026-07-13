@@ -6,8 +6,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <cstring>
 #include <cerrno>
+#include <cstring>
 
 #include "log.h"
 
@@ -135,7 +135,10 @@ ssize_t UdpSocket::send_now(const uint8_t* data, size_t len, unsigned int ecn) {
 ssize_t UdpSocket::send(const uint8_t* data, size_t len, unsigned int ecn) {
     ssize_t n = send_now(data, len, ecn);
     if (n == static_cast<ssize_t>(len)) return n;
-    if (n >= 0) { errno = EIO; return -1; }
+    if (n >= 0) {
+        errno = EIO;
+        return -1;
+    }
     if (errno != EAGAIN && errno != EWOULDBLOCK && errno != ENOBUFS) return -1;
     if (send_queue_.size() >= kMaxQueuedPackets || queued_bytes_ + len > kMaxQueuedBytes) {
         errno = ENOBUFS;
