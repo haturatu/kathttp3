@@ -10,6 +10,7 @@
 
 #include "cookie_jar.h"
 #include "dns.h"
+#include "handshake_race.h"
 #include "header_list.h"
 #include "redirect.h"
 #include "url.h"
@@ -92,6 +93,12 @@ int main() {
     assert(v4_plan.enabled() && v4_plan.primary == 0 && v4_plan.fallback == 1);
     assert(!make_happy_eyeballs_plan({v4_primary.front()}).enabled());
     assert(!make_happy_eyeballs_plan({{"invalid", 443, 0}, v4_primary.front()}).enabled());
+
+    // Race selection is based on the recorded 1-RTT-ready transition, not
+    // whichever candidate happens to be processed first by poll().
+    assert(select_earliest_1rtt_candidate({300, 100}) == 1);
+    assert(select_earliest_1rtt_candidate({100, 100}) == 0);
+    assert(select_earliest_1rtt_candidate({0, 0}) == kNoHandshakeRaceWinner);
 
     DnsCache cache(1, 1000, 1000);
     cache.put_success("one.test", 443, 1, endpoints);

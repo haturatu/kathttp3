@@ -17,6 +17,7 @@
 #include <cstring>
 
 #include "engine.h"
+#include "handshake_race.h"
 #include "http3_session.h"
 #include "log.h"
 #include "request.h"
@@ -90,7 +91,11 @@ struct HandshakeCandidate {
     // installed the receive 1-RTT AEAD context.  The connection must not be
     // adopted by the main event loop until recv_rx_key has observed it.
     bool rx_1rtt_key_ready = false;
+    // Written exactly once when recv_rx_key reports the 1-RTT receive key.
+    // This is the race result; vector/poll callback order must not decide it.
+    uint64_t one_rtt_ready_at = 0;
     bool handshake_confirmed = false;
+    bool abandoned = false;
     bool failed = false;
     bool owns_connection = true;
     int qlog_fd = -1;
@@ -375,16 +380,18 @@ int candidate_handshake_completed_cb(ngtcp2_conn*, void* user_data) {
 
 int candidate_handshake_confirmed_cb(ngtcp2_conn*, void* user_data) {
     auto* candidate = candidate_from(user_data);
+    if (candidate->abandoned) return 0;
     candidate->handshake_confirmed = true;
-    candidate->owner->on_handshake_confirmed();
     return 0;
 }
 
 int candidate_recv_rx_key_cb(ngtcp2_conn*, ngtcp2_encryption_level level, void* user_data) {
     if (level == NGTCP2_ENCRYPTION_LEVEL_1RTT) {
         auto* candidate = candidate_from(user_data);
+        if (candidate->abandoned) return 0;
         candidate->rx_1rtt_key_ready = true;
         candidate->handshake_completed = true;
+        if (candidate->one_rtt_ready_at == 0) candidate->one_rtt_ready_at = now_ns();
     }
     return 0;
 }
@@ -895,7 +902,8 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
 }
 
 bool QuicClient::adopt_handshake_winner(HandshakeCandidate& candidate) {
-    if (!candidate.conn || !candidate.handshake_completed || !candidate.rx_1rtt_key_ready)
+    if (!candidate.conn || !candidate.handshake_completed || !candidate.rx_1rtt_key_ready ||
+        candidate.one_rtt_ready_at == 0)
         return false;
 
     /* The callbacks and the SSL conn_ref deliberately continue to point at
@@ -913,10 +921,10 @@ bool QuicClient::adopt_handshake_winner(HandshakeCandidate& candidate) {
     handshake_started_at_ = candidate.started_at;
     http3_ = std::make_unique<Http3Session>(this, conn_);
     http3_ready_ = false;
-    handshake_confirmed_.store(candidate.handshake_confirmed);
-    state_.store(candidate.handshake_confirmed ? ConnectionState::Active
-                                               : ConnectionState::Connecting);
+    handshake_confirmed_.store(false);
+    state_.store(ConnectionState::Connecting);
     on_handshake_completed();
+    if (candidate.handshake_confirmed) on_handshake_confirmed();
 
     for (auto& attempt : handshake_candidates_) {
         if (attempt.get() == &candidate) {
@@ -925,14 +933,15 @@ bool QuicClient::adopt_handshake_winner(HandshakeCandidate& candidate) {
             /* No request stream is ever created on a loser.  Closing its UDP
              * fd and destroying ngtcp2 makes the cancellation immediate and
              * prevents a late packet from becoming observable by the winner. */
+            attempt->abandoned = true;
             attempt->sock.close();
             attempt.reset();
         }
     }
     handshake_candidates_.clear();
-    KATHTTP3_LOG_ERR("Happy Eyeballs selected %s (%s) after QUIC handshake\n",
-                     candidate.endpoint.ip.c_str(),
-                     candidate.endpoint.family == AF_INET6 ? "IPv6" : "IPv4");
+    KATHTTP3_LOG_INFO("Happy Eyeballs selected %s (%s) at 1-RTT-ready time\n",
+                      candidate.endpoint.ip.c_str(),
+                      candidate.endpoint.family == AF_INET6 ? "IPv6" : "IPv4");
     return true;
 }
 
@@ -967,9 +976,16 @@ bool QuicClient::run_handshake_race() {
                 terminal_error_ = KATHTTP3_ERR_QUIC;
             }
         }
-        for (auto& candidate : handshake_candidates_) {
-            if (candidate && candidate->handshake_completed && candidate->rx_1rtt_key_ready)
-                return adopt_handshake_winner(*candidate);
+        std::vector<uint64_t> ready_at;
+        ready_at.reserve(handshake_candidates_.size());
+        for (const auto& candidate : handshake_candidates_) {
+            ready_at.push_back(candidate && !candidate->failed && !candidate->abandoned
+                                   ? candidate->one_rtt_ready_at
+                                   : 0);
+        }
+        const size_t winner_index = select_earliest_1rtt_candidate(ready_at);
+        if (winner_index != kNoHandshakeRaceWinner) {
+            return adopt_handshake_winner(*handshake_candidates_[winner_index]);
         }
         if (connect_timeout_ms_ != 0 &&
             now - connection_started_at_ >= connect_timeout_ms_ * NGTCP2_MILLISECONDS) {
