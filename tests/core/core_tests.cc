@@ -65,5 +65,15 @@ int main() {
         assert(dns_ready.wait_for(lock, std::chrono::seconds(1), [&] { return dns_done; }));
     }
     assert(endpoints.size() == 2 && endpoints.front().family == AF_INET6);
+
+    DnsCache cache(1, 1000, 1000);
+    cache.put_success("one.test", 443, 1, endpoints);
+    std::vector<ResolvedEndpoint> cached;
+    assert(cache.lookup("one.test", 443, 1, cached) && cached.size() == 2);
+    cache.put_failure("missing.test", 443, 1);
+    cached.clear();
+    assert(cache.lookup("missing.test", 443, 1, cached) && cached.empty());
+    cache.invalidate_network(2);
+    assert(!cache.lookup("one.test", 443, 1, cached));
     std::cout << "core tests passed\n";
 }

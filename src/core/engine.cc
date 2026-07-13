@@ -57,6 +57,9 @@ Engine::Engine(const kathttp_client_options& opt) : opt_(opt) {
     } else {
         resolver_ = std::make_shared<GetAddrInfoResolver>();
     }
+    dns_cache_ = std::make_shared<DnsCache>();
+    resolver_ =
+        std::make_shared<CachedResolver>(resolver_, dns_cache_, resolver_network_generation_);
     if (!tls_ctx_.init(static_cast<kathttp_trust_mode>(opt_.trust_mode), opt_.insecure_cert != 0,
                        opt_.ca_cert_file ? opt_.ca_cert_file : std::string(),
                        opt_.keylog_file ? opt_.keylog_file : std::string(),
@@ -81,6 +84,8 @@ void Engine::network_changed(uint64_t generation) {
         std::lock_guard<std::mutex> lk(pool_mutex_);
         if (generation <= network_generation_) return;
         network_generation_ = generation;
+        resolver_network_generation_->store(generation, std::memory_order_release);
+        dns_cache_->invalidate_network(generation);
         for (auto& entry : pool_) old.push_back(std::move(entry.second));
         pool_.clear();
     }
@@ -101,13 +106,11 @@ QuicClient* Engine::get_or_create_client(const Url& origin) {
             return it->second.get();
         }
     }
-    auto qc = std::make_unique<QuicClient>(this, tls_ctx_, origin, resolver_, opt_.enable_0rtt != 0,
-                                           opt_.connect_timeout_ms, opt_.request_timeout_ms,
-                                           opt_.idle_timeout_ms, opt_.dns_timeout_ms,
-                                           opt_.handshake_timeout_ms,
-                                           opt_.response_headers_timeout_ms, opt_.read_timeout_ms,
-                                           opt_.write_timeout_ms, opt_.call_timeout_ms,
-                                           opt_.quic_version);
+    auto qc = std::make_unique<QuicClient>(
+        this, tls_ctx_, origin, resolver_, opt_.enable_0rtt != 0, opt_.connect_timeout_ms,
+        opt_.request_timeout_ms, opt_.idle_timeout_ms, opt_.dns_timeout_ms,
+        opt_.handshake_timeout_ms, opt_.response_headers_timeout_ms, opt_.read_timeout_ms,
+        opt_.write_timeout_ms, opt_.call_timeout_ms, opt_.quic_version);
     QuicClient* p = qc.get();
     pool_.emplace(key, std::move(qc));
     return p;
@@ -494,7 +497,10 @@ void kathttp_client_set_origin_policy(kathttp_client* client, const char* policy
 
 void kathttp_client_network_changed(kathttp_client* client, uint64_t generation) {
     if (!client) return;
-    try { reinterpret_cast<kathttp::Engine*>(client)->network_changed(generation); } catch (...) {}
+    try {
+        reinterpret_cast<kathttp::Engine*>(client)->network_changed(generation);
+    } catch (...) {
+    }
 }
 
 void kathttp_client_execute(kathttp_client* client, kathttp_request* request, int64_t request_id,

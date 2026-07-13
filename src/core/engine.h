@@ -75,8 +75,11 @@ class Engine {
 
     std::string policy_tag_;
     uint64_t network_generation_ = 0;
+    std::shared_ptr<std::atomic<uint64_t>> resolver_network_generation_ =
+        std::make_shared<std::atomic<uint64_t>>(0);
     kathttp_client_options opt_{};
     std::shared_ptr<Resolver> resolver_;
+    std::shared_ptr<DnsCache> dns_cache_;
     TlsClientContext tls_ctx_;
     CookieJar cookie_jar_;
     int wakeup_fd_ = -1;

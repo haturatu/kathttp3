@@ -89,6 +89,82 @@ DnsWorkerPool& dns_worker_pool() {
 }
 }  // namespace
 
+namespace {
+uint64_t monotonic_ms() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
+}
+}  // namespace
+
+DnsCache::DnsCache(size_t max_entries, uint64_t positive_ttl_ms, uint64_t negative_ttl_ms)
+    : max_entries_(std::max<size_t>(1, max_entries)),
+      positive_ttl_ms_(positive_ttl_ms),
+      negative_ttl_ms_(negative_ttl_ms) {}
+
+std::string DnsCache::key(const std::string& host, uint16_t port,
+                          uint64_t network_generation) const {
+    return host + ":" + std::to_string(port) + "@" + std::to_string(network_generation);
+}
+
+bool DnsCache::lookup(const std::string& host, uint16_t port, uint64_t network_generation,
+                      std::vector<ResolvedEndpoint>& endpoints) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto cache_key = key(host, port, network_generation);
+    const auto now = monotonic_ms();
+    for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+        if (it->key != cache_key) continue;
+        if (it->expires_at_ms <= now) {
+            entries_.erase(it);
+            return false;
+        }
+        entries_.splice(entries_.begin(), entries_, it);
+        if (entries_.front().negative) return true;
+        endpoints = entries_.front().endpoints;
+        return true;
+    }
+    return false;
+}
+
+void DnsCache::put_success(const std::string& host, uint16_t port, uint64_t network_generation,
+                           const std::vector<ResolvedEndpoint>& endpoints) {
+    if (endpoints.empty()) return put_failure(host, port, network_generation);
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto cache_key = key(host, port, network_generation);
+    entries_.remove_if([&](const Entry& entry) { return entry.key == cache_key; });
+    entries_.push_front({cache_key, monotonic_ms() + positive_ttl_ms_, false, endpoints});
+    while (entries_.size() > max_entries_) entries_.pop_back();
+}
+
+void DnsCache::put_failure(const std::string& host, uint16_t port, uint64_t network_generation) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto cache_key = key(host, port, network_generation);
+    entries_.remove_if([&](const Entry& entry) { return entry.key == cache_key; });
+    entries_.push_front({cache_key, monotonic_ms() + negative_ttl_ms_, true, {}});
+    while (entries_.size() > max_entries_) entries_.pop_back();
+}
+
+void DnsCache::invalidate_network(uint64_t network_generation) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string suffix = "@" + std::to_string(network_generation);
+    entries_.remove_if(
+        [&](const Entry& entry) { return entry.key.find(suffix) == std::string::npos; });
+}
+
+std::vector<ResolvedEndpoint> CachedResolver::resolve(const std::string& host, uint16_t port,
+                                                      const std::atomic<bool>* stop) {
+    const uint64_t network = generation_->load(std::memory_order_acquire);
+    std::vector<ResolvedEndpoint> endpoints;
+    if (cache_->lookup(host, port, network, endpoints)) return endpoints;
+    endpoints = upstream_->resolve(host, port, stop);
+    if (stop && stop->load(std::memory_order_acquire)) return {};
+    if (endpoints.empty())
+        cache_->put_failure(host, port, network);
+    else
+        cache_->put_success(host, port, network, endpoints);
+    return endpoints;
+}
+
 bool resolve_async(std::shared_ptr<Resolver> resolver, std::string host, uint16_t port,
                    std::shared_ptr<std::atomic<bool>> cancelled, DnsResolveCallback callback) {
     if (!resolver || !cancelled || !callback) return false;

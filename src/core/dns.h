@@ -4,7 +4,9 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <list>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -33,6 +35,51 @@ class GetAddrInfoResolver : public Resolver {
    public:
     std::vector<ResolvedEndpoint> resolve(const std::string& host, uint16_t port,
                                           const std::atomic<bool>* stop = nullptr) override;
+};
+
+/* Small, network-scoped cache for resolver results. getaddrinfo does not
+ * expose authoritative TTLs, so callers use conservative internal lifetimes.
+ * Certificate and protocol failures must never be inserted here. */
+class DnsCache {
+   public:
+    explicit DnsCache(size_t max_entries = 128, uint64_t positive_ttl_ms = 30000,
+                      uint64_t negative_ttl_ms = 2000);
+    bool lookup(const std::string& host, uint16_t port, uint64_t network_generation,
+                std::vector<ResolvedEndpoint>& endpoints);
+    void put_success(const std::string& host, uint16_t port, uint64_t network_generation,
+                     const std::vector<ResolvedEndpoint>& endpoints);
+    void put_failure(const std::string& host, uint16_t port, uint64_t network_generation);
+    void invalidate_network(uint64_t network_generation);
+
+   private:
+    struct Entry {
+        std::string key;
+        uint64_t expires_at_ms = 0;
+        bool negative = false;
+        std::vector<ResolvedEndpoint> endpoints;
+    };
+    std::string key(const std::string& host, uint16_t port, uint64_t network_generation) const;
+    size_t max_entries_;
+    uint64_t positive_ttl_ms_;
+    uint64_t negative_ttl_ms_;
+    std::mutex mutex_;
+    std::list<Entry> entries_;
+};
+
+class CachedResolver : public Resolver {
+   public:
+    CachedResolver(std::shared_ptr<Resolver> upstream, std::shared_ptr<DnsCache> cache,
+                   std::shared_ptr<std::atomic<uint64_t>> network_generation)
+        : upstream_(std::move(upstream)),
+          cache_(std::move(cache)),
+          generation_(std::move(network_generation)) {}
+    std::vector<ResolvedEndpoint> resolve(const std::string& host, uint16_t port,
+                                          const std::atomic<bool>* stop = nullptr) override;
+
+   private:
+    std::shared_ptr<Resolver> upstream_;
+    std::shared_ptr<DnsCache> cache_;
+    std::shared_ptr<std::atomic<uint64_t>> generation_;
 };
 
 /* Resolver backed by a C++ callback, used to adapt the C kathttp_resolve_cb
