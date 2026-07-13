@@ -1,20 +1,20 @@
 #include "quic_client.h"
 
+#include <fcntl.h>
 #include <nghttp3/nghttp3.h>
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <poll.h>
-#include <fcntl.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
-#include <atomic>
 
 #include "engine.h"
 #include "http3_session.h"
@@ -541,8 +541,8 @@ int QuicClient::open_qlog_file() {
     static std::atomic<uint64_t> next_qlog_id{0};
     for (unsigned attempt = 0; attempt != 16; ++attempt) {
         const uint64_t id = next_qlog_id.fetch_add(1, std::memory_order_relaxed);
-        const std::string path = qlog_path_prefix_ + "-" + std::to_string(getpid()) + "-" +
-                                 std::to_string(id) + ".qlog";
+        const std::string path =
+            qlog_path_prefix_ + "-" + std::to_string(getpid()) + "-" + std::to_string(id) + ".qlog";
         const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
         if (fd != -1) return fd;
         if (errno != EEXIST) {
@@ -597,7 +597,8 @@ void QuicClient::update_keep_alive() {
         ngtcp2_conn_set_keep_alive_timeout(conn_, UINT64_MAX);
         return;
     }
-    ngtcp2_conn_set_keep_alive_timeout(conn_, std::max<ngtcp2_duration>(1, peer->max_idle_timeout / 2));
+    ngtcp2_conn_set_keep_alive_timeout(conn_,
+                                       std::max<ngtcp2_duration>(1, peer->max_idle_timeout / 2));
 }
 
 void QuicClient::cancel_job(int64_t job_id) {
@@ -1048,8 +1049,7 @@ void QuicClient::run() {
         has_ipv4 = has_ipv4 || endpoint.family == AF_INET;
         has_ipv6 = has_ipv6 || endpoint.family == AF_INET6;
     }
-    if (has_ipv4 && has_ipv6 &&
-        !(enable_0rtt_ && tls_ctx_.has_early_resumption(origin_.host))) {
+    if (has_ipv4 && has_ipv6 && !(enable_0rtt_ && tls_ctx_.has_early_resumption(origin_.host))) {
         if (run_handshake_race()) {
             /* Exactly one candidate owns the connection now.  Requests have
              * remained pending until this point, so this is safe for POST and

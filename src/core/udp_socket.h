@@ -55,8 +55,7 @@ class UdpSocket {
 
    private:
     ssize_t send_now(const uint8_t* data, size_t len, unsigned int ecn);
-    ssize_t send_now_gso(const uint8_t* data, size_t len, uint16_t segment_size,
-                         unsigned int ecn);
+    ssize_t send_now_gso(const uint8_t* data, size_t len, uint16_t segment_size, unsigned int ecn);
     int fd_ = -1;
     int family_ = 0;
     bool connected_ = false;

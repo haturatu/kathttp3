@@ -269,8 +269,11 @@ TlsClientSession::~TlsClientSession() {
 }
 
 TlsClientSession::TlsClientSession(TlsClientSession&& other) noexcept
-    : ssl_(other.ssl_), last_failure_(std::move(other.last_failure_)), context_(other.context_),
-      server_name_(std::move(other.server_name_)), transport_params_(std::move(other.transport_params_)) {
+    : ssl_(other.ssl_),
+      last_failure_(std::move(other.last_failure_)),
+      context_(other.context_),
+      server_name_(std::move(other.server_name_)),
+      transport_params_(std::move(other.transport_params_)) {
     other.ssl_ = nullptr;
     other.context_ = nullptr;
     if (ssl_) {

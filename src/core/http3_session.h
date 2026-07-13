@@ -4,8 +4,8 @@
 #include <nghttp3/nghttp3.h>
 #include <ngtcp2/ngtcp2.h>
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <unordered_map>
 
 #include "quic_client.h"
