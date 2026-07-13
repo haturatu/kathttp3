@@ -307,6 +307,11 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   keep-alive at half of the peer-advertised idle timeout. It disables probes
   when no request stream is active; keep-alive is therefore not a background
   connection-pooling heartbeat.
+- qlog is disabled by default. Set `KatHttp3ClientConfig.qlogPathPrefix` to an
+  app-private writable path prefix to produce one mode-0600 ngtcp2 `.qlog`
+  diagnostic file per QUIC connection (including Happy Eyeballs candidates).
+  Treat qlog as sensitive connection metadata and do not enable it in normal
+  production builds.
 - DNS lookups run in a bounded two-thread resolver pool rather than on a QUIC
   worker. Cancellation and DNS deadlines discard late results. When both
   address families are available, the first resolver-ordered candidate starts

@@ -6,6 +6,7 @@
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <poll.h>
+#include <fcntl.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
 
@@ -13,6 +14,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <atomic>
 
 #include "engine.h"
 #include "http3_session.h"
@@ -42,10 +44,11 @@ constexpr size_t kReceiveCreditThreshold = 64 * 1024;
  * fallback cannot overwrite an IPv6 handshake in flight. */
 struct HandshakeCandidate {
     explicit HandshakeCandidate(QuicClient* owner_in, ResolvedEndpoint endpoint_in)
-        : owner(owner_in), endpoint(std::move(endpoint_in)) {}
+        : owner(owner_in), endpoint(std::move(endpoint_in)), qlog_fd(owner->open_qlog_file()) {}
 
     ~HandshakeCandidate() {
         if (owns_connection && conn) ngtcp2_conn_del(conn);
+        if (qlog_fd != -1) ::close(qlog_fd);
     }
 
     HandshakeCandidate(const HandshakeCandidate&) = delete;
@@ -65,6 +68,7 @@ struct HandshakeCandidate {
     bool handshake_confirmed = false;
     bool failed = false;
     bool owns_connection = true;
+    int qlog_fd = -1;
 };
 
 namespace {
@@ -79,6 +83,25 @@ ngtcp2_conn* get_conn_cb(ngtcp2_crypto_conn_ref* ref) {
 
 void rand_cb(uint8_t* dest, size_t destlen, const ngtcp2_rand_ctx*) {
     RAND_bytes(dest, static_cast<int>(destlen));
+}
+
+void write_qlog_fd(int fd, uint32_t /*flags*/, const void* data, size_t len) {
+    if (fd == -1 || !data) return;
+    const auto* p = static_cast<const uint8_t*>(data);
+    while (len != 0) {
+        const ssize_t n = ::write(fd, p, len);
+        if (n > 0) {
+            p += n;
+            len -= static_cast<size_t>(n);
+            continue;
+        }
+        if (n == -1 && errno == EINTR) continue;
+        return;  // qlog is diagnostic-only; never fail the QUIC connection.
+    }
+}
+
+void qlog_write_cb(void* user_data, uint32_t flags, const void* data, size_t len) {
+    static_cast<QuicClient*>(user_data)->write_qlog(flags, data, len);
 }
 
 int get_new_connection_id_cb(ngtcp2_conn*, ngtcp2_cid* cid, uint8_t* token, size_t cidlen,
@@ -406,6 +429,10 @@ int candidate_early_data_rejected_cb(ngtcp2_conn*, void* user_data) {
     return 0;
 }
 
+void candidate_qlog_write_cb(void* user_data, uint32_t flags, const void* data, size_t len) {
+    write_qlog_fd(candidate_from(user_data)->qlog_fd, flags, data, len);
+}
+
 constexpr ngtcp2_callbacks kCandidateCallbacks = {
     .client_initial = ngtcp2_crypto_client_initial_cb,
     .recv_crypto_data = candidate_recv_crypto_data_cb,
@@ -454,7 +481,8 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
                        uint64_t idle_timeout_ms, uint64_t dns_timeout_ms,
                        uint64_t handshake_timeout_ms, uint64_t response_headers_timeout_ms,
                        uint64_t read_timeout_ms, uint64_t write_timeout_ms,
-                       uint64_t call_timeout_ms, uint32_t quic_version)
+                       uint64_t call_timeout_ms, uint32_t quic_version,
+                       std::string qlog_path_prefix)
     : engine_(engine),
       tls_ctx_(tls_ctx),
       origin_(origin),
@@ -470,7 +498,8 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
       read_timeout_ms_(read_timeout_ms ? read_timeout_ms : idle_timeout_ms),
       write_timeout_ms_(write_timeout_ms ? write_timeout_ms : idle_timeout_ms),
       call_timeout_ms_(call_timeout_ms ? call_timeout_ms : request_timeout_ms),
-      quic_version_(quic_version) {
+      quic_version_(quic_version),
+      qlog_path_prefix_(std::move(qlog_path_prefix)) {
     conn_ref_.get_conn = get_conn_cb;
     conn_ref_.user_data = this;
     wakeup_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -482,7 +511,30 @@ QuicClient::~QuicClient() {
     wakeup();
     if (thread_.joinable()) thread_.join();
     if (conn_) ngtcp2_conn_del(conn_);
+    if (qlog_fd_ != -1) ::close(qlog_fd_);
     if (wakeup_fd_ != -1) ::close(wakeup_fd_);
+}
+
+int QuicClient::open_qlog_file() {
+    if (qlog_path_prefix_.empty()) return -1;
+    static std::atomic<uint64_t> next_qlog_id{0};
+    for (unsigned attempt = 0; attempt != 16; ++attempt) {
+        const uint64_t id = next_qlog_id.fetch_add(1, std::memory_order_relaxed);
+        const std::string path = qlog_path_prefix_ + "-" + std::to_string(getpid()) + "-" +
+                                 std::to_string(id) + ".qlog";
+        const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (fd != -1) return fd;
+        if (errno != EEXIST) {
+            KATHTTP3_LOG_WARN("qlog disabled: cannot open diagnostic file: %s\n", strerror(errno));
+            return -1;
+        }
+    }
+    KATHTTP3_LOG_WARN("qlog disabled: unable to allocate a unique diagnostic file\n");
+    return -1;
+}
+
+void QuicClient::write_qlog(uint32_t flags, const void* data, size_t len) const {
+    write_qlog_fd(qlog_fd_, flags, data, len);
 }
 
 void QuicClient::generate_reset_token(uint8_t* token, const ngtcp2_cid* cid) {
@@ -635,6 +687,8 @@ bool QuicClient::setup_connection() {
     ngtcp2_settings_default(&settings);
     settings.initial_ts = now_ns();
     settings.handshake_timeout = handshake_timeout_ms_ * NGTCP2_MILLISECONDS;
+    qlog_fd_ = open_qlog_file();
+    if (qlog_fd_ != -1) settings.qlog_write = qlog_write_cb;
 
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);
@@ -712,6 +766,7 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
     candidate->started_at = now_ns();
     settings.initial_ts = candidate->started_at;
     settings.handshake_timeout = handshake_timeout_ms_ * NGTCP2_MILLISECONDS;
+    if (candidate->qlog_fd != -1) settings.qlog_write = candidate_qlog_write_cb;
 
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);

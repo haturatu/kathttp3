@@ -85,7 +85,7 @@ class QuicClient {
                uint64_t request_timeout_ms, uint64_t idle_timeout_ms, uint64_t dns_timeout_ms,
                uint64_t handshake_timeout_ms, uint64_t response_headers_timeout_ms,
                uint64_t read_timeout_ms, uint64_t write_timeout_ms, uint64_t call_timeout_ms,
-               uint32_t quic_version);
+               uint32_t quic_version, std::string qlog_path_prefix);
     ~QuicClient();
 
     QuicClient(const QuicClient&) = delete;
@@ -162,6 +162,8 @@ class QuicClient {
     void try_submit_pending();
     void write_pending();
     void note_write_progress(int64_t stream_id);
+    int open_qlog_file();
+    void write_qlog(uint32_t flags, const void* data, size_t len) const;
 
    private:
     bool prepare_endpoints();
@@ -213,6 +215,8 @@ class QuicClient {
     uint64_t write_timeout_ms_;
     uint64_t call_timeout_ms_;
     uint32_t quic_version_;
+    std::string qlog_path_prefix_;
+    int qlog_fd_ = -1;
     bool http3_ready_ = false;
 
     std::thread thread_;

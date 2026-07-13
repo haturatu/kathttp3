@@ -40,7 +40,8 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
         config.dnsTimeoutMillis, config.handshakeTimeoutMillis,
         config.responseHeadersTimeoutMillis, config.readTimeoutMillis,
         config.writeTimeoutMillis, config.callTimeoutMillis, config.maxRedirects,
-        config.trustMode.native, config.insecureCert, config.enableCookies, config.caCertificateFile, config.resolver,
+        config.trustMode.native, config.insecureCert, config.enableCookies, config.caCertificateFile,
+        config.qlogPathPrefix, config.resolver,
     ).also { check(it != 0L) }
     private val networkMonitor = applicationContext?.let { AndroidNetworkMonitor(it) { generation -> synchronized(nativeLock) { if (!closed.get()) NativeBridge.networkChanged(handle, generation) } } }
 

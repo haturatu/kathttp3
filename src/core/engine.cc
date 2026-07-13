@@ -38,7 +38,8 @@ bool parse_content_length(std::string_view s, uint64_t& out) {
 }
 }  // namespace
 
-Engine::Engine(const kathttp3_client_options& opt) : opt_(opt) {
+Engine::Engine(const kathttp3_client_options& opt)
+    : opt_(opt), qlog_path_prefix_(opt.qlog_path_prefix ? opt.qlog_path_prefix : "") {
     if (opt.resolve_cb) {
         kathttp3_resolve_cb cb = opt.resolve_cb;
         void* ud = opt.resolve_cb_userdata;
@@ -110,7 +111,7 @@ QuicClient* Engine::get_or_create_client(const Url& origin) {
         this, tls_ctx_, origin, resolver_, opt_.enable_0rtt != 0, opt_.connect_timeout_ms,
         opt_.request_timeout_ms, opt_.idle_timeout_ms, opt_.dns_timeout_ms,
         opt_.handshake_timeout_ms, opt_.response_headers_timeout_ms, opt_.read_timeout_ms,
-        opt_.write_timeout_ms, opt_.call_timeout_ms, opt_.quic_version);
+        opt_.write_timeout_ms, opt_.call_timeout_ms, opt_.quic_version, qlog_path_prefix_);
     QuicClient* p = qc.get();
     pool_.emplace(key, std::move(qc));
     return p;

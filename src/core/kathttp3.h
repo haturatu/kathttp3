@@ -111,6 +111,9 @@ typedef struct kathttp3_client_options {
     uint64_t write_timeout_ms;
     uint64_t call_timeout_ms;
     uint8_t enable_cookies; /* 0 = disabled (default); 1 = experimental jar */
+    /* NULL = disabled.  When set, KatHttp3 writes one private .qlog file per
+     * QUIC connection using this path as a prefix. */
+    const char* qlog_path_prefix;
 } kathttp3_client_options;
 
 /* Stable name for new C callers. `kathttp3_client_options` remains source

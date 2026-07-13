@@ -14,7 +14,7 @@ internal object NativeBridge {
     external fun createClient(connectMs: Long, requestMs: Long, idleMs: Long, dnsMs: Long,
         handshakeMs: Long, responseHeadersMs: Long, readMs: Long, writeMs: Long, callMs: Long,
         maxRedirects: Int, trustMode: Int, insecureCert: Boolean, enableCookies: Boolean, caCertificateFile: String?,
-        resolver: DnsResolver?): Long
+        qlogPathPrefix: String?, resolver: DnsResolver?): Long
     external fun closeClient(handle: Long)
     external fun destroyClient(handle: Long)
     external fun execute(handle: Long, id: Long, method: String, url: String, names: Array<String>, values: Array<String>, body: ByteArray?, followRedirects: Boolean, streaming: Boolean, streamingRequestBody: Boolean, streamingContentLength: Long, callback: NativeCallback): Boolean

@@ -79,6 +79,7 @@ class Engine {
     std::shared_ptr<std::atomic<uint64_t>> resolver_network_generation_ =
         std::make_shared<std::atomic<uint64_t>>(0);
     kathttp3_client_options opt_{};
+    std::string qlog_path_prefix_;
     std::shared_ptr<Resolver> resolver_;
     std::shared_ptr<DnsCache> dns_cache_;
     TlsClientContext tls_ctx_;
