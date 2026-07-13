@@ -112,7 +112,25 @@ void install_custom_verify(SSL_CTX* ctx, CertificateVerifier* v) {
  * ----------------------------------------------------------------- */
 
 TlsClientContext::~TlsClientContext() {
+    for (auto& entry : sessions_) SSL_SESSION_free(entry.second);
     if (ssl_ctx_) SSL_CTX_free(ssl_ctx_);
+}
+
+SSL_SESSION* TlsClientContext::acquire_session(const std::string& server_name) {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    auto it = sessions_.find(server_name);
+    if (it == sessions_.end() || SSL_SESSION_up_ref(it->second) != 1) return nullptr;
+    return it->second;
+}
+
+void TlsClientContext::cache_session(const std::string& server_name, SSL* ssl) {
+    if (server_name.empty()) return;
+    SSL_SESSION* session = SSL_get1_session(ssl);
+    if (!session) return;
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    auto& slot = sessions_[server_name];
+    SSL_SESSION_free(slot);
+    slot = session;
 }
 
 bool TlsClientContext::init(kathttp3_trust_mode trust_mode, bool insecure,
@@ -219,6 +237,7 @@ bool TlsClientContext::init(kathttp3_trust_mode trust_mode, bool insecure,
 
 TlsClientSession::~TlsClientSession() {
     if (ssl_) {
+        if (context_) context_->cache_session(server_name_, ssl_);
         // Detach the conn_ref so the crypto callbacks can't reach a dead
         // ngtcp2_conn during SSL_free.
         SSL_set_app_data(ssl_, nullptr);
@@ -227,8 +246,10 @@ TlsClientSession::~TlsClientSession() {
 }
 
 TlsClientSession::TlsClientSession(TlsClientSession&& other) noexcept
-    : ssl_(other.ssl_), last_failure_(std::move(other.last_failure_)) {
+    : ssl_(other.ssl_), last_failure_(std::move(other.last_failure_)), context_(other.context_),
+      server_name_(std::move(other.server_name_)) {
     other.ssl_ = nullptr;
+    other.context_ = nullptr;
     if (ssl_) {
         ensure_ex_indices();
         SSL_set_ex_data(ssl_, g_session_ex_index, this);
@@ -238,12 +259,16 @@ TlsClientSession::TlsClientSession(TlsClientSession&& other) noexcept
 TlsClientSession& TlsClientSession::operator=(TlsClientSession&& other) noexcept {
     if (this == &other) return *this;
     if (ssl_) {
+        if (context_) context_->cache_session(server_name_, ssl_);
         SSL_set_app_data(ssl_, nullptr);
         SSL_free(ssl_);
     }
     ssl_ = other.ssl_;
     last_failure_ = std::move(other.last_failure_);
+    context_ = other.context_;
+    server_name_ = std::move(other.server_name_);
     other.ssl_ = nullptr;
+    other.context_ = nullptr;
     if (ssl_) {
         ensure_ex_indices();
         SSL_set_ex_data(ssl_, g_session_ex_index, this);
@@ -264,6 +289,17 @@ bool TlsClientSession::init(TlsClientContext& ctx, const std::string& server_nam
     SSL_set_app_data(ssl_, conn_ref);
     SSL_set_connect_state(ssl_);
     SSL_set_alpn_protos(ssl_, H3_ALPN, sizeof(H3_ALPN));
+    context_ = &ctx;
+    server_name_ = server_name;
+
+    // TLS resumption is safe with the ticket alone. 0-RTT additionally needs
+    // cached QUIC transport parameters, so never enable early data merely
+    // because a ticket exists.
+    if (SSL_SESSION* session = ctx.acquire_session(server_name)) {
+        if (SSL_set_session(ssl_, session) != 1)
+            KATHTTP3_LOG_WARN("SSL_set_session failed; using full handshake\n");
+        SSL_SESSION_free(session);
+    }
 
     if (!server_name.empty()) {
         SSL_set_tlsext_host_name(ssl_, server_name.c_str());
@@ -275,7 +311,9 @@ bool TlsClientSession::init(TlsClientContext& ctx, const std::string& server_nam
 
     if (enable_early_data) {
 #ifdef KATHTTP3_USE_BORINGSSL
-        SSL_set_early_data_enabled(ssl_, 1);
+        // Deferred until a future QUIC transport-parameter cache is added.
+        // Enabling it now would violate ngtcp2's 0-RTT setup contract.
+        KATHTTP3_LOG_WARN("0-RTT requested but unavailable without cached QUIC transport parameters\n");
 #endif
     }
 

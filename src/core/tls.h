@@ -7,7 +7,9 @@
 #include <openssl/ssl.h>
 
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include "cert_verifier.h"
 #include "kathttp3.h"
@@ -48,11 +50,16 @@ class TlsClientContext {
         return verifier_;
     }
 
+    SSL_SESSION* acquire_session(const std::string& server_name);
+    void cache_session(const std::string& server_name, SSL* ssl);
+
    private:
     SSL_CTX* ssl_ctx_ = nullptr;
     std::unique_ptr<CertificateVerifier> owned_verifier_;
     CertificateVerifier* verifier_ = nullptr; /* active verifier (may be
                                                * injected, not owned) */
+    std::mutex session_mutex_;
+    std::unordered_map<std::string, SSL_SESSION*> sessions_;
 };
 
 /* A single QUIC connection's TLS session (one SSL object). */
@@ -100,6 +107,8 @@ class TlsClientSession {
    private:
     SSL* ssl_ = nullptr;
     TlsFailure last_failure_{};
+    TlsClientContext* context_ = nullptr;
+    std::string server_name_;
 };
 
 } /* namespace kathttp3 */
