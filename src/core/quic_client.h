@@ -187,6 +187,12 @@ class QuicClient {
     std::mutex consume_mutex_;
     std::vector<std::pair<int64_t, size_t>> pending_consumes_;
 
+    // nghttp3 is owned exclusively by the QUIC worker. Producers append
+    // request-body chunks from arbitrary threads and queue stream resumes
+    // here; process_wakeup() performs the actual nghttp3 call.
+    std::mutex request_body_resume_mutex_;
+    std::vector<int64_t> pending_request_body_resumes_;
+
     void fail_all_pending(int err);
     void wakeup();
 

@@ -1136,6 +1136,17 @@ void QuicClient::process_wakeup() {
             ngtcp2_conn_extend_max_offset(conn_, kv.second);
         }
     }
+
+    // A request-body producer may run on a Kotlin/Java worker thread. nghttp3
+    // is not thread-safe, so resume streams only from this QUIC worker thread.
+    std::vector<int64_t> body_resumes;
+    {
+        std::lock_guard<std::mutex> lk(request_body_resume_mutex_);
+        body_resumes.swap(pending_request_body_resumes_);
+    }
+    if (http3_ && http3_->ready()) {
+        for (int64_t stream_id : body_resumes) http3_->resume_stream(stream_id);
+    }
 }
 
 int QuicClient::consume(int64_t request_id, size_t bytes) {
@@ -1187,7 +1198,10 @@ int QuicClient::append_request_body(int64_t request_id, const uint8_t* data, siz
         target->request_body_finished = finished;
         stream_id = target->stream_id;
     }
-    if (http3_ && stream_id >= 0) http3_->resume_stream(stream_id);
+    if (stream_id >= 0) {
+        std::lock_guard<std::mutex> lk(request_body_resume_mutex_);
+        pending_request_body_resumes_.push_back(stream_id);
+    }
     wakeup();
     return KATHTTP3_OK;
 }
