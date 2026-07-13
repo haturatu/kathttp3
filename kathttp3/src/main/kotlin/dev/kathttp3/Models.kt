@@ -26,6 +26,12 @@ data class KatHttp3ClientConfig(
     val maxRedirects: Int = 10,
     val maxBufferedBodyBytes: Long = 16L * 1024 * 1024,
     val maxStreamingBufferedBodyBytes: Long = 4L * 1024 * 1024,
+    /** Local admission-control limit; distinct from QUIC peer MAX_STREAMS. */
+    val maxActiveStreamsPerOrigin: Int = 8,
+    /** Maximum calls waiting for a local admission-control permit per origin. */
+    val maxQueuedRequestsPerOrigin: Int = 64,
+    /** Time a call may wait before native request creation; excludes read timeout. */
+    val queueTimeoutMillis: Long = 30_000,
     val caCertificateFile: String? = null,
     val trustMode: TrustMode = TrustMode.PLATFORM,
     val insecureCert: Boolean = false,
@@ -42,6 +48,8 @@ data class KatHttp3ClientConfig(
         require(responseHeadersTimeoutMillis > 0 && readTimeoutMillis > 0)
         require(writeTimeoutMillis > 0 && callTimeoutMillis > 0)
         require(maxRedirects >= 0 && maxBufferedBodyBytes > 0 && maxStreamingBufferedBodyBytes > 0)
+        require(maxActiveStreamsPerOrigin > 0 && maxQueuedRequestsPerOrigin >= 0)
+        require(queueTimeoutMillis > 0)
         require(caCertificateFile == null || caCertificateFile.isNotBlank())
     }
 }
@@ -69,6 +77,9 @@ sealed class KatHttp3Exception(message: String) : IOException(message) {
     class Timeout(val phase: KatHttp3TimeoutPhase) : KatHttp3Exception("${phase.name} timed out")
     class Closed : KatHttp3Exception("Client is closed")
     class BodyTooLarge : KatHttp3Exception("Response exceeds configured body limit")
+    class RequestQueueFull(val origin: String) : KatHttp3Exception("Request queue is full for $origin")
+    class RequestQueueTimeout(val origin: String, val timeoutMillis: Long) :
+        KatHttp3Exception("Request queue timed out for $origin after $timeoutMillis ms")
     class Native(val code: Int) : KatHttp3Exception("Native HTTP/3 error: $code")
 }
 

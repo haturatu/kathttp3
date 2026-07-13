@@ -223,6 +223,14 @@ native queue (4 MiB), and a non-empty `Stream` chunk is required. Retries are
 opt-in: add `PolicyRetryInterceptor` (or `RetryInterceptor`) through
 `KatHttp3ClientConfig.interceptors`; the default client does not retry.
 
+KatHttp3 also applies local, origin-scoped admission control before a request is
+created in native code. `maxActiveStreamsPerOrigin` defaults to 8,
+`maxQueuedRequestsPerOrigin` to 64, and `queueTimeoutMillis` to 30 seconds.
+This is a client resource limit, not QUIC's peer-advertised `MAX_STREAMS`.
+Queue waiting does not consume response-header, read-idle, or write-idle time;
+it ends with `KatHttp3Exception.RequestQueueTimeout` or
+`KatHttp3Exception.RequestQueueFull` before native stream creation.
+
 Pass an application `Context` to `KatHttp3Client` to enable its internal
 `ConnectivityManager` observer. On a network-generation change it closes the
 existing connection pool and DNS entries; it does not perform QUIC connection
