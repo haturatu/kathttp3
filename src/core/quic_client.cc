@@ -46,6 +46,17 @@ void configure_receive_windows(ngtcp2_transport_params* params) {
     params->initial_max_stream_data_bidi_remote = kReceiveBufferPerStreamHighWatermark;
     params->initial_max_data = kReceiveBufferPerConnectionLimit;
 }
+
+bool is_0rtt_replay_safe(const Job& job) {
+    if (!job.request || !job.request->body.empty() || job.request->streaming_body) return false;
+    if (job.request->method != "GET" && job.request->method != "HEAD") return false;
+    for (const auto& header : job.request->headers.all()) {
+        if (header.name == "authorization" || header.name == "proxy-authorization" ||
+            header.name == "cookie")
+            return false;
+    }
+    return true;
+}
 }  // namespace
 
 /* A pre-HTTP/3 connection attempt.  Each candidate owns every object which
@@ -686,6 +697,36 @@ bool QuicClient::connect_to_endpoint() {
     return true;
 }
 
+bool QuicClient::configure_early_data(ngtcp2_conn* conn,
+                                      TlsClientContext::ResumptionState* resumption) {
+    if (!enable_0rtt_ || !conn || !resumption || !resumption->session ||
+        resumption->transport_params.empty() || !resumption->early_data_capable) {
+        return false;
+    }
+    const int rv = ngtcp2_conn_decode_and_set_0rtt_transport_params(
+        conn, resumption->transport_params.data(), resumption->transport_params.size());
+    if (rv != 0) {
+        KATHTTP3_LOG_WARN("0-RTT disabled: cached transport parameters rejected: %s\n",
+                          ngtcp2_strerror(rv));
+        return false;
+    }
+    return true;
+}
+
+void QuicClient::cache_0rtt_transport_params() {
+    if (!conn_) return;
+    std::vector<uint8_t> encoded(1024);
+    const ngtcp2_ssize n =
+        ngtcp2_conn_encode_0rtt_transport_params2(conn_, encoded.data(), encoded.size());
+    if (n < 0) {
+        KATHTTP3_LOG_WARN("cannot cache 0-RTT transport parameters: %s\n",
+                          ngtcp2_strerror(static_cast<int>(n)));
+        return;
+    }
+    encoded.resize(static_cast<size_t>(n));
+    tls_session_.set_resumption_transport_params(std::move(encoded));
+}
+
 bool QuicClient::setup_connection() {
     ngtcp2_cid scid{}, dcid{};
     scid.datalen = 8;
@@ -746,13 +787,26 @@ bool QuicClient::setup_connection() {
         return false;
     }
 
-    if (!tls_session_.init(tls_ctx_, origin_.host, enable_0rtt_, &conn_ref_)) {
+    auto resumption = tls_ctx_.acquire_resumption(origin_.host);
+    early_data_enabled_ = configure_early_data(conn_, &resumption);
+    const bool early_params_installed = early_data_enabled_;
+    SSL_SESSION* resume_session = resumption.session;
+    resumption.session = nullptr;  // ownership transfers to TlsClientSession::init
+    if (!tls_session_.init(tls_ctx_, origin_.host, resume_session, &early_data_enabled_,
+                           &conn_ref_)) {
         return false;
     }
+    if (early_params_installed && !early_data_enabled_) ngtcp2_conn_tls_early_data_rejected(conn_);
     ngtcp2_conn_set_tls_native_handle(conn_, tls_session_.native());
 
     path_ = path;
     http3_ = std::make_unique<Http3Session>(this, conn_);
+    if (early_data_enabled_ && http3_->setup_codec()) {
+        http3_ready_ = true;
+        // Only replay-safe requests can become observable before the server
+        // confirms the TLS handshake. Others remain in FIFO order for 1-RTT.
+        try_submit_pending();
+    }
     handshake_confirmed_.store(false);
     state_.store(ConnectionState::Connecting);
     return true;
@@ -815,8 +869,19 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
     }
     candidate->conn_ref.get_conn = candidate_get_conn_cb;
     candidate->conn_ref.user_data = candidate.get();
-    if (!candidate->tls.init(tls_ctx_, origin_.host, enable_0rtt_, &candidate->conn_ref))
+    // 0-RTT intentionally avoids the parallel Happy Eyeballs path: opening
+    // early request streams on two candidates could duplicate an observable
+    // request before a handshake winner is known.
+    auto resumption = tls_ctx_.acquire_resumption(origin_.host);
+    bool candidate_early = configure_early_data(candidate->conn, &resumption);
+    const bool candidate_early_params_installed = candidate_early;
+    SSL_SESSION* resume_session = resumption.session;
+    resumption.session = nullptr;
+    if (!candidate->tls.init(tls_ctx_, origin_.host, resume_session, &candidate_early,
+                             &candidate->conn_ref))
         return false;
+    if (candidate_early_params_installed && !candidate_early)
+        ngtcp2_conn_tls_early_data_rejected(candidate->conn);
     ngtcp2_conn_set_tls_native_handle(candidate->conn, candidate->tls.native());
     handshake_candidates_.push_back(std::move(candidate));
     return true;
@@ -983,7 +1048,8 @@ void QuicClient::run() {
         has_ipv4 = has_ipv4 || endpoint.family == AF_INET;
         has_ipv6 = has_ipv6 || endpoint.family == AF_INET6;
     }
-    if (has_ipv4 && has_ipv6) {
+    if (has_ipv4 && has_ipv6 &&
+        !(enable_0rtt_ && tls_ctx_.has_early_resumption(origin_.host))) {
         if (run_handshake_race()) {
             /* Exactly one candidate owns the connection now.  Requests have
              * remained pending until this point, so this is safe for POST and
@@ -1355,6 +1421,9 @@ void QuicClient::try_submit_pending() {
                 it = pending_jobs_.erase(it);
                 continue;
             }
+            if (early_data_enabled_ && !handshake_confirmed_.load() && !is_0rtt_replay_safe(*job)) {
+                break;
+            }
             int64_t stream_id;
             int rv = ngtcp2_conn_open_bidi_stream(conn_, &stream_id, nullptr);
             if (rv == NGTCP2_ERR_STREAM_ID_BLOCKED) {
@@ -1388,6 +1457,7 @@ void QuicClient::on_handshake_confirmed() {
 
 bool QuicClient::on_handshake_completed() {
     KATHTTP3_LOG_ERR("handshake completed\n");
+    cache_0rtt_transport_params();
     if (!http3_ready_ && http3_) {
         if (http3_->setup_codec()) {
             http3_ready_ = true;
@@ -1467,7 +1537,22 @@ bool QuicClient::on_stream_stop_sending(int64_t stream_id, uint64_t app_error_co
 }
 
 void QuicClient::on_early_data_rejected() {
-    if (http3_) http3_->early_data_rejected();
+    if (!early_data_enabled_) return;
+    early_data_enabled_ = false;
+    // ngtcp2 discards early streams and stream-ID allocations. Recreate the
+    // HTTP/3 control/QPACK state and replay only requests that have not
+    // produced an application-visible response.
+    {
+        std::lock_guard<std::mutex> lock(job_mutex_);
+        for (auto it = active_jobs_.begin(); it != active_jobs_.end();) {
+            (*it)->stream_id = -1;
+            (*it)->http3_ready = false;
+            pending_jobs_.push_back(std::move(*it));
+            it = active_jobs_.erase(it);
+        }
+    }
+    http3_ = std::make_unique<Http3Session>(this, conn_);
+    http3_ready_ = false;
 }
 
 void QuicClient::notify_job_headers(Job* job, int status, const HeaderList& headers) {

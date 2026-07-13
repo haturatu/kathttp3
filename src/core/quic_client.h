@@ -190,6 +190,8 @@ class QuicClient {
     void process_wakeup();
     void expire_requests(uint64_t now);
     void update_keep_alive();
+    bool configure_early_data(ngtcp2_conn* conn, TlsClientContext::ResumptionState* resumption);
+    void cache_0rtt_transport_params();
 
     /* Pending HTTP/3 receive-window extensions (streaming backpressure),
      * drained on the worker thread. Pair = (stream_id, bytes). */
@@ -223,6 +225,7 @@ class QuicClient {
     std::string qlog_path_prefix_;
     int qlog_fd_ = -1;
     bool http3_ready_ = false;
+    bool early_data_enabled_ = false;
 
     std::thread thread_;
     std::atomic<bool> closed_{false};

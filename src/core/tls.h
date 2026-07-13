@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "cert_verifier.h"
 #include "kathttp3.h"
@@ -50,8 +51,19 @@ class TlsClientContext {
         return verifier_;
     }
 
-    SSL_SESSION* acquire_session(const std::string& server_name);
-    void cache_session(const std::string& server_name, SSL* ssl);
+    struct ResumptionState {
+        SSL_SESSION* session = nullptr;  // caller owns one reference
+        std::vector<uint8_t> transport_params;
+        bool early_data_capable = false;
+    };
+
+    /* Ticket and 0-RTT transport parameters are acquired atomically from the
+     * same origin entry, preventing a ticket from being combined with stale
+     * parameters from another session. */
+    ResumptionState acquire_resumption(const std::string& server_name);
+    bool has_early_resumption(const std::string& server_name);
+    void cache_resumption(const std::string& server_name, SSL* ssl,
+                          std::vector<uint8_t> transport_params);
 
    private:
     SSL_CTX* ssl_ctx_ = nullptr;
@@ -59,7 +71,11 @@ class TlsClientContext {
     CertificateVerifier* verifier_ = nullptr; /* active verifier (may be
                                                * injected, not owned) */
     std::mutex session_mutex_;
-    std::unordered_map<std::string, SSL_SESSION*> sessions_;
+    struct CachedResumption {
+        SSL_SESSION* session = nullptr;
+        std::vector<uint8_t> transport_params;
+    };
+    std::unordered_map<std::string, CachedResumption> resumptions_;
 };
 
 /* A single QUIC connection's TLS session (one SSL object). */
@@ -75,8 +91,12 @@ class TlsClientSession {
 
     /* `conn_ref` must outlive the session; it is used by the ngtcp2_crypto
      * callbacks to recover the ngtcp2_conn. */
-    bool init(TlsClientContext& ctx, const std::string& server_name, bool enable_early_data,
-              ngtcp2_crypto_conn_ref* conn_ref);
+    bool init(TlsClientContext& ctx, const std::string& server_name, SSL_SESSION* resume_session,
+              bool* enable_early_data, ngtcp2_crypto_conn_ref* conn_ref);
+
+    void set_resumption_transport_params(std::vector<uint8_t> transport_params) {
+        transport_params_ = std::move(transport_params);
+    }
 
     SSL* native() const {
         return ssl_;
@@ -109,6 +129,7 @@ class TlsClientSession {
     TlsFailure last_failure_{};
     TlsClientContext* context_ = nullptr;
     std::string server_name_;
+    std::vector<uint8_t> transport_params_;
 };
 
 } /* namespace kathttp3 */

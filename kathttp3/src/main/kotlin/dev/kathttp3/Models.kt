@@ -44,6 +44,8 @@ data class KatHttp3ClientConfig(
     /** Experimental: enables KatHttp3's in-memory cookie jar. It deliberately
      * has no PSL integration, so it is off by default. */
     val enableCookies: Boolean = false,
+    /** Opt-in 0-RTT for replay-safe GET/HEAD requests without credentials. */
+    val enable0Rtt: Boolean = false,
     val expectSuccess: Boolean = false,
     val interceptors: List<HttpInterceptor> = emptyList(),
     val resolver: DnsResolver? = null,
