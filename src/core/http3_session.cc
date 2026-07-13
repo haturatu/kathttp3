@@ -432,7 +432,12 @@ void Http3Session::pump_write(ngtcp2_tstamp ts) {
         }
         if (ndatalen > 0) client_->note_write_progress(stream_id);
         if (w == 0) return;
-        if (w > 0) client_->send_packet(pkt, static_cast<size_t>(w));
+        if (w > 0) {
+            client_->send_packet(pkt, static_cast<size_t>(w));
+            // write_pending will call us again after ngtcp2's paced send
+            // quantum opens. Do not construct more packets in this turn.
+            if (client_->send_quantum_exhausted()) return;
+        }
     }
 }
 

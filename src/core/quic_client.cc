@@ -36,6 +36,7 @@ constexpr uint64_t kReceiveBufferPerStreamHighWatermark = 1 * 1024 * 1024;
 constexpr uint64_t kReceiveBufferPerStreamLowWatermark = 512 * 1024;
 constexpr uint64_t kReceiveBufferPerConnectionLimit = 8 * 1024 * 1024;
 constexpr size_t kReceiveCreditThreshold = 64 * 1024;
+constexpr size_t kMinimumSendQuantum = NGTCP2_MAX_PKTLEN;
 }  // namespace
 
 /* A pre-HTTP/3 connection attempt.  Each candidate owns every object which
@@ -687,6 +688,9 @@ bool QuicClient::setup_connection() {
     ngtcp2_settings_default(&settings);
     settings.initial_ts = now_ns();
     settings.handshake_timeout = handshake_timeout_ms_ * NGTCP2_MILLISECONDS;
+    // PMTUD is deliberately enabled. ngtcp2 uses its safe built-in probe
+    // sequence unless a future platform-specific policy supplies probes.
+    settings.no_pmtud = 0;
     qlog_fd_ = open_qlog_file();
     if (qlog_fd_ != -1) settings.qlog_write = qlog_write_cb;
 
@@ -766,6 +770,7 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
     candidate->started_at = now_ns();
     settings.initial_ts = candidate->started_at;
     settings.handshake_timeout = handshake_timeout_ms_ * NGTCP2_MILLISECONDS;
+    settings.no_pmtud = 0;
     if (candidate->qlog_fd != -1) settings.qlog_write = candidate_qlog_write_cb;
 
     ngtcp2_transport_params params;
@@ -1175,10 +1180,29 @@ void QuicClient::drain_wakeup() {
 
 void QuicClient::on_readable() {}
 
+void QuicClient::begin_send_quantum() {
+    bytes_sent_in_quantum_ = 0;
+    sent_packet_in_quantum_ = false;
+    send_quantum_bytes_ = std::max(kMinimumSendQuantum, ngtcp2_conn_get_send_quantum2(conn_));
+}
+
+bool QuicClient::send_quantum_exhausted() const {
+    return bytes_sent_in_quantum_ >= send_quantum_bytes_ || sock_.wants_write();
+}
+
+void QuicClient::finish_send_quantum(ngtcp2_tstamp ts) {
+    if (sent_packet_in_quantum_) ngtcp2_conn_update_pkt_tx_time(conn_, ts);
+}
+
 void QuicClient::write_pending() {
     uint64_t now = now_ns();
+    begin_send_quantum();
     if (http3_ && http3_->ready()) {
         http3_->pump_write(now);
+    }
+    if (send_quantum_exhausted()) {
+        finish_send_quantum(now);
+        return;
     }
     uint8_t pkt[NGTCP2_MAX_PKTLEN];
     for (;;) {
@@ -1192,7 +1216,11 @@ void QuicClient::write_pending() {
         }
         if (n == 0) break;
         sock_.send(pkt, static_cast<size_t>(n), pi.ecn);
+        bytes_sent_in_quantum_ += static_cast<size_t>(n);
+        sent_packet_in_quantum_ = true;
+        if (send_quantum_exhausted()) break;
     }
+    finish_send_quantum(now);
 }
 
 void QuicClient::process_wakeup() {

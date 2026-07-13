@@ -129,7 +129,12 @@ class QuicClient {
     }
     void send_packet(const uint8_t* data, size_t len) {
         sock_.send(data, len, 0);
+        bytes_sent_in_quantum_ += len;
+        sent_packet_in_quantum_ = true;
     }
+    void begin_send_quantum();
+    bool send_quantum_exhausted() const;
+    void finish_send_quantum(ngtcp2_tstamp ts);
 
     void notify_job_headers(Job* job, int status, const HeaderList& headers);
     void notify_job_body(Job* job, const uint8_t* data, size_t len);
@@ -250,6 +255,9 @@ class QuicClient {
     std::vector<std::unique_ptr<Job>> pending_jobs_;  // not yet submitted
     std::vector<std::unique_ptr<Job>> active_jobs_;   // submitted (stream open)
     uint64_t last_active_ = 0;
+    size_t send_quantum_bytes_ = 0;
+    size_t bytes_sent_in_quantum_ = 0;
+    bool sent_packet_in_quantum_ = false;
     uint64_t connection_started_at_ = 0;
     uint64_t handshake_started_at_ = 0;
     int terminal_error_ = KATHTTP3_ERR_QUIC;
