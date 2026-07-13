@@ -107,19 +107,19 @@ jobs:
           -DKATHTTP3_ANALYSIS_ONLY=ON
           -DKATHTTP3_ANALYSIS_DEPS_INCLUDE_DIR=${{ github.workspace }}/third_party/android-deps/x86_64/include
           -DKATHTTP3_BUILD_JNI=OFF
-      - name: Run clang-tidy
-        run: run-clang-tidy -p build-tidy -quiet
-      - name: Run cppcheck
-        run: >-
-          cppcheck --project=build-tidy/compile_commands.json
-          --enable=warning,performance,portability
-          --inline-suppr --suppress=missingIncludeSystem
-          --error-exitcode=1
-      - name: Report cppcheck style recommendations
-        if: always()
-        run: >-
-          cppcheck --project=build-tidy/compile_commands.json
-          --enable=style --inline-suppr --suppress=missingIncludeSystem || true
+      - parallel:
+          - name: Run clang-tidy
+            run: run-clang-tidy -p build-tidy -quiet
+          - name: Run cppcheck
+            run: >-
+              cppcheck --project=build-tidy/compile_commands.json
+              --enable=warning,performance,portability
+              --inline-suppr --suppress=missingIncludeSystem
+              --error-exitcode=1
+          - name: Report cppcheck style recommendations
+            run: >-
+              cppcheck --project=build-tidy/compile_commands.json
+              --enable=style --inline-suppr --suppress=missingIncludeSystem || true
 
   sanitizers:
     runs-on: ubuntu-24.04
