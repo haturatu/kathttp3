@@ -191,7 +191,9 @@ ssize_t UdpSocket::send_now_gso(const uint8_t* data, size_t len, uint16_t segmen
         errno = EINVAL;
         return -1;
     }
-    gso_cm->cmsg_level = SOL_UDP;
+    // IPPROTO_UDP is the portable socket-level spelling used for UDP_SEGMENT;
+    // some host libc headers used by clang-tidy do not expose SOL_UDP.
+    gso_cm->cmsg_level = IPPROTO_UDP;
     gso_cm->cmsg_type = UDP_SEGMENT;
     gso_cm->cmsg_len = CMSG_LEN(sizeof(uint16_t));
     *reinterpret_cast<uint16_t*>(CMSG_DATA(gso_cm)) = segment_size;
