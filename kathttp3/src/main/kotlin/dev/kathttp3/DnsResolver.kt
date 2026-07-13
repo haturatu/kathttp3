@@ -25,7 +25,8 @@ interface DnsResolver {
 }
 
 /** Uses the platform resolver (InetAddress), which on Android honors the
- * system DNS / private DNS (DoT) and Happy Eyeballs ordering. */
+ * system DNS / private DNS (DoT). The native client plans address-family
+ * fallback after this resolver returns its addresses. */
 class PlatformDnsResolver : DnsResolver {
     override fun resolve(host: String, port: Int): List<ResolvedAddress> =
         InetAddress.getAllByName(host).map { ResolvedAddress(it.hostAddress ?: return@map null, port) }

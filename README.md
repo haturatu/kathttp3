@@ -2,7 +2,10 @@
 
 KatHttp3 is an experimental HTTP/3 client for Android (API 26+) with a C++20 core, stable C ABI, JNI bridge, coroutine Kotlin API, and a Jetpack Compose example. The transport stack is `ngtcp2 1.24.0 + nghttp3 1.17.0 + BoringSSL`.
 
-> Status: the host core/JNI and Android builds compile, core/Kotlin unit tests pass, and the four-ABI debug example APK has been assembled and installed on an arm64 Android device. On Android, certificate verification now uses the platform `X509TrustManager` by default (no bundled CA file required) and live HTTP/3 requests to public servers succeed; this is not production-ready.
+> Status: host core tests and Android library/example builds are automated. The
+> repository does not include a local HTTP/3-server integration test, so
+> interoperability, redirects, uploads, and cancellation still need validation
+> against the target server and Android network.
 
 ## Architecture and ownership
 
@@ -45,7 +48,8 @@ Prerequisites:
 
 - Android SDK with platform 36 and build-tools 36.0.0
 - Android NDK `27.0.12077973`
-- CMake 3.22.1 or newer, Git, Go, and Java 17. Ninja is recommended; Unix Makefiles are used automatically when Ninja is unavailable.
+- CMake 3.22.1 or newer, Git, and Java 17. Ninja is recommended; Unix
+  Makefiles are used automatically when Ninja is unavailable.
 
 Set `ANDROID_HOME` or `ANDROID_SDK_ROOT`. An explicit `ANDROID_NDK_HOME` is also accepted. KatHttp3 deliberately does not link Android's private platform BoringSSL ABI. The checked-in build script downloads fixed upstream sources and cross-compiles these static libraries:
 
@@ -128,6 +132,8 @@ need project-specific mappings.  Install `include-what-you-use` and configure
 with `-DKATHTTP3_ENABLE_IWYU=ON` when running this manual audit.
 
 The module uses compile SDK 36, minimum SDK 26, and Java/Kotlin JVM target 17.
+The checked-in wrapper uses Gradle 9.6.1; the Android Gradle Plugin version is
+9.2.1 and the Compose compiler plugin version is 2.4.0.
 
 ### Publishing and consuming
 
@@ -145,7 +151,7 @@ a repository and depend on the tag you want:
 
 ```kotlin
 repositories { maven("https://jitpack.io") }
-dependencies { implementation("com.github.haturatu:kathttp3:v0.1.0") }
+dependencies { implementation("com.github.haturatu:kathttp3:v0.1.8") }
 ```
 
 For stable releases, build the AAR once in CI (`[Android AAR]` workflow), publish
@@ -199,7 +205,11 @@ val job = lifecycleScope.launch {
 job.cancel() // propagated to RESET_STREAM / STOP_SENDING
 ```
 
-`execute` buffers at most `maxBufferedBodyBytes` (16 MiB by default). `executeStreaming` exposes a bounded `Flow<KatHttp3StreamEvent>`; close/cancel its `KatHttp3Call` when abandoning collection.
+`execute` buffers at most `maxBufferedBodyBytes` (16 MiB by default).
+`executeStreaming` exposes a bounded `Flow<KatHttp3StreamEvent>`; close/cancel
+its `KatHttp3Call` when abandoning collection. Native receive-window credit is
+queued from the Kotlin `Flow` delivery hook, rather than being returned directly
+from the JNI body callback.
 
 `KatHttp3ClientConfig` has independent monotonic deadlines for DNS, connect,
 handshake, response headers, read-idle, write-idle, and the complete call.
@@ -207,9 +217,29 @@ handshake, response headers, read-idle, write-idle, and the complete call.
 only when the corresponding direction makes progress. Timeout failures are
 reported as `KatHttp3Exception.Timeout` with a `KatHttp3TimeoutPhase`.
 
+`KatHttp3RequestBody.Bytes`, `FileBody`, and `Stream` support buffered,
+file-backed, and producer-`Flow` uploads. `FileBody` and `Stream` use a bounded
+native queue (4 MiB), and a non-empty `Stream` chunk is required. Retries are
+opt-in: add `PolicyRetryInterceptor` (or `RetryInterceptor`) through
+`KatHttp3ClientConfig.interceptors`; the default client does not retry.
+
+Pass an application `Context` to `KatHttp3Client` to enable its internal
+`ConnectivityManager` observer. On a network-generation change it closes the
+existing connection pool and DNS entries; it does not perform QUIC connection
+migration.
+
 ## Example app
 
-The local-module Compose app is in `example/` and uses `implementation(project(":kathttp3"))`. Install `example/build/outputs/apk/debug/example-debug.apk`, enter an HTTPS URL served over HTTP/3, select GET, POST, PUT, DELETE, PATCH, or HEAD, then press the single `Send <method>` button. POST, PUT, PATCH, and DELETE expose an editable UTF-8 body; headers are entered as lowercase `name: value` lines. Cancel cancels the coroutine and native request. The app shows status, headers, HTTP/3-over-QUIC protocol information, duration, byte count, and errors; response rendering is capped at 16,000 characters to keep the UI responsive. No public endpoint is hard-coded and cleartext traffic is disabled.
+The local-module Compose app is in `example/` and uses `implementation(project(":kathttp3"))`.
+It starts each method with an empty header/body preset and an editable
+`https://nghttp2.org/httpbin` URL; replace that URL when testing another
+HTTP/3-capable HTTPS server. Select GET, POST, PUT, DELETE, PATCH, or HEAD,
+then press the single `Send <method>` button. POST, PUT, PATCH, and DELETE
+expose an editable UTF-8 body; headers are entered as lowercase `name: value`
+lines. Cancel cancels the coroutine and native request. The app shows status,
+headers, HTTP/3-over-QUIC protocol information, duration, byte count, and
+errors; response rendering is capped at 16,000 characters to keep the UI
+responsive. Cleartext traffic is disabled.
 
 With one Android device connected through adb, the example can be built and installed from its directory:
 
@@ -222,9 +252,13 @@ By default dependencies are read from `third_party/android-deps`; override this 
 
 ## Tests
 
-- `tests/core/core_tests.cc`: URL and port validation, HTTPS policy, header lookup, redirect resolution, cookie matching.
-- `kathttp3/src/test`: Kotlin model/config/header/request validation.
-- External-network and local ngtcp2-server tests are intentionally separate and are not run by ordinary unit tests.
+- `tests/core/core_tests.cc`: URL/port validation, redirect and cookie
+  matching, asynchronous resolver delivery, Happy Eyeballs candidate planning,
+  and DNS-cache behavior.
+- `kathttp3/src/test`: Kotlin configuration, request, and header validation.
+- The Android build compiles the JNI bridge and all four configured ABIs.
+- External-network and local ngtcp2-server tests are not part of this
+  repository's ordinary test suite.
 
 ## Protocol notes
 
@@ -242,11 +276,22 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
 ## Known limitations
 
 - Certificate trust defaults to the Android platform provider (`X509TrustManagerExtensions`); the embedded Mozilla bundle and a caller-supplied CA file are also available via `kathttp3_trust_mode`.
-- Live GET/POST interoperability has not been verified against a local HTTP/3 server.
+- Live interoperability is not covered by a local HTTP/3-server integration
+  test in this repository.
 - DNS, connect, handshake, response-header, read-idle, write-idle and call
   deadlines use the monotonic QUIC clock.
-- Graceful GOAWAY draining, response Content-Length validation, trailer exposure, strict response-field validation and robust packet send backpressure are incomplete.
-- Streaming uses a bounded JNI-to-Kotlin channel but native QUIC flow-control credit is currently returned on callback delivery, not downstream Flow consumption.
+- Response trailers and informational responses are not exposed by the Kotlin
+  response model. GOAWAY handling drains existing work, but there is no
+  separately configurable drain deadline.
+- Response header validation rejects invalid/uppercase field names,
+  connection-specific fields, invalid `TE`, malformed `:status`, and invalid
+  or conflicting `Content-Length`. Body length is checked at completion.
+- UDP transient send failures are queued with fixed packet and byte limits;
+  queue overflow is surfaced as a connection failure. There are no public
+  queue metrics.
+- Streaming response credit is limited by `maxStreamingBufferedBodyBytes` and
+  is returned by the Kotlin Flow delivery hook. It is not an acknowledgement
+  that arbitrary application work after collection has completed.
 - DNS lookups run in a bounded two-thread resolver pool rather than on a QUIC
   worker. Cancellation and DNS deadlines discard late results. When both
   address families are available, the first resolver-ordered candidate starts
