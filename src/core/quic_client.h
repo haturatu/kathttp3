@@ -60,6 +60,7 @@ struct Job {
     size_t delivered_unconsumed_bytes = 0;
     size_t delivered_body_bytes = 0;
     size_t consumed_body_bytes = 0;
+    size_t pending_credit_bytes = 0; /* coalesced receive-window credit */
     int redirect_count = 0;
     /* Response body length accounting for Content-Length validation. */
     int64_t declared_content_length = -1; /* from Content-Length header, or -1 */

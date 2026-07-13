@@ -300,6 +300,9 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
 - Streaming response credit is limited by `maxStreamingBufferedBodyBytes` and
   is returned by the Kotlin Flow delivery hook. It is not an acknowledgement
   that arbitrary application work after collection has completed.
+- Native QUIC receive windows use fixed 1 MiB stream high / 512 KiB low
+  watermarks, an 8 MiB connection limit, and 64 KiB credit batching. These
+  values are not yet public configuration knobs.
 - DNS lookups run in a bounded two-thread resolver pool rather than on a QUIC
   worker. Cancellation and DNS deadlines discard late results. When both
   address families are available, the first resolver-ordered candidate starts

@@ -29,6 +29,13 @@
 
 namespace kathttp3 {
 
+namespace {
+constexpr uint64_t kReceiveBufferPerStreamHighWatermark = 1 * 1024 * 1024;
+constexpr uint64_t kReceiveBufferPerStreamLowWatermark = 512 * 1024;
+constexpr uint64_t kReceiveBufferPerConnectionLimit = 8 * 1024 * 1024;
+constexpr size_t kReceiveCreditThreshold = 64 * 1024;
+}  // namespace
+
 /* A pre-HTTP/3 connection attempt.  Each candidate owns every object which
  * carries peer-specific state: UDP fd, ngtcp2 connection, TLS SSL object and
  * path addresses.  This is deliberately separate from QuicClient so an IPv4
@@ -616,9 +623,12 @@ bool QuicClient::setup_connection() {
 
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);
-    params.initial_max_stream_data_bidi_local = 256 * 1024;
-    params.initial_max_stream_data_bidi_remote = 256 * 1024;
-    params.initial_max_data = 16 * 1024 * 1024;
+    // Streaming payload is not credited until Kotlin consumes it. These
+    // advertised limits cap unconsumed native/JNI delivery per stream and for
+    // the connection as a whole; consume() re-opens the window in batches.
+    params.initial_max_stream_data_bidi_local = kReceiveBufferPerStreamHighWatermark;
+    params.initial_max_stream_data_bidi_remote = kReceiveBufferPerStreamHighWatermark;
+    params.initial_max_data = kReceiveBufferPerConnectionLimit;
     params.initial_max_streams_bidi = 16;
     params.initial_max_streams_uni = 3;
     params.max_idle_timeout = idle_timeout_ms_ * NGTCP2_MILLISECONDS;
@@ -1162,6 +1172,16 @@ int QuicClient::consume(int64_t request_id, size_t bytes) {
                 job->delivered_unconsumed_bytes -= bytes;
                 job->consumed_body_bytes += bytes;
                 stream_id = job->stream_id;
+                job->pending_credit_bytes += bytes;
+                // Batch normal progress, but promptly reopen a stream once it
+                // has fallen below its low watermark so a final small chunk
+                // cannot remain flow-control blocked indefinitely.
+                if (job->pending_credit_bytes < kReceiveCreditThreshold &&
+                    job->delivered_unconsumed_bytes >= kReceiveBufferPerStreamLowWatermark) {
+                    return KATHTTP3_OK;
+                }
+                bytes = job->pending_credit_bytes;
+                job->pending_credit_bytes = 0;
                 break;
             }
         }
