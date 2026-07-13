@@ -86,6 +86,10 @@ struct HandshakeCandidate {
     sockaddr_storage remote_addr{};
     uint64_t started_at = 0;
     bool handshake_completed = false;
+    // TLS handshake completion alone does not guarantee that ngtcp2 has
+    // installed the receive 1-RTT AEAD context.  The connection must not be
+    // adopted by the main event loop until recv_rx_key has observed it.
+    bool rx_1rtt_key_ready = false;
     bool handshake_confirmed = false;
     bool failed = false;
     bool owns_connection = true;
@@ -378,7 +382,9 @@ int candidate_handshake_confirmed_cb(ngtcp2_conn*, void* user_data) {
 
 int candidate_recv_rx_key_cb(ngtcp2_conn*, ngtcp2_encryption_level level, void* user_data) {
     if (level == NGTCP2_ENCRYPTION_LEVEL_1RTT) {
-        candidate_from(user_data)->handshake_completed = true;
+        auto* candidate = candidate_from(user_data);
+        candidate->rx_1rtt_key_ready = true;
+        candidate->handshake_completed = true;
     }
     return 0;
 }
@@ -889,7 +895,8 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
 }
 
 bool QuicClient::adopt_handshake_winner(HandshakeCandidate& candidate) {
-    if (!candidate.conn || !candidate.handshake_completed) return false;
+    if (!candidate.conn || !candidate.handshake_completed || !candidate.rx_1rtt_key_ready)
+        return false;
 
     /* The callbacks and the SSL conn_ref deliberately continue to point at
      * this candidate.  It is moved into handshake_winner_ below and retained
@@ -961,7 +968,7 @@ bool QuicClient::run_handshake_race() {
             }
         }
         for (auto& candidate : handshake_candidates_) {
-            if (candidate && candidate->handshake_completed)
+            if (candidate && candidate->handshake_completed && candidate->rx_1rtt_key_ready)
                 return adopt_handshake_winner(*candidate);
         }
         if (connect_timeout_ms_ != 0 &&
