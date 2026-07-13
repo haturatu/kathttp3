@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -28,18 +29,12 @@ int case_eq(const std::string& a, const char* b) {
     return strcasecmp(a.c_str(), b) == 0;
 }
 
-/* Parse the first non-negative integer found in a header value (e.g. the
- * leading number of a "Content-Length: 1234" field, ignoring junk/weight). */
-bool parse_leading_uint(std::string_view s, uint64_t& out) {
-    size_t i = 0;
-    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
-    if (i >= s.size() || s[i] < '0' || s[i] > '9') return false;
-    uint64_t v = 0;
-    for (; i < s.size() && s[i] >= '0' && s[i] <= '9'; ++i) {
-        v = v * 10 + static_cast<uint64_t>(s[i] - '0');
-    }
-    out = v;
-    return true;
+bool parse_content_length(std::string_view s, uint64_t& out) {
+    if (s.empty()) return false;
+    const char* begin = s.data();
+    const char* end = begin + s.size();
+    auto [parsed, error] = std::from_chars(begin, end, out);
+    return error == std::errc{} && parsed == end;
 }
 }  // namespace
 
@@ -272,12 +267,23 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
     }
 
     store_cookies(job->url, headers);
-    // Record declared Content-Length for later body-length validation.
-    std::string_view cl = headers.get("content-length");
-    if (!cl.empty()) {
-        uint64_t v = 0;
-        if (parse_leading_uint(cl, v)) job->declared_content_length = static_cast<int64_t>(v);
+    // RFC 9110: repeated Content-Length is legal only if every field-value is
+    // exactly the same valid decimal value.  Do this before exposing headers.
+    bool saw_content_length = false;
+    uint64_t content_length = 0;
+    for (const auto& header : headers.list()) {
+        if (!case_eq(header.name, "content-length")) continue;
+        uint64_t value = 0;
+        if (!parse_content_length(header.value, value) ||
+            (saw_content_length && value != content_length) ||
+            value > static_cast<uint64_t>(INT64_MAX)) {
+            on_job_error(job, KATHTTP_ERR_BODY, "invalid Content-Length");
+            return;
+        }
+        saw_content_length = true;
+        content_length = value;
     }
+    if (saw_content_length) job->declared_content_length = static_cast<int64_t>(content_length);
     dispatch_headers(job, status, headers);
 }
 

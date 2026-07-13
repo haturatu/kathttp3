@@ -41,6 +41,8 @@ struct Job {
     bool redirected = false;
     Response response;
     bool saw_headers = false;
+    uint8_t status_field_count = 0;
+    bool saw_regular_response_header = false;
     size_t body_sent = 0;      /* request body bytes already offered to nghttp3 */
     uint64_t submitted_at = 0; /* monotonic timestamp; 0 until queued */
     uint64_t response_headers_at = 0;

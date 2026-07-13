@@ -26,7 +26,12 @@ int begin_headers_cb(nghttp3_conn*, int64_t stream_id, void* conn_user_data,
                      void* /*stream_user_data*/) {
     auto* c = static_cast<Http3Session*>(conn_user_data);
     auto* job = c->find_job(stream_id);
-    if (job) job->response.headers.clear();
+    if (job && !job->saw_headers) {
+        job->response.headers.clear();
+        job->response.status_code = 0;
+        job->status_field_count = 0;
+        job->saw_regular_response_header = false;
+    }
     return 0;
 }
 
@@ -39,7 +44,18 @@ int recv_header_cb(nghttp3_conn*, int64_t stream_id, int32_t token, nghttp3_rcbu
     if (!job) return 0;
     nghttp3_vec n = nghttp3_rcbuf_get_buf(name);
     nghttp3_vec v = nghttp3_rcbuf_get_buf(value);
+    if (n.len == 0 || v.len > (1U << 20)) return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
+    const auto* name_bytes = reinterpret_cast<const uint8_t*>(n.base);
+    for (size_t i = 0; i < n.len; ++i) {
+        const uint8_t ch = name_bytes[i];
+        if (ch <= 0x20 || ch >= 0x7f || (ch >= 'A' && ch <= 'Z')) {
+            return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
+        }
+    }
     if (n.len == 7 && std::memcmp(n.base, ":status", 7) == 0) {
+        if (job->saw_regular_response_header || ++job->status_field_count != 1) {
+            return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
+        }
         // nghttp3_vec is a length-delimited view, not a NUL-terminated string.
         // strtol could read past a short :status buffer and crash on a PATCH
         // response.  Parse exactly the received bytes instead.
@@ -52,8 +68,17 @@ int recv_header_cb(nghttp3_conn*, int64_t stream_id, int32_t token, nghttp3_rcbu
         }
         job->response.status_code = status;
     } else {
-        job->response.headers.add(std::string(reinterpret_cast<const char*>(n.base), n.len),
-                                  std::string(reinterpret_cast<const char*>(v.base), v.len));
+        if (n.base[0] == ':') return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
+        job->saw_regular_response_header = true;
+        const std::string header_name(reinterpret_cast<const char*>(n.base), n.len);
+        const std::string header_value(reinterpret_cast<const char*>(v.base), v.len);
+        if (header_name == "connection" || header_name == "keep-alive" ||
+            header_name == "proxy-connection" || header_name == "transfer-encoding" ||
+            header_name == "upgrade" ||
+            (header_name == "te" && header_value != "trailers")) {
+            return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
+        }
+        job->response.headers.add(header_name, header_value);
     }
     return 0;
 }
@@ -63,6 +88,9 @@ int end_headers_cb(nghttp3_conn*, int64_t stream_id, int /*fin*/, void* conn_use
     auto* c = static_cast<Http3Session*>(conn_user_data);
     auto* job = c->find_job(stream_id);
     if (job) {
+        if (!job->saw_headers && job->status_field_count != 1) {
+            return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
+        }
         job->saw_headers = true;
         job->response_headers_at = timestamp_now_ns();
         job->last_read_progress_at = job->response_headers_at;
