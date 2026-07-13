@@ -465,6 +465,7 @@ void kathttp3_client_options_init(kathttp3_client_options* opt) {
     opt->idle_timeout_ms = 30000;
     opt->max_redirects = 10;
     opt->max_connections_per_origin = 1;
+    opt->enable_0rtt = 1;
     opt->verify_cert = 1;
     opt->insecure_cert = 0;
     opt->trust_mode = KATHTTP3_TRUST_PLATFORM;

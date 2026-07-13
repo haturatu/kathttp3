@@ -344,7 +344,7 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   interoperability still requires connected-server validation.
 - TLS session tickets and their matching ngtcp2 0-RTT transport parameters are
   cached in memory per origin for the lifetime of a client. `enable0Rtt` is
-  disabled by default and only permits credential-free, bodyless GET/HEAD
+  enabled by default and only permits credential-free, bodyless GET/HEAD
   requests before handshake confirmation. A rejected early-data attempt
   recreates HTTP/3 state and replays those requests after 1-RTT; the cache is
   intentionally not persisted to disk or shared between clients.
