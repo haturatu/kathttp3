@@ -11,7 +11,7 @@
 
 #include "log.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 static void enable_ecn(int fd, int family) {
     int on = 1;
@@ -66,7 +66,7 @@ bool UdpSocket::open(int family) {
     family_ = family;
     fd_ = ::socket(family, SOCK_DGRAM, IPPROTO_UDP);
     if (fd_ == -1) {
-        KATHTTP_LOG_ERR("socket() failed: %s\n", strerror(errno));
+        KATHTTP3_LOG_ERR("socket() failed: %s\n", strerror(errno));
         return false;
     }
     enable_ecn(fd_, family);
@@ -87,7 +87,7 @@ bool UdpSocket::bind_any() {
         v6.sin6_addr = in6addr_any;
         v6.sin6_port = 0;
         if (::bind(fd_, reinterpret_cast<sockaddr*>(&v6), sizeof(v6)) != 0) {
-            KATHTTP_LOG_ERR("bind() v6 failed: %s\n", strerror(errno));
+            KATHTTP3_LOG_ERR("bind() v6 failed: %s\n", strerror(errno));
             return false;
         }
     } else {
@@ -96,7 +96,7 @@ bool UdpSocket::bind_any() {
         v4.sin_addr.s_addr = INADDR_ANY;
         v4.sin_port = 0;
         if (::bind(fd_, reinterpret_cast<sockaddr*>(&v4), sizeof(v4)) != 0) {
-            KATHTTP_LOG_ERR("bind() v4 failed: %s\n", strerror(errno));
+            KATHTTP3_LOG_ERR("bind() v4 failed: %s\n", strerror(errno));
             return false;
         }
     }
@@ -124,7 +124,8 @@ bool UdpSocket::connect(const ResolvedEndpoint& ep) {
         return false;
     }
     if (::connect(fd_, reinterpret_cast<sockaddr*>(&ss), len) != 0) {
-        KATHTTP_LOG_ERR("connect() to %s:%u failed: %s\n", ep.ip.c_str(), ep.port, strerror(errno));
+        KATHTTP3_LOG_ERR("connect() to %s:%u failed: %s\n", ep.ip.c_str(), ep.port,
+                         strerror(errno));
         return false;
     }
     connected_ = true;
@@ -220,4 +221,4 @@ ssize_t UdpSocket::recv(uint8_t* buf, size_t buflen, sockaddr_storage& from, soc
     return n;
 }
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */

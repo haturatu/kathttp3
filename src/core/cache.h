@@ -1,5 +1,5 @@
-#ifndef KATHTTP_CACHE_H
-#define KATHTTP_CACHE_H
+#ifndef KATHTTP3_CACHE_H
+#define KATHTTP3_CACHE_H
 
 #include <list>
 #include <mutex>
@@ -8,7 +8,7 @@
 
 #include "response.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 /* Simple in-memory LRU cache for cacheable GET responses. Honors the
  * most common Cache-Control directives (no-store, max-age). */
@@ -44,6 +44,6 @@ class ResponseCache {
     std::unordered_map<std::string, std::list<Entry>::iterator> map_;
 };
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_CACHE_H */
+#endif /* KATHTTP3_CACHE_H */

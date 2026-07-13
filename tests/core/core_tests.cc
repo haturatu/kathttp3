@@ -14,7 +14,7 @@
 #include "redirect.h"
 #include "url.h"
 
-using namespace kathttp;
+using namespace kathttp3;
 int main() {
     Url u;
     assert(parse_url("https://example.com/a?q=1#ignored", u));

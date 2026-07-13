@@ -17,7 +17,7 @@ on:
       - "third_party/versions.env"
       - "third_party/versions.cmake"
       - "build.gradle.kts"
-      - "kathttp/build.gradle.kts"
+      - "kathttp3/build.gradle.kts"
       - "gradle.properties"
       - "gradlew"
       - "gradle/wrapper/**"
@@ -38,7 +38,7 @@ on:
       - "third_party/versions.env"
       - "third_party/versions.cmake"
       - "build.gradle.kts"
-      - "kathttp/build.gradle.kts"
+      - "kathttp3/build.gradle.kts"
       - "gradle.properties"
       - "gradlew"
       - "gradle/wrapper/**"
@@ -104,9 +104,9 @@ jobs:
           cmake -S . -B build-tidy -G Ninja
           -DCMAKE_CXX_COMPILER=clang++
           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-          -DKATHTTP_ANALYSIS_ONLY=ON
-          -DKATHTTP_ANALYSIS_DEPS_INCLUDE_DIR=${{ github.workspace }}/third_party/android-deps/x86_64/include
-          -DKATHTTP_BUILD_JNI=OFF
+          -DKATHTTP3_ANALYSIS_ONLY=ON
+          -DKATHTTP3_ANALYSIS_DEPS_INCLUDE_DIR=${{ github.workspace }}/third_party/android-deps/x86_64/include
+          -DKATHTTP3_BUILD_JNI=OFF
       - name: Run clang-tidy
         run: run-clang-tidy -p build-tidy -quiet
       - name: Run cppcheck
@@ -131,8 +131,8 @@ jobs:
         run: >-
           cmake -S . -B build-sanitize -G Ninja
           -DCMAKE_BUILD_TYPE=Debug
-          -DKATHTTP_ANALYSIS_ONLY=ON
-          -DKATHTTP_SANITIZE=ON
-          -DKATHTTP_BUILD_JNI=OFF &&
+          -DKATHTTP3_ANALYSIS_ONLY=ON
+          -DKATHTTP3_SANITIZE=ON
+          -DKATHTTP3_BUILD_JNI=OFF &&
           cmake --build build-sanitize --parallel &&
           ctest --test-dir build-sanitize --output-on-failure

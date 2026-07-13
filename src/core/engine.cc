@@ -20,7 +20,7 @@
 #include "response.h"
 #include "url.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 namespace {
 constexpr int kDefaultMaxRedirects = 10;
@@ -38,14 +38,14 @@ bool parse_content_length(std::string_view s, uint64_t& out) {
 }
 }  // namespace
 
-Engine::Engine(const kathttp_client_options& opt) : opt_(opt) {
+Engine::Engine(const kathttp3_client_options& opt) : opt_(opt) {
     if (opt.resolve_cb) {
-        kathttp_resolve_cb cb = opt.resolve_cb;
+        kathttp3_resolve_cb cb = opt.resolve_cb;
         void* ud = opt.resolve_cb_userdata;
         resolver_ = std::make_shared<CallbackResolver>(
             [cb, ud](const std::string& host, uint16_t port, const std::atomic<bool>*) {
                 std::vector<ResolvedEndpoint> out;
-                std::vector<kathttp_resolved_address> buf(64);
+                std::vector<kathttp3_resolved_address> buf(64);
                 size_t n = buf.size();
                 int rc = cb(host.c_str(), port, ud, buf.data(), &n);
                 if (rc != 0) return out;
@@ -60,7 +60,7 @@ Engine::Engine(const kathttp_client_options& opt) : opt_(opt) {
     dns_cache_ = std::make_shared<DnsCache>();
     resolver_ =
         std::make_shared<CachedResolver>(resolver_, dns_cache_, resolver_network_generation_);
-    if (!tls_ctx_.init(static_cast<kathttp_trust_mode>(opt_.trust_mode), opt_.insecure_cert != 0,
+    if (!tls_ctx_.init(static_cast<kathttp3_trust_mode>(opt_.trust_mode), opt_.insecure_cert != 0,
                        opt_.ca_cert_file ? opt_.ca_cert_file : std::string(),
                        opt_.keylog_file ? opt_.keylog_file : std::string(),
                        platform_cert_verifier())) {
@@ -116,14 +116,14 @@ QuicClient* Engine::get_or_create_client(const Url& origin) {
     return p;
 }
 
-void Engine::execute(kathttp_request* req, int64_t request_id, kathttp_event_callback cb,
+void Engine::execute(kathttp3_request* req, int64_t request_id, kathttp3_event_callback cb,
                      void* user_data) {
     std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     if (destroyed_.load()) {
-        kathttp_event ev{};
-        ev.type = KATHTTP_EVENT_ERROR;
+        kathttp3_event ev{};
+        ev.type = KATHTTP3_EVENT_ERROR;
         ev.request_id = request_id;
-        ev.error_code = KATHTTP_ERR_CLOSED;
+        ev.error_code = KATHTTP3_ERR_CLOSED;
         if (cb) {
             try {
                 cb(user_data, &ev);
@@ -135,10 +135,10 @@ void Engine::execute(kathttp_request* req, int64_t request_id, kathttp_event_cal
     }
     Url url;
     if (!parse_url(req->url, url)) {
-        kathttp_event ev{};
-        ev.type = KATHTTP_EVENT_ERROR;
+        kathttp3_event ev{};
+        ev.type = KATHTTP3_EVENT_ERROR;
         ev.request_id = request_id;
-        ev.error_code = KATHTTP_ERR_INVALID_ARG;
+        ev.error_code = KATHTTP3_ERR_INVALID_ARG;
         if (cb) cb(user_data, &ev);
         delete req;
         return;
@@ -164,10 +164,10 @@ int Engine::consume(int64_t request_id, size_t bytes) {
     {
         std::lock_guard<std::mutex> lk(mtx_);
         auto it = registry_.find(request_id);
-        if (it == registry_.end() || it->second.terminal) return KATHTTP_ERR_CLOSED;
+        if (it == registry_.end() || it->second.terminal) return KATHTTP3_ERR_CLOSED;
         c = it->second.client;
     }
-    return c ? c->consume(request_id, bytes) : KATHTTP_ERR_CLOSED;
+    return c ? c->consume(request_id, bytes) : KATHTTP3_ERR_CLOSED;
 }
 
 int Engine::append_request_body(int64_t request_id, const uint8_t* data, size_t len,
@@ -176,16 +176,16 @@ int Engine::append_request_body(int64_t request_id, const uint8_t* data, size_t 
     {
         std::lock_guard<std::mutex> lk(mtx_);
         const auto it = registry_.find(request_id);
-        if (it == registry_.end() || it->second.terminal) return KATHTTP_ERR_CLOSED;
+        if (it == registry_.end() || it->second.terminal) return KATHTTP3_ERR_CLOSED;
         c = it->second.client;
     }
-    return c ? c->append_request_body(request_id, data, len, finished) : KATHTTP_ERR_CLOSED;
+    return c ? c->append_request_body(request_id, data, len, finished) : KATHTTP3_ERR_CLOSED;
 }
 
 void Engine::cancel(int64_t request_id) {
     std::lock_guard<std::recursive_mutex> callback_lock(callback_mutex_);
     QuicClient* c = nullptr;
-    kathttp_event_callback cb = nullptr;
+    kathttp3_event_callback cb = nullptr;
     void* ud = nullptr;
     {
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
@@ -202,10 +202,10 @@ void Engine::cancel(int64_t request_id) {
         if (c) c->cancel_job(request_id);
     }
     if (cb) {
-        kathttp_event ev{};
-        ev.type = KATHTTP_EVENT_ERROR;
+        kathttp3_event ev{};
+        ev.type = KATHTTP3_EVENT_ERROR;
         ev.request_id = request_id;
-        ev.error_code = KATHTTP_ERR_CANCELLED;
+        ev.error_code = KATHTTP3_ERR_CANCELLED;
         cb(ud, &ev);
     }
 }
@@ -223,7 +223,7 @@ void Engine::destroy() {
     // clients are destructed (threads joined) when `clients` leaves scope.
     clients.clear();
 
-    std::vector<std::pair<int64_t, kathttp_event_callback>> pending;
+    std::vector<std::pair<int64_t, kathttp3_event_callback>> pending;
     std::vector<void*> pending_ud;
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -238,10 +238,10 @@ void Engine::destroy() {
     for (size_t i = 0; i < pending.size(); ++i) {
         if (!pending[i].second) continue;
         std::lock_guard<std::recursive_mutex> callback_lock(callback_mutex_);
-        kathttp_event ev{};
-        ev.type = KATHTTP_EVENT_ERROR;
+        kathttp3_event ev{};
+        ev.type = KATHTTP3_EVENT_ERROR;
         ev.request_id = pending[i].first;
-        ev.error_code = KATHTTP_ERR_CLOSED;
+        ev.error_code = KATHTTP3_ERR_CLOSED;
         pending[i].second(pending_ud[i], &ev);
     }
 }
@@ -262,7 +262,7 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
                 // Mark the current hop so its own completion is ignored.
                 job->redirected = true;
 
-                auto* nr = new kathttp_request;
+                auto* nr = new kathttp3_request;
                 nr->method = dec.new_method;
                 nr->url = new_url.to_string();
                 for (const auto& header : job->request->headers.all()) {
@@ -319,7 +319,7 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
         if (!parse_content_length(header.value, value) ||
             (saw_content_length && value != content_length) ||
             value > static_cast<uint64_t>(INT64_MAX)) {
-            on_job_error(job, KATHTTP_ERR_BODY, "invalid Content-Length");
+            on_job_error(job, KATHTTP3_ERR_BODY, "invalid Content-Length");
             return;
         }
         saw_content_length = true;
@@ -341,10 +341,10 @@ void Engine::on_job_complete(Job* job) {
         bool exempt = (job->request->method == "HEAD") || st == 204 || st == 304 || (st / 100 == 1);
         if (!exempt &&
             job->received_body_bytes != static_cast<uint64_t>(job->declared_content_length)) {
-            kathttp_event ev{};
-            ev.type = KATHTTP_EVENT_ERROR;
+            kathttp3_event ev{};
+            ev.type = KATHTTP3_EVENT_ERROR;
             ev.request_id = job->id;
-            ev.error_code = KATHTTP_ERR_BODY;
+            ev.error_code = KATHTTP3_ERR_BODY;
             deliver(ev);
             return;
         }
@@ -364,8 +364,8 @@ void Engine::dispatch_headers(Job* job, int status, const HeaderList& headers) {
         names.push_back(h.name.c_str());
         values.push_back(h.value.c_str());
     }
-    kathttp_event ev{};
-    ev.type = KATHTTP_EVENT_HEADERS;
+    kathttp3_event ev{};
+    ev.type = KATHTTP3_EVENT_HEADERS;
     ev.request_id = job->id;
     ev.status_code = status;
     ev.names = names.data();
@@ -375,8 +375,8 @@ void Engine::dispatch_headers(Job* job, int status, const HeaderList& headers) {
 }
 
 void Engine::dispatch_body(Job* job, const uint8_t* data, size_t len) {
-    kathttp_event ev{};
-    ev.type = KATHTTP_EVENT_BODY;
+    kathttp3_event ev{};
+    ev.type = KATHTTP3_EVENT_BODY;
     ev.request_id = job->id;
     ev.data = data;
     ev.data_len = len;
@@ -384,28 +384,28 @@ void Engine::dispatch_body(Job* job, const uint8_t* data, size_t len) {
 }
 
 void Engine::dispatch_complete(Job* job) {
-    kathttp_event ev{};
-    ev.type = KATHTTP_EVENT_COMPLETE;
+    kathttp3_event ev{};
+    ev.type = KATHTTP3_EVENT_COMPLETE;
     ev.request_id = job->id;
     ev.error_code = 0;
     deliver(ev);
 }
 
 void Engine::dispatch_error(Job* job, int err, const char* msg) {
-    kathttp_event ev{};
-    ev.type = KATHTTP_EVENT_ERROR;
+    kathttp3_event ev{};
+    ev.type = KATHTTP3_EVENT_ERROR;
     ev.request_id = job->id;
     ev.error_code = err;
     (void)msg;
     deliver(ev);
 }
 
-void Engine::deliver(const kathttp_event& ev) {
+void Engine::deliver(const kathttp3_event& ev) {
     std::lock_guard<std::recursive_mutex> callback_lock(callback_mutex_);
     ReqEntry e;
-    kathttp_event_callback cb = nullptr;
+    kathttp3_event_callback cb = nullptr;
     void* ud = nullptr;
-    bool terminal = (ev.type == KATHTTP_EVENT_COMPLETE || ev.type == KATHTTP_EVENT_ERROR);
+    bool terminal = (ev.type == KATHTTP3_EVENT_COMPLETE || ev.type == KATHTTP3_EVENT_ERROR);
     {
         std::lock_guard<std::mutex> lk(mtx_);
         auto it = registry_.find(ev.request_id);
@@ -427,7 +427,7 @@ void Engine::deliver(const kathttp_event& ev) {
     }
 }
 
-void Engine::add_cookie_header(kathttp_request* req, const Url& url) {
+void Engine::add_cookie_header(kathttp3_request* req, const Url& url) {
     std::string cookie = cookie_jar_.cookie_header(url);
     if (cookie.empty()) return;
     bool has = false;
@@ -444,18 +444,18 @@ void Engine::store_cookies(const Url& url, const HeaderList& headers) {
     cookie_jar_.store(url, headers);
 }
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
 /* ------------------------------------------------------------------ *
  * C ABI
  * ------------------------------------------------------------------ */
 extern "C" {
 
-void kathttp_client_options_init(kathttp_client_options* opt) {
+void kathttp3_client_options_init(kathttp3_client_options* opt) {
     if (!opt) return;
     std::memset(opt, 0, sizeof(*opt));
-    opt->struct_size = sizeof(kathttp_client_options);
-    opt->abi_version = KATHTTP_ABI_VERSION;
+    opt->struct_size = sizeof(kathttp3_client_options);
+    opt->abi_version = KATHTTP3_ABI_VERSION;
     opt->connect_timeout_ms = 10000;
     opt->request_timeout_ms = 30000;
     opt->idle_timeout_ms = 30000;
@@ -463,7 +463,7 @@ void kathttp_client_options_init(kathttp_client_options* opt) {
     opt->max_connections_per_origin = 1;
     opt->verify_cert = 1;
     opt->insecure_cert = 0;
-    opt->trust_mode = KATHTTP_TRUST_PLATFORM;
+    opt->trust_mode = KATHTTP3_TRUST_PLATFORM;
     opt->dns_timeout_ms = opt->connect_timeout_ms;
     opt->handshake_timeout_ms = opt->connect_timeout_ms;
     opt->response_headers_timeout_ms = opt->request_timeout_ms;
@@ -472,120 +472,121 @@ void kathttp_client_options_init(kathttp_client_options* opt) {
     opt->call_timeout_ms = opt->request_timeout_ms;
 }
 
-void kathttp_client_config_init(kathttp_client_config* config) {
-    kathttp_client_options_init(config);
+void kathttp3_client_config_init(kathttp3_client_config* config) {
+    kathttp3_client_options_init(config);
 }
 
-uint32_t kathttp_api_version(void) {
-    return KATHTTP_ABI_VERSION;
+uint32_t kathttp3_api_version(void) {
+    return KATHTTP3_ABI_VERSION;
 }
 
-kathttp_client* kathttp_client_create(const kathttp_client_options* options) {
+kathttp3_client* kathttp3_client_create(const kathttp3_client_options* options) {
     if (!options) return nullptr;
     constexpr size_t kRequiredOptionsSize =
-        offsetof(kathttp_client_options, resolve_cb_userdata) + sizeof(void*);
+        offsetof(kathttp3_client_options, resolve_cb_userdata) + sizeof(void*);
     if (options->struct_size < kRequiredOptionsSize) return nullptr;
-    if (options->abi_version != KATHTTP_ABI_VERSION_CURRENT) return nullptr;
+    if (options->abi_version != KATHTTP3_ABI_VERSION_CURRENT) return nullptr;
     try {
-        kathttp_client_options normalized;
-        kathttp_client_options_init(&normalized);
+        kathttp3_client_options normalized;
+        kathttp3_client_options_init(&normalized);
         std::memcpy(&normalized, options,
                     std::min<size_t>(options->struct_size, sizeof(normalized)));
-        auto* e = new kathttp::Engine(normalized);
-        return reinterpret_cast<kathttp_client*>(e);
+        auto* e = new kathttp3::Engine(normalized);
+        return reinterpret_cast<kathttp3_client*>(e);
     } catch (...) {
         return nullptr;
     }
 }
 
-void kathttp_client_destroy(kathttp_client* client) {
+void kathttp3_client_destroy(kathttp3_client* client) {
     if (!client) return;
     try {
-        auto* e = reinterpret_cast<kathttp::Engine*>(client);
+        auto* e = reinterpret_cast<kathttp3::Engine*>(client);
         e->destroy();
         delete e;
     } catch (...) {
     }
 }
 
-void kathttp_client_close(kathttp_client* client) {
+void kathttp3_client_close(kathttp3_client* client) {
     if (!client) return;
     try {
-        reinterpret_cast<kathttp::Engine*>(client)->destroy();
+        reinterpret_cast<kathttp3::Engine*>(client)->destroy();
     } catch (...) {
     }
 }
 
-void kathttp_client_set_origin_policy(kathttp_client* client, const char* policy_tag) {
+void kathttp3_client_set_origin_policy(kathttp3_client* client, const char* policy_tag) {
     if (!client) return;
     try {
-        reinterpret_cast<kathttp::Engine*>(client)->set_origin_policy(policy_tag ? policy_tag : "");
+        reinterpret_cast<kathttp3::Engine*>(client)->set_origin_policy(policy_tag ? policy_tag
+                                                                                  : "");
     } catch (...) {
     }
 }
 
-void kathttp_client_network_changed(kathttp_client* client, uint64_t generation) {
+void kathttp3_client_network_changed(kathttp3_client* client, uint64_t generation) {
     if (!client) return;
     try {
-        reinterpret_cast<kathttp::Engine*>(client)->network_changed(generation);
+        reinterpret_cast<kathttp3::Engine*>(client)->network_changed(generation);
     } catch (...) {
     }
 }
 
-void kathttp_client_execute(kathttp_client* client, kathttp_request* request, int64_t request_id,
-                            kathttp_event_callback cb, void* user_data) {
+void kathttp3_client_execute(kathttp3_client* client, kathttp3_request* request, int64_t request_id,
+                             kathttp3_event_callback cb, void* user_data) {
     if (!client || !request) {
         delete request;
         return;
     }
     try {
-        reinterpret_cast<kathttp::Engine*>(client)->execute(request, request_id, cb, user_data);
+        reinterpret_cast<kathttp3::Engine*>(client)->execute(request, request_id, cb, user_data);
     } catch (...) {
-        kathttp_event ev{};
-        ev.type = KATHTTP_EVENT_ERROR;
+        kathttp3_event ev{};
+        ev.type = KATHTTP3_EVENT_ERROR;
         ev.request_id = request_id;
-        ev.error_code = KATHTTP_ERR_NOMEM;
+        ev.error_code = KATHTTP3_ERR_NOMEM;
         if (cb) cb(user_data, &ev);
         delete request;
     }
 }
 
-void kathttp_client_cancel(kathttp_client* client, int64_t request_id) {
+void kathttp3_client_cancel(kathttp3_client* client, int64_t request_id) {
     if (!client) return;
     try {
-        reinterpret_cast<kathttp::Engine*>(client)->cancel(request_id);
+        reinterpret_cast<kathttp3::Engine*>(client)->cancel(request_id);
     } catch (...) {
     }
 }
 
-void kathttp_client_consume(kathttp_client* client, int64_t request_id, size_t bytes) {
+void kathttp3_client_consume(kathttp3_client* client, int64_t request_id, size_t bytes) {
     if (!client) return;
     try {
-        (void)reinterpret_cast<kathttp::Engine*>(client)->consume(request_id, bytes);
+        (void)reinterpret_cast<kathttp3::Engine*>(client)->consume(request_id, bytes);
     } catch (...) {
     }
 }
 
-kathttp_error kathttp_client_consume_body(kathttp_client* client, int64_t request_id,
-                                          size_t bytes) {
-    if (!client) return KATHTTP_ERR_INVALID_ARG;
+kathttp3_error kathttp3_client_consume_body(kathttp3_client* client, int64_t request_id,
+                                            size_t bytes) {
+    if (!client) return KATHTTP3_ERR_INVALID_ARG;
     try {
-        return static_cast<kathttp_error>(
-            reinterpret_cast<kathttp::Engine*>(client)->consume(request_id, bytes));
+        return static_cast<kathttp3_error>(
+            reinterpret_cast<kathttp3::Engine*>(client)->consume(request_id, bytes));
     } catch (...) {
-        return KATHTTP_ERR_CLOSED;
+        return KATHTTP3_ERR_CLOSED;
     }
 }
 
-kathttp_error kathttp_client_request_body_append(kathttp_client* client, int64_t request_id,
-                                                 const uint8_t* data, size_t len, int finished) {
-    if (!client || (!data && len)) return KATHTTP_ERR_INVALID_ARG;
+kathttp3_error kathttp3_client_request_body_append(kathttp3_client* client, int64_t request_id,
+                                                   const uint8_t* data, size_t len, int finished) {
+    if (!client || (!data && len)) return KATHTTP3_ERR_INVALID_ARG;
     try {
-        return static_cast<kathttp_error>(
-            reinterpret_cast<kathttp::Engine*>(client)->append_request_body(request_id, data, len,
-                                                                            finished != 0));
+        return static_cast<kathttp3_error>(
+            reinterpret_cast<kathttp3::Engine*>(client)->append_request_body(request_id, data, len,
+                                                                             finished != 0));
     } catch (...) {
-        return KATHTTP_ERR_NOMEM;
+        return KATHTTP3_ERR_NOMEM;
     }
 }
 

@@ -1,0 +1,79 @@
+package dev.kathttp3
+
+import java.io.IOException
+import java.io.File
+import kotlinx.coroutines.flow.Flow
+
+/** Certificate trust policy, mapped to the native `kathttp3_trust_mode`. */
+enum class TrustMode {
+    PLATFORM,          /* Android: X509TrustManager; else: system store */
+    EMBEDDED_MOZILLA,  /* bundled Mozilla CA bundle */
+    CUSTOM_CA;         /* PEM bundle at caCertificateFile */
+    val native: Int get() = ordinal
+}
+
+data class KatHttp3ClientConfig(
+    val connectTimeoutMillis: Long = 10_000,
+    val requestTimeoutMillis: Long = 30_000,
+    val idleTimeoutMillis: Long = 30_000,
+    val dnsTimeoutMillis: Long = connectTimeoutMillis,
+    val handshakeTimeoutMillis: Long = connectTimeoutMillis,
+    val responseHeadersTimeoutMillis: Long = requestTimeoutMillis,
+    val readTimeoutMillis: Long = idleTimeoutMillis,
+    val writeTimeoutMillis: Long = idleTimeoutMillis,
+    val callTimeoutMillis: Long = requestTimeoutMillis,
+    val followRedirects: Boolean = true,
+    val maxRedirects: Int = 10,
+    val maxBufferedBodyBytes: Long = 16L * 1024 * 1024,
+    val maxStreamingBufferedBodyBytes: Long = 4L * 1024 * 1024,
+    val caCertificateFile: String? = null,
+    val trustMode: TrustMode = TrustMode.PLATFORM,
+    val insecureCert: Boolean = false,
+    /** Experimental: enables KatHttp3's in-memory cookie jar. It deliberately
+     * has no PSL integration, so it is off by default. */
+    val enableCookies: Boolean = false,
+    val expectSuccess: Boolean = false,
+    val interceptors: List<HttpInterceptor> = emptyList(),
+    val resolver: DnsResolver? = null,
+) {
+    init {
+        require(connectTimeoutMillis > 0 && requestTimeoutMillis > 0 && idleTimeoutMillis > 0)
+        require(dnsTimeoutMillis > 0 && handshakeTimeoutMillis > 0)
+        require(responseHeadersTimeoutMillis > 0 && readTimeoutMillis > 0)
+        require(writeTimeoutMillis > 0 && callTimeoutMillis > 0)
+        require(maxRedirects >= 0 && maxBufferedBodyBytes > 0 && maxStreamingBufferedBodyBytes > 0)
+        require(caCertificateFile == null || caCertificateFile.isNotBlank())
+    }
+}
+
+enum class KatHttp3TimeoutPhase { Dns, Connect, Handshake, ResponseHeaders, Read, Write, Call }
+
+data class KatHttp3Header(val name: String, val value: String) {
+    init { require(name.isNotBlank() && name == name.lowercase() && name.none { it <= ' ' || it == ':' }); require(value.none { it == '\r' || it == '\n' }) }
+}
+
+sealed interface KatHttp3RequestBody {
+    data class Bytes(val value: ByteArray) : KatHttp3RequestBody
+    data class FileBody(val file: File) : KatHttp3RequestBody
+    data class Stream(val contentLength: Long? = null, val source: Flow<ByteArray>) : KatHttp3RequestBody
+}
+
+data class KatHttp3Request(val method: String, val url: String, val headers: List<KatHttp3Header> = emptyList(), val body: ByteArray? = null, val streamingBody: KatHttp3RequestBody? = null) {
+    init { require(method.matches(Regex("[A-Z!#$%&'*+.^_`|~-]+"))); require(url.startsWith("https://")) }
+}
+
+data class KatHttp3Response(val status: Int, val headers: List<KatHttp3Header>, val body: ByteArray, val protocol: String = "h3")
+
+sealed class KatHttp3Exception(message: String) : IOException(message) {
+    class Dns : KatHttp3Exception("DNS resolution failed")
+    class Timeout(val phase: KatHttp3TimeoutPhase) : KatHttp3Exception("${phase.name} timed out")
+    class Closed : KatHttp3Exception("Client is closed")
+    class BodyTooLarge : KatHttp3Exception("Response exceeds configured body limit")
+    class Native(val code: Int) : KatHttp3Exception("Native HTTP/3 error: $code")
+}
+
+class ResponseException(val statusCode: Int, message: String, val response: KatHttp3Response?) : KatHttp3Exception(message)
+
+class CertificateVerificationException(message: String) : KatHttp3Exception(message)
+class TlsHandshakeException(message: String) : KatHttp3Exception(message)
+class QuicTransportException(message: String) : KatHttp3Exception(message)

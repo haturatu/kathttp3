@@ -1,0 +1,2 @@
+-keepclassmembers class dev.kathttp3.internal.NativeBridge { native <methods>; }
+-keep class dev.kathttp3.internal.NativeCallback { *; }

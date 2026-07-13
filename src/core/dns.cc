@@ -14,7 +14,7 @@
 
 #include "log.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 namespace {
 /* RFC 8305-style interleave: emit the i-th address of each family before the
@@ -209,7 +209,7 @@ std::vector<ResolvedEndpoint> GetAddrInfoResolver::resolve(const std::string& ho
         std::string port_str = std::to_string(port);
         addrinfo* res = nullptr;
         if (getaddrinfo(host.c_str(), port_str.c_str(), &hints, &res) != 0) {
-            KATHTTP_LOG_ERR("getaddrinfo failed for %s:%u\n", host.c_str(), port);
+            KATHTTP3_LOG_ERR("getaddrinfo failed for %s:%u\n", host.c_str(), port);
             return;
         }
         for (addrinfo* rp = res; rp; rp = rp->ai_next) {
@@ -232,4 +232,4 @@ std::vector<ResolvedEndpoint> GetAddrInfoResolver::resolve(const std::string& ho
     return interleave(v6, v4);
 }
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */

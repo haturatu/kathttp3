@@ -12,9 +12,9 @@
 #include <memory>
 
 #include "ca_bundle.h"
-#include "kathttp.h"
+#include "kathttp3.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 namespace {
 
@@ -72,10 +72,10 @@ X509_STORE* store_from_file(const char* path) {
 VerifyResult verify_with_store(const std::vector<DerCertificate>& chain, X509_STORE* store,
                                std::string_view hostname) {
     if (!store) {
-        return {false, KATHTTP_ERR_NO_TRUST_PROVIDER, "no trust store available"};
+        return {false, KATHTTP3_ERR_NO_TRUST_PROVIDER, "no trust store available"};
     }
     if (chain.empty()) {
-        return {false, KATHTTP_ERR_CERTIFICATE_VERIFY, "empty peer certificate chain"};
+        return {false, KATHTTP3_ERR_CERTIFICATE_VERIFY, "empty peer certificate chain"};
     }
 
     std::vector<X509*> certs;
@@ -85,14 +85,14 @@ VerifyResult verify_with_store(const std::vector<DerCertificate>& chain, X509_ST
         if (x) certs.push_back(x);
     }
     if (certs.empty()) {
-        return {false, KATHTTP_ERR_CERTIFICATE_VERIFY, "failed to parse peer certificate chain"};
+        return {false, KATHTTP3_ERR_CERTIFICATE_VERIFY, "failed to parse peer certificate chain"};
     }
 
     STACK_OF(X509)* untrusted = sk_X509_new_null();
     for (X509* x : certs) sk_X509_push(untrusted, x);
 
     X509_STORE_CTX* ctx = X509_STORE_CTX_new();
-    VerifyResult result{false, KATHTTP_ERR_CERTIFICATE_VERIFY, "certificate verification failed"};
+    VerifyResult result{false, KATHTTP3_ERR_CERTIFICATE_VERIFY, "certificate verification failed"};
     if (ctx && X509_STORE_CTX_init(ctx, store, certs[0], untrusted) == 1) {
         X509_VERIFY_PARAM* param = X509_STORE_CTX_get0_param(ctx);
         if (!hostname.empty()) {
@@ -105,10 +105,10 @@ VerifyResult verify_with_store(const std::vector<DerCertificate>& chain, X509_ST
         } else {
             int e = X509_STORE_CTX_get_error(ctx);
             if (e == X509_V_ERR_HOSTNAME_MISMATCH) {
-                result = {false, KATHTTP_ERR_HOSTNAME_MISMATCH, "certificate hostname mismatch"};
+                result = {false, KATHTTP3_ERR_HOSTNAME_MISMATCH, "certificate hostname mismatch"};
             } else {
                 const char* reason = X509_verify_cert_error_string(static_cast<long>(e));
-                result = {false, KATHTTP_ERR_CERTIFICATE_VERIFY,
+                result = {false, KATHTTP3_ERR_CERTIFICATE_VERIFY,
                           std::string("certificate verification failed: ") +
                               (reason ? reason : "unknown reason")};
             }
@@ -200,19 +200,19 @@ CertificateVerifier* platform_cert_verifier() {
 }
 
 /* Factory used by the TLS layer once the trust policy is known. */
-std::unique_ptr<CertificateVerifier> make_verifier(kathttp_trust_mode mode, bool insecure,
+std::unique_ptr<CertificateVerifier> make_verifier(kathttp3_trust_mode mode, bool insecure,
                                                    const std::string& ca_file) {
     if (insecure) return std::make_unique<InsecureCertificateVerifier>();
     switch (mode) {
-        case KATHTTP_TRUST_EMBEDDED_MOZILLA:
+        case KATHTTP3_TRUST_EMBEDDED_MOZILLA:
             return std::make_unique<EmbeddedBundleCertificateVerifier>();
-        case KATHTTP_TRUST_CUSTOM_CA:
+        case KATHTTP3_TRUST_CUSTOM_CA:
             if (ca_file.empty()) return nullptr;
             return std::make_unique<OpenSslCertificateVerifier>(ca_file);
-        case KATHTTP_TRUST_PLATFORM:
+        case KATHTTP3_TRUST_PLATFORM:
         default:
             return nullptr; /* resolved by the caller (platform-specific) */
     }
 }
 
-}  // namespace kathttp
+}  // namespace kathttp3

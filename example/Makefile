@@ -4,12 +4,12 @@ ROOT_DIR := $(abspath ..)
 GRADLEW := $(ROOT_DIR)/gradlew
 ADB ?= adb
 APK := $(ROOT_DIR)/example/build/outputs/apk/debug/example-debug.apk
-KATHTTP_DEPS_ROOT ?= $(ROOT_DIR)/third_party/android-deps
+KATHTTP3_DEPS_ROOT ?= $(ROOT_DIR)/third_party/android-deps
 DEVICE_SERIAL ?=
 TMPDIR ?= $(ROOT_DIR)/.tmp
 export TMPDIR
 
-GRADLE_ARGS := --no-daemon -p $(ROOT_DIR) -PkathttpDepsRoot=$(abspath $(KATHTTP_DEPS_ROOT))
+GRADLE_ARGS := --no-daemon -p $(ROOT_DIR) -Pkathttp3DepsRoot=$(abspath $(KATHTTP3_DEPS_ROOT))
 
 .PHONY: help native-deps assemble adbcheck adbinstall clean
 
@@ -20,7 +20,7 @@ help:
 	@echo "  make clean       Clean Android build outputs"
 	@echo ""
 	@echo "Variables:"
-	@echo "  KATHTTP_DEPS_ROOT=/path/to/android/deps (default: ../third_party/android-deps)"
+	@echo "  KATHTTP3_DEPS_ROOT=/path/to/android/deps (default: ../third_party/android-deps)"
 	@echo "  DEVICE_SERIAL=<adb serial>  (required when multiple devices are connected)"
 	@echo "  ADB=/path/to/adb"
 

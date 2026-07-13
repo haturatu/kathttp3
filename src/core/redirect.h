@@ -1,5 +1,5 @@
-#ifndef KATHTTP_REDIRECT_H
-#define KATHTTP_REDIRECT_H
+#ifndef KATHTTP3_REDIRECT_H
+#define KATHTTP3_REDIRECT_H
 
 #include <optional>
 #include <string>
@@ -7,7 +7,7 @@
 #include "response.h"
 #include "url.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 struct RedirectDecision {
     bool follow = false;
@@ -28,6 +28,6 @@ class RedirectPolicy {
                               bool auto_redirect, unsigned remaining) const;
 };
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_REDIRECT_H */
+#endif /* KATHTTP3_REDIRECT_H */

@@ -3,7 +3,7 @@
 #include <cstring>
 #include <new>
 
-#include "kathttp.h"
+#include "kathttp3.h"
 
 namespace {
 bool valid_header(const char* name, const char* value) {
@@ -21,9 +21,9 @@ bool valid_header(const char* name, const char* value) {
 
 extern "C" {
 
-kathttp_request* kathttp_request_create(const char* method, const char* url) {
+kathttp3_request* kathttp3_request_create(const char* method, const char* url) {
     if (!method || !url) return nullptr;
-    auto* r = new (std::nothrow) kathttp_request();
+    auto* r = new (std::nothrow) kathttp3_request();
     if (!r) return nullptr;
     try {
         r->method = method;
@@ -35,57 +35,57 @@ kathttp_request* kathttp_request_create(const char* method, const char* url) {
     }
 }
 
-void kathttp_request_destroy(kathttp_request* request) {
+void kathttp3_request_destroy(kathttp3_request* request) {
     delete request;
 }
 
-int kathttp_request_add_header(kathttp_request* request, const char* name, const char* value) {
-    if (!request || !name || !value || !valid_header(name, value)) return KATHTTP_ERR_INVALID_ARG;
+int kathttp3_request_add_header(kathttp3_request* request, const char* name, const char* value) {
+    if (!request || !name || !value || !valid_header(name, value)) return KATHTTP3_ERR_INVALID_ARG;
     try {
         request->headers.add(name, value);
-        return KATHTTP_OK;
+        return KATHTTP3_OK;
     } catch (...) {
-        return KATHTTP_ERR_NOMEM;
+        return KATHTTP3_ERR_NOMEM;
     }
 }
 
-int kathttp_request_set_body(kathttp_request* request, const uint8_t* data, size_t len) {
-    if (!request) return KATHTTP_ERR_INVALID_ARG;
+int kathttp3_request_set_body(kathttp3_request* request, const uint8_t* data, size_t len) {
+    if (!request) return KATHTTP3_ERR_INVALID_ARG;
     if (data && len) {
         try {
             request->body.assign(data, data + len);
         } catch (...) {
-            return KATHTTP_ERR_NOMEM;
+            return KATHTTP3_ERR_NOMEM;
         }
     } else {
         request->body.clear();
     }
-    return KATHTTP_OK;
+    return KATHTTP3_OK;
 }
 
-int kathttp_request_set_streaming_body(kathttp_request* request, int64_t content_length) {
-    if (!request || content_length < -1) return KATHTTP_ERR_INVALID_ARG;
+int kathttp3_request_set_streaming_body(kathttp3_request* request, int64_t content_length) {
+    if (!request || content_length < -1) return KATHTTP3_ERR_INVALID_ARG;
     request->body.clear();
     request->streaming_body = true;
     request->streaming_body_length = content_length;
-    return KATHTTP_OK;
+    return KATHTTP3_OK;
 }
 
-void kathttp_request_set_follow_redirects(kathttp_request* request, int enable) {
+void kathttp3_request_set_follow_redirects(kathttp3_request* request, int enable) {
     if (request) request->follow_redirects = enable ? 1 : 0;
 }
 
-void kathttp_request_set_streaming(kathttp_request* request, int enable) {
+void kathttp3_request_set_streaming(kathttp3_request* request, int enable) {
     if (request) request->streaming = enable ? 1 : 0;
 }
 
-int kathttp_request_add_address(kathttp_request* request, const char* ip, uint16_t port) {
-    if (!request || !ip) return KATHTTP_ERR_INVALID_ARG;
+int kathttp3_request_add_address(kathttp3_request* request, const char* ip, uint16_t port) {
+    if (!request || !ip) return KATHTTP3_ERR_INVALID_ARG;
     try {
         request->addresses.emplace_back(std::string(ip), port);
-        return KATHTTP_OK;
+        return KATHTTP3_OK;
     } catch (...) {
-        return KATHTTP_ERR_NOMEM;
+        return KATHTTP3_ERR_NOMEM;
     }
 }
 

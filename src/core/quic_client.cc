@@ -27,7 +27,7 @@
 #define NGTCP2_WRITE_STREAM_FLAG_FIN 0x1
 #endif
 
-namespace kathttp {
+namespace kathttp3 {
 
 /* A pre-HTTP/3 connection attempt.  Each candidate owns every object which
  * carries peer-specific state: UDP fd, ngtcp2 connection, TLS SSL object and
@@ -104,8 +104,8 @@ int recv_crypto_data_cb(ngtcp2_conn* conn, ngtcp2_encryption_level level, uint64
         auto* c = static_cast<QuicClient*>(user_data);
         SSL* ssl = static_cast<SSL*>(ngtcp2_conn_get_tls_native_handle2(conn));
         if (ssl) c->captureTlsError(ssl, rv);
-        KATHTTP_LOG_ERR("recv_crypto_data_cb: level=%d rv=%d ngtcp2=%s ssl='%s'\n", level, rv,
-                        ngtcp2_strerror(rv), c->lastTlsError().c_str());
+        KATHTTP3_LOG_ERR("recv_crypto_data_cb: level=%d rv=%d ngtcp2=%s ssl='%s'\n", level, rv,
+                         ngtcp2_strerror(rv), c->lastTlsError().c_str());
     }
     return rv;
 }
@@ -553,7 +553,7 @@ bool QuicClient::prepare_endpoints() {
                                result->complete = true;
                                result->ready.notify_one();
                            })) {
-            terminal_error_ = KATHTTP_ERR_DNS;
+            terminal_error_ = KATHTTP3_ERR_DNS;
             return false;
         }
 
@@ -570,7 +570,7 @@ bool QuicClient::prepare_endpoints() {
             if (dns_timeout_ms_ != 0 &&
                 now_ns() - started >= dns_timeout_ms_ * NGTCP2_MILLISECONDS) {
                 cancelled->store(true, std::memory_order_release);
-                terminal_error_ = KATHTTP_ERR_DNS_TIMEOUT;
+                terminal_error_ = KATHTTP3_ERR_DNS_TIMEOUT;
                 return false;
             }
             result->ready.wait_for(lock, std::chrono::milliseconds(10));
@@ -579,7 +579,7 @@ bool QuicClient::prepare_endpoints() {
     }
     if (dns_timeout_ms_ != 0 && now_ns() - started >= dns_timeout_ms_ * NGTCP2_MILLISECONDS) {
         endpoints_.clear();
-        terminal_error_ = KATHTTP_ERR_DNS_TIMEOUT;
+        terminal_error_ = KATHTTP3_ERR_DNS_TIMEOUT;
     }
     return !endpoints_.empty();
 }
@@ -652,7 +652,7 @@ bool QuicClient::setup_connection() {
         NGTCP2_CALLBACKS_VERSION, &kCallbacks, NGTCP2_SETTINGS_VERSION, &settings,
         NGTCP2_TRANSPORT_PARAMS_VERSION, &params, nullptr, this);
     if (rv != 0) {
-        KATHTTP_LOG_ERR("ngtcp2_conn_client_new: %s\n", ngtcp2_strerror(rv));
+        KATHTTP3_LOG_ERR("ngtcp2_conn_client_new: %s\n", ngtcp2_strerror(rv));
         return false;
     }
 
@@ -720,7 +720,7 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
         &kCandidateCallbacks, NGTCP2_SETTINGS_VERSION, &settings, NGTCP2_TRANSPORT_PARAMS_VERSION,
         &params, nullptr, candidate.get());
     if (rv != 0) {
-        KATHTTP_LOG_ERR("ngtcp2_conn_client_new (Happy Eyeballs): %s\n", ngtcp2_strerror(rv));
+        KATHTTP3_LOG_ERR("ngtcp2_conn_client_new (Happy Eyeballs): %s\n", ngtcp2_strerror(rv));
         return false;
     }
     candidate->conn_ref.get_conn = candidate_get_conn_cb;
@@ -767,9 +767,9 @@ bool QuicClient::adopt_handshake_winner(HandshakeCandidate& candidate) {
         }
     }
     handshake_candidates_.clear();
-    KATHTTP_LOG_ERR("Happy Eyeballs selected %s (%s) after QUIC handshake\n",
-                    candidate.endpoint.ip.c_str(),
-                    candidate.endpoint.family == AF_INET6 ? "IPv6" : "IPv4");
+    KATHTTP3_LOG_ERR("Happy Eyeballs selected %s (%s) after QUIC handshake\n",
+                     candidate.endpoint.ip.c_str(),
+                     candidate.endpoint.family == AF_INET6 ? "IPv6" : "IPv4");
     return true;
 }
 
@@ -801,7 +801,7 @@ bool QuicClient::run_handshake_race() {
                                   handshake_candidates_.front()->failed)) {
             fallback_started = true;
             if (!start_handshake_candidate(endpoints_[plan.fallback])) {
-                terminal_error_ = KATHTTP_ERR_QUIC;
+                terminal_error_ = KATHTTP3_ERR_QUIC;
             }
         }
         for (auto& candidate : handshake_candidates_) {
@@ -810,7 +810,7 @@ bool QuicClient::run_handshake_race() {
         }
         if (connect_timeout_ms_ != 0 &&
             now - connection_started_at_ >= connect_timeout_ms_ * NGTCP2_MILLISECONDS) {
-            terminal_error_ = KATHTTP_ERR_CONNECT_TIMEOUT;
+            terminal_error_ = KATHTTP3_ERR_CONNECT_TIMEOUT;
             return false;
         }
 
@@ -824,7 +824,7 @@ bool QuicClient::run_handshake_race() {
             polled.push_back(candidate.get());
         }
         if (fds.empty() && fallback_started) {
-            terminal_error_ = KATHTTP_ERR_QUIC;
+            terminal_error_ = KATHTTP3_ERR_QUIC;
             return false;
         }
         int timeout_ms = 10;
@@ -834,7 +834,7 @@ bool QuicClient::run_handshake_race() {
             timeout_ms = static_cast<int>(std::min<uint64_t>(remaining / NGTCP2_MILLISECONDS, 10));
         }
         if (!fds.empty() && poll(fds.data(), fds.size(), timeout_ms) < 0 && errno != EINTR) {
-            terminal_error_ = KATHTTP_ERR_QUIC;
+            terminal_error_ = KATHTTP3_ERR_QUIC;
             return false;
         }
         const uint64_t progressed_at = now_ns();
@@ -872,7 +872,7 @@ bool QuicClient::run_handshake_race() {
                 progressed_at - candidate.started_at >=
                     handshake_timeout_ms_ * NGTCP2_MILLISECONDS) {
                 candidate.failed = true;
-                terminal_error_ = KATHTTP_ERR_HANDSHAKE_TIMEOUT;
+                terminal_error_ = KATHTTP3_ERR_HANDSHAKE_TIMEOUT;
             }
         }
     }
@@ -882,8 +882,8 @@ bool QuicClient::run_handshake_race() {
 void QuicClient::run() {
     connection_started_at_ = now_ns();
     if (!prepare_endpoints()) {
-        KATHTTP_LOG_ERR("run: prepare_endpoints failed -> DNS err\n");
-        fail_all_pending(terminal_error_ == KATHTTP_ERR_QUIC ? KATHTTP_ERR_DNS : terminal_error_);
+        KATHTTP3_LOG_ERR("run: prepare_endpoints failed -> DNS err\n");
+        fail_all_pending(terminal_error_ == KATHTTP3_ERR_QUIC ? KATHTTP3_ERR_DNS : terminal_error_);
         return;
     }
 
@@ -901,7 +901,7 @@ void QuicClient::run() {
             const int loop_result = event_loop();
             if (loop_result != 0 && !stop_.load(std::memory_order_acquire)) {
                 const int tls_error = tls_session_.lastFailure().code;
-                fail_all_pending(tls_error != 0 ? tls_error : KATHTTP_ERR_QUIC);
+                fail_all_pending(tls_error != 0 ? tls_error : KATHTTP3_ERR_QUIC);
             }
             if (conn_) {
                 ngtcp2_conn_del(conn_);
@@ -921,12 +921,12 @@ void QuicClient::run() {
     while (endpoint_idx_ < endpoints_.size() && !stop_ && !handshake_confirmed_) {
         if (connect_timeout_ms_ != 0 &&
             now_ns() - connection_started_at_ >= connect_timeout_ms_ * NGTCP2_MILLISECONDS) {
-            terminal_error_ = KATHTTP_ERR_CONNECT_TIMEOUT;
+            terminal_error_ = KATHTTP3_ERR_CONNECT_TIMEOUT;
             break;
         }
         tls_session_.resetFailure();
         if (!connect_to_endpoint() || !setup_connection()) {
-            KATHTTP_LOG_ERR("run: endpoint idx=%zu connect/setup failed\n", endpoint_idx_);
+            KATHTTP3_LOG_ERR("run: endpoint idx=%zu connect/setup failed\n", endpoint_idx_);
             endpoint_idx_++;
             continue;
         }
@@ -936,8 +936,8 @@ void QuicClient::run() {
             // failure is not endpoint-specific, so stop retrying (the
             // captured code is already the right one).
             int code = tls_session_.lastFailure().code;
-            if (code == KATHTTP_ERR_CERTIFICATE_VERIFY || code == KATHTTP_ERR_HOSTNAME_MISMATCH ||
-                code == KATHTTP_ERR_NO_TRUST_PROVIDER) {
+            if (code == KATHTTP3_ERR_CERTIFICATE_VERIFY || code == KATHTTP3_ERR_HOSTNAME_MISMATCH ||
+                code == KATHTTP3_ERR_NO_TRUST_PROVIDER) {
                 break;
             }
             endpoint_idx_++;
@@ -976,7 +976,7 @@ int QuicClient::event_loop() {
         uint64_t now = now_ns();
         if (!handshake_confirmed_.load() && handshake_timeout_ms_ != 0 &&
             now - handshake_started_at_ >= handshake_timeout_ms_ * NGTCP2_MILLISECONDS) {
-            terminal_error_ = KATHTTP_ERR_HANDSHAKE_TIMEOUT;
+            terminal_error_ = KATHTTP3_ERR_HANDSHAKE_TIMEOUT;
             return -1;
         }
         int timeout_ms = compute_timeout(now);
@@ -1006,7 +1006,7 @@ int QuicClient::event_loop() {
                     conn_, const_cast<const ngtcp2_path*>(&path_), NGTCP2_PKT_INFO_VERSION, &pi,
                     pkt, static_cast<size_t>(n), now);
                 if (rv != 0) {
-                    KATHTTP_LOG_ERR("ngtcp2_conn_read_pkt: %s\n", ngtcp2_strerror(rv));
+                    KATHTTP3_LOG_ERR("ngtcp2_conn_read_pkt: %s\n", ngtcp2_strerror(rv));
                     return -1;
                 }
             }
@@ -1017,7 +1017,7 @@ int QuicClient::event_loop() {
 
         int rv = ngtcp2_conn_handle_expiry(conn_, now);
         if (rv != 0) {
-            KATHTTP_LOG_ERR("ngtcp2_conn_handle_expiry: %s\n", ngtcp2_strerror(rv));
+            KATHTTP3_LOG_ERR("ngtcp2_conn_handle_expiry: %s\n", ngtcp2_strerror(rv));
             return -1;
         }
 
@@ -1043,27 +1043,27 @@ void QuicClient::expire_requests(uint64_t now) {
         auto collect_expired = [&](auto& jobs) {
             for (auto& job : jobs) {
                 if (job->cancelled || job->submitted_at == 0) continue;
-                int error = KATHTTP_OK;
+                int error = KATHTTP3_OK;
                 if (call_timeout_ms_ != 0 &&
                     now - job->submitted_at >= call_timeout_ms_ * NGTCP2_MILLISECONDS) {
-                    error = KATHTTP_ERR_CALL_TIMEOUT;
+                    error = KATHTTP3_ERR_CALL_TIMEOUT;
                 } else if (job->stream_id >= 0 && !job->saw_headers &&
                            response_headers_timeout_ms_ != 0 &&
                            now - job->submitted_at >=
                                response_headers_timeout_ms_ * NGTCP2_MILLISECONDS) {
-                    error = KATHTTP_ERR_RESPONSE_HEADERS_TIMEOUT;
+                    error = KATHTTP3_ERR_RESPONSE_HEADERS_TIMEOUT;
                 } else if (job->saw_headers && job->last_read_progress_at != 0 &&
                            read_timeout_ms_ != 0 &&
                            now - job->last_read_progress_at >=
                                read_timeout_ms_ * NGTCP2_MILLISECONDS) {
-                    error = KATHTTP_ERR_READ_TIMEOUT;
+                    error = KATHTTP3_ERR_READ_TIMEOUT;
                 } else if (job->request && job->body_sent < job->request->body.size() &&
                            job->last_write_progress_at != 0 && write_timeout_ms_ != 0 &&
                            now - job->last_write_progress_at >=
                                write_timeout_ms_ * NGTCP2_MILLISECONDS) {
-                    error = KATHTTP_ERR_WRITE_TIMEOUT;
+                    error = KATHTTP3_ERR_WRITE_TIMEOUT;
                 }
-                if (error != KATHTTP_OK) {
+                if (error != KATHTTP3_OK) {
                     job->cancelled = true;
                     expired.emplace_back(job.get(), error);
                 }
@@ -1106,7 +1106,7 @@ void QuicClient::write_pending() {
                                                          &pi, pkt, sizeof(pkt), now);
         if (n == NGTCP2_ERR_WRITE_MORE) continue;
         if (n < 0) {
-            KATHTTP_LOG_ERR("ngtcp2_conn_write_pkt: %s\n", ngtcp2_strerror((int)n));
+            KATHTTP3_LOG_ERR("ngtcp2_conn_write_pkt: %s\n", ngtcp2_strerror((int)n));
             return;
         }
         if (n == 0) break;
@@ -1139,14 +1139,14 @@ void QuicClient::process_wakeup() {
 }
 
 int QuicClient::consume(int64_t request_id, size_t bytes) {
-    if (bytes == 0) return KATHTTP_OK;
+    if (bytes == 0) return KATHTTP3_OK;
     int64_t stream_id = -1;
     {
         std::lock_guard<std::mutex> lk(job_mutex_);
         for (auto& job : active_jobs_) {
             if (job->id == request_id) {
                 if (job->cancelled || job->completed || bytes > job->delivered_unconsumed_bytes) {
-                    return KATHTTP_ERR_INVALID_ARG;
+                    return KATHTTP3_ERR_INVALID_ARG;
                 }
                 job->delivered_unconsumed_bytes -= bytes;
                 job->consumed_body_bytes += bytes;
@@ -1155,13 +1155,13 @@ int QuicClient::consume(int64_t request_id, size_t bytes) {
             }
         }
     }
-    if (stream_id < 0) return KATHTTP_ERR_CLOSED;
+    if (stream_id < 0) return KATHTTP3_ERR_CLOSED;
     {
         std::lock_guard<std::mutex> lk(consume_mutex_);
         pending_consumes_.emplace_back(stream_id, bytes);
     }
     wakeup();
-    return KATHTTP_OK;
+    return KATHTTP3_OK;
 }
 
 int QuicClient::append_request_body(int64_t request_id, const uint8_t* data, size_t len,
@@ -1174,12 +1174,12 @@ int QuicClient::append_request_body(int64_t request_id, const uint8_t* data, siz
             if (job->id == request_id && !job->cancelled && !job->completed) target = job.get();
         for (auto& job : active_jobs_)
             if (job->id == request_id && !job->cancelled && !job->completed) target = job.get();
-        if (!target) return KATHTTP_ERR_CLOSED;
+        if (!target) return KATHTTP3_ERR_CLOSED;
         std::lock_guard<std::mutex> body_lock(target->request_body_mutex);
         constexpr size_t kMaxBufferedRequestBodyBytes = 4 * 1024 * 1024;
         if (len > kMaxBufferedRequestBodyBytes - target->request_body_buffered_bytes)
-            return KATHTTP_ERR_NOMEM;
-        if (target->request_body_finished) return KATHTTP_ERR_INVALID_ARG;
+            return KATHTTP3_ERR_NOMEM;
+        if (target->request_body_finished) return KATHTTP3_ERR_INVALID_ARG;
         if (len) {
             target->request_body_chunks.emplace_back(data, data + len);
             target->request_body_buffered_bytes += len;
@@ -1189,7 +1189,7 @@ int QuicClient::append_request_body(int64_t request_id, const uint8_t* data, siz
     }
     if (http3_ && stream_id >= 0) http3_->resume_stream(stream_id);
     wakeup();
-    return KATHTTP_OK;
+    return KATHTTP3_OK;
 }
 
 void QuicClient::note_write_progress(int64_t stream_id) {
@@ -1223,14 +1223,14 @@ void QuicClient::try_submit_pending() {
                 break;  // wait for extend_max_local_streams_bidi
             }
             if (rv != 0) {
-                failed.emplace_back(std::move(*it), KATHTTP_ERR_QUIC);
+                failed.emplace_back(std::move(*it), KATHTTP3_ERR_QUIC);
                 it = pending_jobs_.erase(it);
                 continue;
             }
             job->stream_id = stream_id;
             job->http3_ready = true;
             if (!http3_->submit_request(job)) {
-                failed.emplace_back(std::move(*it), KATHTTP_ERR_HTTP3);
+                failed.emplace_back(std::move(*it), KATHTTP3_ERR_HTTP3);
                 it = pending_jobs_.erase(it);
                 continue;
             }
@@ -1245,11 +1245,11 @@ void QuicClient::on_handshake_confirmed() {
     handshake_confirmed_.store(true);
     last_active_ = now_ns();
     state_.store(ConnectionState::Active);
-    KATHTTP_LOG_ERR("handshake confirmed\n");
+    KATHTTP3_LOG_ERR("handshake confirmed\n");
 }
 
 bool QuicClient::on_handshake_completed() {
-    KATHTTP_LOG_ERR("handshake completed\n");
+    KATHTTP3_LOG_ERR("handshake completed\n");
     if (!http3_ready_ && http3_) {
         if (http3_->setup_codec()) {
             http3_ready_ = true;
@@ -1308,7 +1308,7 @@ void QuicClient::on_goaway(int64_t stream_id) {
             }
         }
     }
-    for (auto* job : rejected) notify_job_error(job, KATHTTP_ERR_HTTP3);
+    for (auto* job : rejected) notify_job_error(job, KATHTTP3_ERR_HTTP3);
     wakeup();
 }
 
@@ -1361,15 +1361,15 @@ void QuicClient::fail_all_pending(int err) {
     }
 }
 
-}  // namespace kathttp
+}  // namespace kathttp3
 
 // QuicClient relies on a self-pipe / eventfd for wakeups in the real
 // build; for the host build we use a pipe created by the engine before
 // starting the client. The default-constructed wakeup_fd_ == -1 means
 // the poll loop relies on timeouts (still correct, just slightly less
 // responsive to cancellation).  The Android build wires an eventfd here.
-namespace kathttp {
+namespace kathttp3 {
 void QuicClient::set_wakeup_fd(int fd) {
     wakeup_fd_ = fd;
 }
-}  // namespace kathttp
+}  // namespace kathttp3

@@ -1,5 +1,5 @@
-#ifndef KATHTTP_COOKIE_JAR_H
-#define KATHTTP_COOKIE_JAR_H
+#ifndef KATHTTP3_COOKIE_JAR_H
+#define KATHTTP3_COOKIE_JAR_H
 
 #include <mutex>
 #include <string>
@@ -8,7 +8,7 @@
 #include "header_list.h"
 #include "url.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 struct Cookie {
     std::string name;
@@ -49,6 +49,6 @@ class CookieJar {
     std::vector<Cookie> cookies_;
 };
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_COOKIE_JAR_H */
+#endif /* KATHTTP3_COOKIE_JAR_H */

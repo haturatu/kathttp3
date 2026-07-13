@@ -1,5 +1,5 @@
-#ifndef KATHTTP_RESPONSE_H
-#define KATHTTP_RESPONSE_H
+#ifndef KATHTTP3_RESPONSE_H
+#define KATHTTP3_RESPONSE_H
 
 #include <cstdint>
 #include <string>
@@ -8,7 +8,7 @@
 #include "header_list.h"
 #include "url.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 /* Accumulated result of a single HTTP/3 exchange. Built incrementally by
  * Http3Session callbacks and handed to the engine's completion path. */
@@ -24,6 +24,6 @@ struct Response {
     }
 };
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_RESPONSE_H */
+#endif /* KATHTTP3_RESPONSE_H */

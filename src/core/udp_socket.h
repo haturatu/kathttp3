@@ -1,5 +1,5 @@
-#ifndef KATHTTP_UDP_SOCKET_H
-#define KATHTTP_UDP_SOCKET_H
+#ifndef KATHTTP3_UDP_SOCKET_H
+#define KATHTTP3_UDP_SOCKET_H
 
 #include <sys/socket.h>
 
@@ -10,7 +10,7 @@
 
 #include "dns.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 /* Non-blocking UDP socket used by a QUIC connection. Optionally connected
  * to a single peer so send()/recv() can be used, with ECN support. */
@@ -68,6 +68,6 @@ class UdpSocket {
     static constexpr size_t kMaxQueuedBytes = 4 * 1024 * 1024;
 };
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_UDP_SOCKET_H */
+#endif /* KATHTTP3_UDP_SOCKET_H */

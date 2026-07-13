@@ -2,7 +2,7 @@
 
 #include "log.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 static bool is_redirect_status(int s) {
     return s == 301 || s == 302 || s == 303 || s == 307 || s == 308;
@@ -15,7 +15,7 @@ RedirectDecision RedirectPolicy::evaluate(const std::string& method, const Url& 
     if (!auto_redirect) return d;
     if (!is_redirect_status(resp.status_code)) return d;
     if (remaining == 0) {
-        KATHTTP_LOG_WARN("redirect budget exhausted for %s\n", from.host.c_str());
+        KATHTTP3_LOG_WARN("redirect budget exhausted for %s\n", from.host.c_str());
         return d;
     }
 
@@ -44,7 +44,7 @@ RedirectDecision RedirectPolicy::evaluate(const std::string& method, const Url& 
             to.path = to.path.substr(0, q);
         }
     }
-    // Refuse downgrades to plaintext (Kathttp is HTTPS-only).
+    // Refuse downgrades to plaintext (KatHttp3 is HTTPS-only).
     if (to.scheme != "https") return d;
     if (!to.valid()) return d;
 
@@ -64,4 +64,4 @@ RedirectDecision RedirectPolicy::evaluate(const std::string& method, const Url& 
     return d;
 }
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */

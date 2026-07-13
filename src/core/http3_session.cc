@@ -8,13 +8,13 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "kathttp.h"
+#include "kathttp3.h"
 #include "log.h"
 #include "request.h"
 #include "time_util.h"
 #include "url.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 #ifndef NGTCP2_MAX_PKTLEN
 #define NGTCP2_MAX_PKTLEN 2048
@@ -134,12 +134,12 @@ int stream_close_cb(nghttp3_conn*, int64_t stream_id, uint64_t app_error_code, v
     auto* c = static_cast<Http3Session*>(conn_user_data);
     auto* job = c->find_job(stream_id);
     if (job && !job->completed) {
-        int err = KATHTTP_ERR_HTTP3;
+        int err = KATHTTP3_ERR_HTTP3;
         // The stream ended without end_stream while a Content-Length was promised:
         // treat as a truncated/length-mismatched body.
         if (job->declared_content_length >= 0 &&
             job->received_body_bytes < static_cast<uint64_t>(job->declared_content_length)) {
-            err = KATHTTP_ERR_BODY;
+            err = KATHTTP3_ERR_BODY;
         }
         c->client()->notify_job_error(job, err);
     }
@@ -285,7 +285,7 @@ bool Http3Session::setup_codec() {
     int rv = nghttp3_conn_client_new_versioned(&conn, NGHTTP3_CALLBACKS_VERSION, &kH3Callbacks,
                                                NGHTTP3_SETTINGS_VERSION, &settings, nullptr, this);
     if (rv != 0) {
-        KATHTTP_LOG_ERR("nghttp3_conn_client_new: %s\n", nghttp3_strerror(rv));
+        KATHTTP3_LOG_ERR("nghttp3_conn_client_new: %s\n", nghttp3_strerror(rv));
         return false;
     }
     httpconn_ = conn;
@@ -295,7 +295,7 @@ bool Http3Session::setup_codec() {
         ngtcp2_conn_open_uni_stream(conn_, &decoder_id, nullptr) != 0 ||
         nghttp3_conn_bind_control_stream(httpconn_, control_id) != 0 ||
         nghttp3_conn_bind_qpack_streams(httpconn_, encoder_id, decoder_id) != 0) {
-        KATHTTP_LOG_ERR("failed to bind HTTP/3 critical streams\n");
+        KATHTTP3_LOG_ERR("failed to bind HTTP/3 critical streams\n");
         nghttp3_conn_del(httpconn_);
         httpconn_ = nullptr;
         return false;
@@ -359,7 +359,7 @@ bool Http3Session::submit_request(Job* job) {
     int rv =
         nghttp3_conn_submit_request(httpconn_, job->stream_id, nva.data(), nva.size(), drp, job);
     if (rv != 0) {
-        KATHTTP_LOG_ERR("nghttp3_conn_submit_request: %s\n", nghttp3_strerror(rv));
+        KATHTTP3_LOG_ERR("nghttp3_conn_submit_request: %s\n", nghttp3_strerror(rv));
         return false;
     }
     map_stream(job->stream_id, job);
@@ -384,7 +384,7 @@ void Http3Session::pump_write(ngtcp2_tstamp ts) {
         nghttp3_ssize h3veccnt =
             nghttp3_conn_writev_stream(httpconn_, &stream_id, &fin, h3vec.data(), h3vec.size());
         if (h3veccnt < 0) {
-            KATHTTP_LOG_ERR("nghttp3_conn_writev_stream: %s\n", nghttp3_strerror((int)h3veccnt));
+            KATHTTP3_LOG_ERR("nghttp3_conn_writev_stream: %s\n", nghttp3_strerror((int)h3veccnt));
             return;
         }
         if (h3veccnt == 0 && stream_id == -1) return;
@@ -399,7 +399,7 @@ void Http3Session::pump_write(ngtcp2_tstamp ts) {
         if (w == NGTCP2_ERR_WRITE_MORE) {
             if (ndatalen >= 0 && nghttp3_conn_add_write_offset(
                                      httpconn_, stream_id, static_cast<size_t>(ndatalen)) != 0) {
-                KATHTTP_LOG_ERR("nghttp3_conn_add_write_offset failed\n");
+                KATHTTP3_LOG_ERR("nghttp3_conn_add_write_offset failed\n");
                 return;
             }
             continue;
@@ -413,12 +413,12 @@ void Http3Session::pump_write(ngtcp2_tstamp ts) {
             continue;
         }
         if (w < 0) {
-            KATHTTP_LOG_ERR("ngtcp2_conn_writev_stream: %s\n", ngtcp2_strerror((int)w));
+            KATHTTP3_LOG_ERR("ngtcp2_conn_writev_stream: %s\n", ngtcp2_strerror((int)w));
             return;
         }
         if (ndatalen >= 0 && nghttp3_conn_add_write_offset(httpconn_, stream_id,
                                                            static_cast<size_t>(ndatalen)) != 0) {
-            KATHTTP_LOG_ERR("nghttp3_conn_add_write_offset failed\n");
+            KATHTTP3_LOG_ERR("nghttp3_conn_add_write_offset failed\n");
             return;
         }
         if (ndatalen > 0) client_->note_write_progress(stream_id);
@@ -432,7 +432,7 @@ bool Http3Session::recv_stream_data(uint32_t, int64_t stream_id, const uint8_t* 
     if (!httpconn_) return false;
     int rv = nghttp3_conn_read_stream(httpconn_, stream_id, data, len, fin ? 1 : 0);
     if (rv < 0) {
-        KATHTTP_LOG_ERR("nghttp3_conn_read_stream: %s\n", nghttp3_strerror(rv));
+        KATHTTP3_LOG_ERR("nghttp3_conn_read_stream: %s\n", nghttp3_strerror(rv));
         return false;
     }
     Job* job = find_job(stream_id);
@@ -481,4 +481,4 @@ void Http3Session::reset_stream(int64_t stream_id) {
     ngtcp2_conn_shutdown_stream_write(conn_, 0, stream_id, NGHTTP3_H3_REQUEST_CANCELLED);
 }
 
-}  // namespace kathttp
+}  // namespace kathttp3

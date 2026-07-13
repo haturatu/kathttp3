@@ -1,5 +1,5 @@
-#ifndef KATHTTP_CA_BUNDLE_H
-#define KATHTTP_CA_BUNDLE_H
+#ifndef KATHTTP3_CA_BUNDLE_H
+#define KATHTTP3_CA_BUNDLE_H
 
 /* Auto-generated from curl.se/ca/cacert.pem (Mozilla CA bundle). Embedded so the client trusts system CAs without a filesystem path. */
 static const char kCaBundlePem[] =
@@ -2961,4 +2961,4 @@ static const char kCaBundlePem[] =
 "wzPbGO2E14vs7dOoY4G1VnxHx1YwlGhza9IuqbnZLBwpvQy6uWWL\n"
 "-----END CERTIFICATE-----";
 
-#endif /* KATHTTP_CA_BUNDLE_H */
+#endif /* KATHTTP3_CA_BUNDLE_H */

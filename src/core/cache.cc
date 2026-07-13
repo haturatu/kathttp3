@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <ctime>
 
-namespace kathttp {
+namespace kathttp3 {
 
 bool ResponseCache::cacheable(std::string_view method, const Response& resp) const {
     if (method != "GET") return false;
@@ -74,4 +74,4 @@ void ResponseCache::put(std::string_view method, std::string_view url, const Res
     }
 }
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */

@@ -1,6 +1,6 @@
-# Kathttp
+# KatHttp3
 
-Kathttp is an experimental HTTP/3 client for Android (API 26+) with a C++20 core, stable C ABI, JNI bridge, coroutine Kotlin API, and a Jetpack Compose example. The transport stack is `ngtcp2 1.24.0 + nghttp3 1.17.0 + BoringSSL`.
+KatHttp3 is an experimental HTTP/3 client for Android (API 26+) with a C++20 core, stable C ABI, JNI bridge, coroutine Kotlin API, and a Jetpack Compose example. The transport stack is `ngtcp2 1.24.0 + nghttp3 1.17.0 + BoringSSL`.
 
 > Status: the host core/JNI and Android builds compile, core/Kotlin unit tests pass, and the four-ABI debug example APK has been assembled and installed on an arm64 Android device. On Android, certificate verification now uses the platform `X509TrustManager` by default (no bundled CA file required) and live HTTP/3 requests to public servers succeed; this is not production-ready.
 
@@ -17,16 +17,16 @@ Kotlin public API
           -> non-blocking UDP socket
 ```
 
-Kotlin owns immutable request values and copies callback data. A JNI callback owns one global reference until one terminal callback. `kathttp_client_execute` transfers request ownership to native code; callback buffers are valid only during the callback. Engine owns request registry, cookies and connection pool. Each connection worker exclusively owns its UDP fd, TLS session, ngtcp2 connection and nghttp3 connection. `close`, cancellation and terminal delivery are idempotent at their public boundaries.
+Kotlin owns immutable request values and copies callback data. A JNI callback owns one global reference until one terminal callback. `kathttp3_client_execute` transfers request ownership to native code; callback buffers are valid only during the callback. Engine owns request registry, cookies and connection pool. Each connection worker exclusively owns its UDP fd, TLS session, ngtcp2 connection and nghttp3 connection. `close`, cancellation and terminal delivery are idempotent at their public boundaries.
 
-ngtcp2 owns QUIC packet parsing/generation, loss recovery, congestion and transport flow control. nghttp3 owns HTTP/3 framing, SETTINGS and QPACK encoding/decoding. BoringSSL owns TLS 1.3 and cryptography. Kathttp owns DNS, UDP/timer driving, SNI/ALPN/certificate policy, critical stream creation, request lifecycle, redirects/cookies, and language bindings.
+ngtcp2 owns QUIC packet parsing/generation, loss recovery, congestion and transport flow control. nghttp3 owns HTTP/3 framing, SETTINGS and QPACK encoding/decoding. BoringSSL owns TLS 1.3 and cryptography. KatHttp3 owns DNS, UDP/timer driving, SNI/ALPN/certificate policy, critical stream creation, request lifecycle, redirects/cookies, and language bindings.
 
 ## Host build and tests
 
 Prerequisites are CMake 3.22+, C++20, pkg-config, and matching development packages for ngtcp2/nghttp3. The tested host versions are ngtcp2 1.24.0 and nghttp3 1.17.0.
 
 ```sh
-cmake -S . -B build -DKATHTTP_BUILD_TESTS=ON -DKATHTTP_BUILD_JNI=ON
+cmake -S . -B build -DKATHTTP3_BUILD_TESTS=ON -DKATHTTP3_BUILD_JNI=ON
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
@@ -34,7 +34,7 @@ ctest --test-dir build --output-on-failure
 Sanitizers:
 
 ```sh
-cmake -S . -B build-asan -DKATHTTP_SANITIZE=ON
+cmake -S . -B build-asan -DKATHTTP3_SANITIZE=ON
 cmake --build build-asan -j
 ctest --test-dir build-asan --output-on-failure
 ```
@@ -47,7 +47,7 @@ Prerequisites:
 - Android NDK `27.0.12077973`
 - CMake 3.22.1 or newer, Git, Go, and Java 17. Ninja is recommended; Unix Makefiles are used automatically when Ninja is unavailable.
 
-Set `ANDROID_HOME` or `ANDROID_SDK_ROOT`. An explicit `ANDROID_NDK_HOME` is also accepted. Kathttp deliberately does not link Android's private platform BoringSSL ABI. The checked-in build script downloads fixed upstream sources and cross-compiles these static libraries:
+Set `ANDROID_HOME` or `ANDROID_SDK_ROOT`. An explicit `ANDROID_NDK_HOME` is also accepted. KatHttp3 deliberately does not link Android's private platform BoringSSL ABI. The checked-in build script downloads fixed upstream sources and cross-compiles these static libraries:
 
 ```text
 third_party/android-deps/<ABI>/lib/libngtcp2.a
@@ -113,31 +113,31 @@ find src include tests -type f ! -name ca_bundle.h \( -name '*.cc' -o -name '*.c
 find src include tests -type f ! -name ca_bundle.h \( -name '*.cc' -o -name '*.cpp' -o -name '*.c' -o -name '*.h' -o -name '*.hpp' \) -print0 | xargs -0 clang-format -i
 
 # Compilation database and clang-tidy/cppcheck without linking transport deps.
-cmake -S . -B build-tidy -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DKATHTTP_ANALYSIS_ONLY=ON -DKATHTTP_BUILD_JNI=OFF
+cmake -S . -B build-tidy -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DKATHTTP3_ANALYSIS_ONLY=ON -DKATHTTP3_BUILD_JNI=OFF
 run-clang-tidy -p build-tidy -quiet
 cppcheck --project=build-tidy/compile_commands.json --enable=warning,style,performance,portability --inline-suppr --suppress=missingIncludeSystem --error-exitcode=1
 
 # ASan + UBSan for the core test suite.
-cmake -S . -B build-sanitize -G Ninja -DCMAKE_BUILD_TYPE=Debug -DKATHTTP_ANALYSIS_ONLY=ON -DKATHTTP_SANITIZE=ON -DKATHTTP_BUILD_JNI=OFF
+cmake -S . -B build-sanitize -G Ninja -DCMAKE_BUILD_TYPE=Debug -DKATHTTP3_ANALYSIS_ONLY=ON -DKATHTTP3_SANITIZE=ON -DKATHTTP3_BUILD_JNI=OFF
 cmake --build build-sanitize --parallel
 ctest --test-dir build-sanitize --output-on-failure
 ```
 
 Include What You Use is intentionally opt-in because external QUIC/TLS headers
 need project-specific mappings.  Install `include-what-you-use` and configure
-with `-DKATHTTP_ENABLE_IWYU=ON` when running this manual audit.
+with `-DKATHTTP3_ENABLE_IWYU=ON` when running this manual audit.
 
 The module uses compile SDK 36, minimum SDK 26, and Java/Kotlin JVM target 17.
 
 ### Publishing and consuming
 
-The `:kathttp` module is configured with `maven-publish`. Building the release
+The `:kathttp3` module is configured with `maven-publish`. Building the release
 AAR first runs `buildAndroidNativeDeps` automatically (wired through `preBuild`),
 so a single command cross-compiles the pinned native dependencies for all four
-ABIs and packages `libkathttp.so` into the AAR:
+ABIs and packages `libkathttp3.so` into the AAR:
 
 ```sh
-./gradlew :kathttp:publishReleasePublicationToMavenLocal
+./gradlew :kathttp3:publishReleasePublicationToMavenLocal
 ```
 
 The same command runs on JitPack via [`jitpack.yml`](jitpack.yml). Add JitPack as
@@ -145,12 +145,11 @@ a repository and depend on the tag you want:
 
 ```kotlin
 repositories { maven("https://jitpack.io") }
-dependencies { implementation("com.github.haturatu:kathttp:v0.1.0") }
+dependencies { implementation("com.github.haturatu:kathttp3:v0.1.0") }
 ```
 
 For stable releases, build the AAR once in CI (`[Android AAR]` workflow), publish
-it to Maven Central, and depend on `dev.kathttp:kathttp:<version>` instead.
-
+it to Maven Central, and depend on `dev.kathttp3:kathttp3:<version>` instead.
 
 Pinned dependencies and licenses:
 
@@ -164,24 +163,24 @@ These revisions are defined once in [`third_party/versions.env`](third_party/ver
 
 ### Certificate trust
 
-Peer and hostname verification are enabled by default. The default trust mode is `KATHTTP_TRUST_PLATFORM`, which on Android delegates to the platform `X509TrustManager` through `android.net.http.X509TrustManagerExtensions` (BoringSSL's custom-verify callback forwards the peer chain, server name and key type). This automatically inherits the Android system trust store and Network Security Config, so public-server use works out of the box without a bundled CA file.
+Peer and hostname verification are enabled by default. The default trust mode is `KATHTTP3_TRUST_PLATFORM`, which on Android delegates to the platform `X509TrustManager` through `android.net.http.X509TrustManagerExtensions` (BoringSSL's custom-verify callback forwards the peer chain, server name and key type). This automatically inherits the Android system trust store and Network Security Config, so public-server use works out of the box without a bundled CA file.
 
-Three trust modes are selectable through `kathttp_trust_mode`:
+Three trust modes are selectable through `kathttp3_trust_mode`:
 
 | Mode | Meaning |
 | --- | --- |
-| `KATHTTP_TRUST_PLATFORM` (default) | Use the OS/platform trust provider (Android `X509TrustManagerExtensions`; host OpenSSL default paths). |
-| `KATHTTP_TRUST_EMBEDDED_MOZILLA` | Verify against the built-in Mozilla CA bundle (`ca_bundle.h`). |
-| `KATHTTP_TRUST_CUSTOM_CA` | Verify against a caller-supplied PEM CA file (`ca_cert_file`). |
+| `KATHTTP3_TRUST_PLATFORM` (default) | Use the OS/platform trust provider (Android `X509TrustManagerExtensions`; host OpenSSL default paths). |
+| `KATHTTP3_TRUST_EMBEDDED_MOZILLA` | Verify against the built-in Mozilla CA bundle (`ca_bundle.h`). |
+| `KATHTTP3_TRUST_CUSTOM_CA` | Verify against a caller-supplied PEM CA file (`ca_cert_file`). |
 
 `insecure_cert` disables verification entirely; it is debug-only and must never be enabled in shipped builds.
 
-Verification failure is fatal and surfaced with a distinct error code rather than a generic transport error: `KATHTTP_ERR_TLS` (-4) for handshake-level failures, `KATHTTP_ERR_CERTIFICATE_VERIFY` (-5), `KATHTTP_ERR_HOSTNAME_MISMATCH` (-6), and `KATHTTP_ERR_NO_TRUST_PROVIDER` (-7) when no trust provider is configured. The Kotlin API throws `TlsHandshakeException`, `CertificateVerificationException`, or `QuicTransportException` accordingly; transport errors remain `KATHTTP_ERR_QUIC` (-3) / `QuicTransportException`. Kathttp does not silently disable verification. Key logging is debug-only and must never be enabled in shipped builds.
+Verification failure is fatal and surfaced with a distinct error code rather than a generic transport error: `KATHTTP3_ERR_TLS` (-4) for handshake-level failures, `KATHTTP3_ERR_CERTIFICATE_VERIFY` (-5), `KATHTTP3_ERR_HOSTNAME_MISMATCH` (-6), and `KATHTTP3_ERR_NO_TRUST_PROVIDER` (-7) when no trust provider is configured. The Kotlin API throws `TlsHandshakeException`, `CertificateVerificationException`, or `QuicTransportException` accordingly; transport errors remain `KATHTTP3_ERR_QUIC` (-3) / `QuicTransportException`. KatHttp3 does not silently disable verification. Key logging is debug-only and must never be enabled in shipped builds.
 
 ## Kotlin usage
 
 ```kotlin
-KatHttpClient().use { client ->
+KatHttp3Client().use { client ->
     val response = client.get("https://your-http3-server.example/resource")
     println("${response.status}: ${response.body.decodeToString()}")
 }
@@ -194,23 +193,23 @@ val job = lifecycleScope.launch {
     client.post(
         "https://your-http3-server.example/items",
         "{\"name\":\"kat\"}".encodeToByteArray(),
-        listOf(KatHttpHeader("content-type", "application/json")),
+        listOf(KatHttp3Header("content-type", "application/json")),
     )
 }
 job.cancel() // propagated to RESET_STREAM / STOP_SENDING
 ```
 
-`execute` buffers at most `maxBufferedBodyBytes` (16 MiB by default). `executeStreaming` exposes a bounded `Flow<KatHttpStreamEvent>`; close/cancel its `KatHttpCall` when abandoning collection.
+`execute` buffers at most `maxBufferedBodyBytes` (16 MiB by default). `executeStreaming` exposes a bounded `Flow<KatHttp3StreamEvent>`; close/cancel its `KatHttp3Call` when abandoning collection.
 
-`KatHttpClientConfig` has independent monotonic deadlines for DNS, connect,
+`KatHttp3ClientConfig` has independent monotonic deadlines for DNS, connect,
 handshake, response headers, read-idle, write-idle, and the complete call.
 `callTimeoutMillis` is an absolute request deadline; read/write timeouts reset
 only when the corresponding direction makes progress. Timeout failures are
-reported as `KathttpException.Timeout` with a `KatHttpTimeoutPhase`.
+reported as `KatHttp3Exception.Timeout` with a `KatHttp3TimeoutPhase`.
 
 ## Example app
 
-The local-module Compose app is in `example/` and uses `implementation(project(":kathttp"))`. Install `example/build/outputs/apk/debug/example-debug.apk`, enter an HTTPS URL served over HTTP/3, select GET, POST, PUT, DELETE, PATCH, or HEAD, then press the single `Send <method>` button. POST, PUT, PATCH, and DELETE expose an editable UTF-8 body; headers are entered as lowercase `name: value` lines. Cancel cancels the coroutine and native request. The app shows status, headers, HTTP/3-over-QUIC protocol information, duration, byte count, and errors; response rendering is capped at 16,000 characters to keep the UI responsive. No public endpoint is hard-coded and cleartext traffic is disabled.
+The local-module Compose app is in `example/` and uses `implementation(project(":kathttp3"))`. Install `example/build/outputs/apk/debug/example-debug.apk`, enter an HTTPS URL served over HTTP/3, select GET, POST, PUT, DELETE, PATCH, or HEAD, then press the single `Send <method>` button. POST, PUT, PATCH, and DELETE expose an editable UTF-8 body; headers are entered as lowercase `name: value` lines. Cancel cancels the coroutine and native request. The app shows status, headers, HTTP/3-over-QUIC protocol information, duration, byte count, and errors; response rendering is capped at 16,000 characters to keep the UI responsive. No public endpoint is hard-coded and cleartext traffic is disabled.
 
 With one Android device connected through adb, the example can be built and installed from its directory:
 
@@ -219,12 +218,12 @@ cd example
 make adbinstall
 ```
 
-By default dependencies are read from `third_party/android-deps`; override this with `KATHTTP_DEPS_ROOT=/absolute/path` when needed. When multiple devices are connected, add `DEVICE_SERIAL=<adb-serial>`. The target runs `:example:assembleDebug`, verifies the APK, and installs it with `adb install -r`.
+By default dependencies are read from `third_party/android-deps`; override this with `KATHTTP3_DEPS_ROOT=/absolute/path` when needed. When multiple devices are connected, add `DEVICE_SERIAL=<adb-serial>`. The target runs `:example:assembleDebug`, verifies the APK, and installs it with `adb install -r`.
 
 ## Tests
 
 - `tests/core/core_tests.cc`: URL and port validation, HTTPS policy, header lookup, redirect resolution, cookie matching.
-- `kathttp/src/test`: Kotlin model/config/header/request validation.
+- `kathttp3/src/test`: Kotlin model/config/header/request validation.
 - External-network and local ngtcp2-server tests are intentionally separate and are not run by ordinary unit tests.
 
 ## Protocol notes
@@ -233,16 +232,16 @@ The worker drives `ngtcp2_conn_get_expiry2`/`ngtcp2_conn_handle_expiry` with mon
 
 ## C ABI compatibility
 
-The C ABI uses `kathttp_client_config` (an alias of the retained
-`kathttp_client_options`) with `struct_size` and `abi_version`. Initialize it
-with `kathttp_client_config_init`. KatHttp accepts known smaller structs and
+The C ABI uses `kathttp3_client_config` (an alias of the retained
+`kathttp3_client_options`) with `struct_size` and `abi_version`. Initialize it
+with `kathttp3_client_config_init`. KatHttp3 accepts known smaller structs and
 defaults appended fields; it rejects future ABI versions. During the 0.x line,
 existing enum values and fields are not reordered and optional fields are
-appended only. Symbols are hidden by default except `kathttp_*` exports.
+appended only. Symbols are hidden by default except `kathttp3_*` exports.
 
 ## Known limitations
 
-- Certificate trust defaults to the Android platform provider (`X509TrustManagerExtensions`); the embedded Mozilla bundle and a caller-supplied CA file are also available via `kathttp_trust_mode`.
+- Certificate trust defaults to the Android platform provider (`X509TrustManagerExtensions`); the embedded Mozilla bundle and a caller-supplied CA file are also available via `kathttp3_trust_mode`.
 - Live GET/POST interoperability has not been verified against a local HTTP/3 server.
 - DNS, connect, handshake, response-header, read-idle, write-idle and call
   deadlines use the monotonic QUIC clock.
@@ -277,10 +276,10 @@ appended only. Symbols are hidden by default except `kathttp_*` exports.
 
 ```text
 CMakeLists.txt                  host/Android native build
-include/kathttp/kathttp.h       public include forwarder
+include/kathttp3/kathttp3.h       public include forwarder
 src/core/                       QUIC/HTTP3 engine and C ABI
-src/jni/kathttp_jni.cc          JNI bridge
-kathttp/                        Android library and Kotlin API
+src/jni/kathttp3_jni.cc          JNI bridge
+kathttp3/                        Android library and Kotlin API
 example/                        Compose sample app
 tests/core/                     host unit tests
 scripts/build-android-deps.sh   pinned Android dependency cross-build

@@ -1,5 +1,5 @@
-#ifndef KATHTTP_ENGINE_H
-#define KATHTTP_ENGINE_H
+#ifndef KATHTTP3_ENGINE_H
+#define KATHTTP3_ENGINE_H
 
 #include <atomic>
 #include <cstdint>
@@ -11,21 +11,21 @@
 
 #include "cookie_jar.h"
 #include "dns.h"
-#include "kathttp.h"
+#include "kathttp3.h"
 #include "quic_client.h"
 #include "tls.h"
 
-struct kathttp_request;
+struct kathttp3_request;
 
-namespace kathttp {
+namespace kathttp3 {
 
 class QuicClient;
 
 /* Owns the connection pool, the per-request registry, the TLS context
- * and the cookie jar. Implements the kathttp_client C ABI surface. */
+ * and the cookie jar. Implements the kathttp3_client C ABI surface. */
 class Engine {
    public:
-    explicit Engine(const kathttp_client_options& opt);
+    explicit Engine(const kathttp3_client_options& opt);
     ~Engine();
 
     Engine(const Engine&) = delete;
@@ -33,7 +33,7 @@ class Engine {
 
     void set_origin_policy(const std::string& tag);
 
-    void execute(kathttp_request* req, int64_t request_id, kathttp_event_callback cb,
+    void execute(kathttp3_request* req, int64_t request_id, kathttp3_event_callback cb,
                  void* user_data);
     void cancel(int64_t request_id);
     int consume(int64_t request_id, size_t bytes);
@@ -51,7 +51,7 @@ class Engine {
     std::mutex lifecycle_mutex_;
     std::recursive_mutex callback_mutex_;
     struct ReqEntry {
-        kathttp_event_callback cb = nullptr;
+        kathttp3_event_callback cb = nullptr;
         void* user_data = nullptr;
         QuicClient* client = nullptr;
         bool cancelled = false;
@@ -64,9 +64,9 @@ class Engine {
     void dispatch_body(Job* job, const uint8_t* data, size_t len);
     void dispatch_complete(Job* job);
     void dispatch_error(Job* job, int err, const char* msg);
-    void add_cookie_header(kathttp_request* req, const Url& url);
+    void add_cookie_header(kathttp3_request* req, const Url& url);
     void store_cookies(const Url& url, const HeaderList& headers);
-    void deliver(const kathttp_event& ev);
+    void deliver(const kathttp3_event& ev);
 
     std::mutex mtx_; /* serializes registry access and event delivery */
     std::unordered_map<int64_t, ReqEntry> registry_;
@@ -78,7 +78,7 @@ class Engine {
     uint64_t network_generation_ = 0;
     std::shared_ptr<std::atomic<uint64_t>> resolver_network_generation_ =
         std::make_shared<std::atomic<uint64_t>>(0);
-    kathttp_client_options opt_{};
+    kathttp3_client_options opt_{};
     std::shared_ptr<Resolver> resolver_;
     std::shared_ptr<DnsCache> dns_cache_;
     TlsClientContext tls_ctx_;
@@ -87,6 +87,6 @@ class Engine {
     std::atomic<bool> destroyed_{false};
 };
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_ENGINE_H */
+#endif /* KATHTTP3_ENGINE_H */

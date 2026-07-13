@@ -1,11 +1,11 @@
-#ifndef KATHTTP_ANDROID_CERT_VERIFIER_H
-#define KATHTTP_ANDROID_CERT_VERIFIER_H
+#ifndef KATHTTP3_ANDROID_CERT_VERIFIER_H
+#define KATHTTP3_ANDROID_CERT_VERIFIER_H
 
 #include <jni.h>
 
 #include "cert_verifier.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 /* Android verifier: delegates to the platform X509TrustManager via JNI.
  * `ext` must be a global JNI reference to an
@@ -31,6 +31,6 @@ class AndroidCertificateVerifier : public CertificateVerifier {
  * the engine (typically process-lifetime). */
 CertificateVerifier* create_android_platform_verifier(JavaVM* vm);
 
-}  // namespace kathttp
+}  // namespace kathttp3
 
-#endif /* KATHTTP_ANDROID_CERT_VERIFIER_H */
+#endif /* KATHTTP3_ANDROID_CERT_VERIFIER_H */

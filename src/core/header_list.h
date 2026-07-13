@@ -1,10 +1,10 @@
-#ifndef KATHTTP_HEADER_LIST_H
-#define KATHTTP_HEADER_LIST_H
+#ifndef KATHTTP3_HEADER_LIST_H
+#define KATHTTP3_HEADER_LIST_H
 
 #include <string>
 #include <vector>
 
-namespace kathttp {
+namespace kathttp3 {
 
 /* Preserves order and allows duplicate header names (e.g. set-cookie). */
 struct Header {
@@ -45,6 +45,6 @@ class HeaderList {
     std::vector<Header> headers_;
 };
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_HEADER_LIST_H */
+#endif /* KATHTTP3_HEADER_LIST_H */

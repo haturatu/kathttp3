@@ -20,10 +20,10 @@ set -a
 # shellcheck source=/dev/null
 source "${VERSIONS_FILE}"
 set +a
-readonly NGTCP2_VERSION="${KATHTTP_NGTCP2_VERSION}"
-readonly NGHTTP3_VERSION="${KATHTTP_NGHTTP3_VERSION}"
+readonly NGTCP2_VERSION="${KATHTTP3_NGTCP2_VERSION}"
+readonly NGHTTP3_VERSION="${KATHTTP3_NGHTTP3_VERSION}"
 # This is the BoringSSL revision used by ngtcp2 v1.24.0 upstream CI.
-readonly BORINGSSL_REVISION="${KATHTTP_BORINGSSL_REVISION}"
+readonly BORINGSSL_REVISION="${KATHTTP3_BORINGSSL_REVISION}"
 SOURCE_DIR="${ROOT_DIR}/third_party/src"
 BUILD_DIR="${ROOT_DIR}/third_party/build-android"
 OUTPUT_DIR="${ROOT_DIR}/third_party/android-deps"
@@ -118,7 +118,7 @@ install_cmake_archive() {
     return 1
   }
   target="${sdk}/cmake/${ANDROID_CMAKE_VERSION}"
-  archive="$(mktemp "${TMPDIR:-/tmp}/kathttp-cmake.XXXXXX")"
+  archive="$(mktemp "${TMPDIR:-/tmp}/kathttp3-cmake.XXXXXX")"
 
   echo "Downloading Android SDK CMake ${ANDROID_CMAKE_VERSION} from its pinned official archive." >&2
   curl --fail --location --silent --show-error --retry 3 --retry-delay 2 \

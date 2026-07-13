@@ -1,5 +1,5 @@
-#ifndef KATHTTP_TLS_H
-#define KATHTTP_TLS_H
+#ifndef KATHTTP3_TLS_H
+#define KATHTTP3_TLS_H
 
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
@@ -10,9 +10,9 @@
 #include <string>
 
 #include "cert_verifier.h"
-#include "kathttp.h"
+#include "kathttp3.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 /* Snapshot of a TLS failure, captured at the moment it happens
  * (not read lazily from the thread-local error queue later). */
@@ -20,7 +20,7 @@ struct TlsFailure {
     int ssl_error = 0;            /* SSL_get_error() on the failing call */
     uint64_t boringssl_error = 0; /* ERR_peek_last_error() */
     int tls_alert = 0;            /* alert sent/received, if any */
-    int code = 0;                 /* KATHTTP_ERR_* to surface */
+    int code = 0;                 /* KATHTTP3_ERR_* to surface */
     std::string message;          /* human-readable reason */
 };
 
@@ -38,7 +38,7 @@ class TlsClientContext {
     /* Configures the context according to the trust policy.
      * `platform_verifier` is the host-injected verifier used for
      * TRUST_PLATFORM on Android (may be null -> embedded fallback). */
-    bool init(kathttp_trust_mode trust_mode, bool insecure, const std::string& ca_cert_file,
+    bool init(kathttp3_trust_mode trust_mode, bool insecure, const std::string& ca_cert_file,
               const std::string& keylog_file, CertificateVerifier* platform_verifier = nullptr);
 
     SSL_CTX* native() const {
@@ -89,7 +89,7 @@ class TlsClientSession {
     void recordVerifierResult(const VerifyResult& r);
 
     /* Captures the current error queue for `ssl` into last_failure_,
-     * choosing a KATHTTP_ERR_* code from the message. */
+     * choosing a KATHTTP3_ERR_* code from the message. */
     void captureLastError(SSL* ssl, int return_code);
 
     /* Clears any previously captured failure (call before a new attempt). */
@@ -102,6 +102,6 @@ class TlsClientSession {
     TlsFailure last_failure_{};
 };
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_TLS_H */
+#endif /* KATHTTP3_TLS_H */

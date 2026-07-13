@@ -6,11 +6,11 @@
 #include "cert_verifier.h"
 
 // Backend selection:
-//   - On Android we build against BoringSSL and define KATHTTP_USE_BORINGSSL.
+//   - On Android we build against BoringSSL and define KATHTTP3_USE_BORINGSSL.
 //   - On the host (Linux/macOS) we test against system OpenSSL via the
 //     ngtcp2_crypto_ossl backend. Both expose the same ngtcp2_crypto_*
 //     client-session helper, which registers the QUIC TLS callbacks.
-#ifdef KATHTTP_USE_BORINGSSL
+#ifdef KATHTTP3_USE_BORINGSSL
 #include <ngtcp2/ngtcp2_crypto_boringssl.h>
 #else
 #include <ngtcp2/ngtcp2_crypto_ossl.h>
@@ -27,7 +27,7 @@
 
 #include "log.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 namespace {
 
@@ -60,7 +60,7 @@ bool load_embedded_ca_bundle(SSL_CTX* ssl_ctx) {
     return added;
 }
 
-#ifdef KATHTTP_USE_BORINGSSL
+#ifdef KATHTTP3_USE_BORINGSSL
 /* Peer certificate chain as DER blobs (leaf first). BoringSSL-only; the
  * custom-verify path is only used on Android (BoringSSL). This BoringSSL
  * build returns the chain as STACK_OF(CRYPTO_BUFFER) of DER blobs. */
@@ -115,53 +115,53 @@ TlsClientContext::~TlsClientContext() {
     if (ssl_ctx_) SSL_CTX_free(ssl_ctx_);
 }
 
-bool TlsClientContext::init(kathttp_trust_mode trust_mode, bool insecure,
+bool TlsClientContext::init(kathttp3_trust_mode trust_mode, bool insecure,
                             const std::string& ca_cert_file, const std::string& keylog_file,
                             CertificateVerifier* platform_verifier) {
     ssl_ctx_ = SSL_CTX_new(TLS_client_method());
     if (!ssl_ctx_) {
-        KATHTTP_LOG_ERR("SSL_CTX_new: %s\n", ERR_error_string(ERR_get_error(), nullptr));
+        KATHTTP3_LOG_ERR("SSL_CTX_new: %s\n", ERR_error_string(ERR_get_error(), nullptr));
         return false;
     }
 
-#ifdef KATHTTP_USE_BORINGSSL
+#ifdef KATHTTP3_USE_BORINGSSL
     if (ngtcp2_crypto_boringssl_configure_client_context(ssl_ctx_) != 0) {
-        KATHTTP_LOG_ERR("ngtcp2_crypto_boringssl_configure_client_context failed\n");
+        KATHTTP3_LOG_ERR("ngtcp2_crypto_boringssl_configure_client_context failed\n");
         return false;
     }
 #endif
 
     if (SSL_CTX_set_min_proto_version(ssl_ctx_, TLS1_3_VERSION) != 1) {
-        KATHTTP_LOG_ERR("SSL_CTX_set_min_proto_version failed\n");
+        KATHTTP3_LOG_ERR("SSL_CTX_set_min_proto_version failed\n");
         return false;
     }
     if (SSL_CTX_set_max_proto_version(ssl_ctx_, TLS1_3_VERSION) != 1) {
-        KATHTTP_LOG_ERR("SSL_CTX_set_max_proto_version failed\n");
+        KATHTTP3_LOG_ERR("SSL_CTX_set_max_proto_version failed\n");
         return false;
     }
 
     // ALPN: advertise "h3".
     if (SSL_CTX_set_alpn_protos(ssl_ctx_, H3_ALPN, sizeof(H3_ALPN)) != 0) {
-        KATHTTP_LOG_ERR("SSL_CTX_set_alpn_protos failed\n");
+        KATHTTP3_LOG_ERR("SSL_CTX_set_alpn_protos failed\n");
         return false;
     }
 
     // Resolve the certificate verifier according to the trust policy.
-#ifdef KATHTTP_USE_BORINGSSL
+#ifdef KATHTTP3_USE_BORINGSSL
     // On Android there is no usable system PEM path, so verification always
     // goes through a verifier (the BoringSSL custom-verify callback).
-    if (trust_mode == KATHTTP_TRUST_PLATFORM) {
+    if (trust_mode == KATHTTP3_TRUST_PLATFORM) {
         CertificateVerifier* v = platform_verifier ? platform_verifier : platform_cert_verifier();
         if (v) {
             verifier_ = v;  // injected by the host; not owned here
         } else {
-            owned_verifier_ = make_verifier(KATHTTP_TRUST_EMBEDDED_MOZILLA, false, "");
+            owned_verifier_ = make_verifier(KATHTTP3_TRUST_EMBEDDED_MOZILLA, false, "");
             verifier_ = owned_verifier_.get();
         }
     } else {
         owned_verifier_ = make_verifier(trust_mode, insecure, ca_cert_file);
         if (!owned_verifier_) {
-            KATHTTP_LOG_ERR("failed to build certificate verifier\n");
+            KATHTTP3_LOG_ERR("failed to build certificate verifier\n");
             return false;
         }
         verifier_ = owned_verifier_.get();
@@ -172,28 +172,28 @@ bool TlsClientContext::init(kathttp_trust_mode trust_mode, bool insecure,
     // roots loaded into the SSL_CTX trust store (no custom callback).
     if (insecure) {
         SSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_NONE, nullptr);
-    } else if (trust_mode == KATHTTP_TRUST_CUSTOM_CA) {
+    } else if (trust_mode == KATHTTP3_TRUST_CUSTOM_CA) {
         if (ca_cert_file.empty()) {
-            KATHTTP_LOG_ERR("TRUST_CUSTOM_CA requires ca_cert_file\n");
+            KATHTTP3_LOG_ERR("TRUST_CUSTOM_CA requires ca_cert_file\n");
             return false;
         }
         if (SSL_CTX_load_verify_locations(ssl_ctx_, ca_cert_file.c_str(), nullptr) != 1) {
-            KATHTTP_LOG_ERR("SSL_CTX_load_verify_locations failed for %s\n", ca_cert_file.c_str());
+            KATHTTP3_LOG_ERR("SSL_CTX_load_verify_locations failed for %s\n", ca_cert_file.c_str());
             return false;
         }
         SSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_PEER, nullptr);
-    } else if (trust_mode == KATHTTP_TRUST_EMBEDDED_MOZILLA) {
+    } else if (trust_mode == KATHTTP3_TRUST_EMBEDDED_MOZILLA) {
         if (!load_embedded_ca_bundle(ssl_ctx_)) {
-            KATHTTP_LOG_ERR("load_embedded_ca_bundle failed\n");
+            KATHTTP3_LOG_ERR("load_embedded_ca_bundle failed\n");
         }
         SSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_PEER, nullptr);
     } else {  // TRUST_PLATFORM
         if (!ca_cert_file.empty()) {
             if (SSL_CTX_load_verify_locations(ssl_ctx_, ca_cert_file.c_str(), nullptr) != 1)
-                KATHTTP_LOG_ERR("SSL_CTX_load_verify_locations failed for %s\n",
-                                ca_cert_file.c_str());
+                KATHTTP3_LOG_ERR("SSL_CTX_load_verify_locations failed for %s\n",
+                                 ca_cert_file.c_str());
         } else if (SSL_CTX_set_default_verify_paths(ssl_ctx_) != 1) {
-            KATHTTP_LOG_ERR(
+            KATHTTP3_LOG_ERR(
                 "SSL_CTX_set_default_verify_paths failed; using embedded "
                 "bundle\n");
             load_embedded_ca_bundle(ssl_ctx_);
@@ -255,7 +255,7 @@ bool TlsClientSession::init(TlsClientContext& ctx, const std::string& server_nam
                             bool enable_early_data, ngtcp2_crypto_conn_ref* conn_ref) {
     ssl_ = SSL_new(ctx.native());
     if (!ssl_) {
-        KATHTTP_LOG_ERR("SSL_new: %s\n", ERR_error_string(ERR_get_error(), nullptr));
+        KATHTTP3_LOG_ERR("SSL_new: %s\n", ERR_error_string(ERR_get_error(), nullptr));
         return false;
     }
 
@@ -268,22 +268,22 @@ bool TlsClientSession::init(TlsClientContext& ctx, const std::string& server_nam
     if (!server_name.empty()) {
         SSL_set_tlsext_host_name(ssl_, server_name.c_str());
         if (SSL_set1_host(ssl_, server_name.c_str()) != 1) {
-            KATHTTP_LOG_ERR("SSL_set1_host failed\n");
+            KATHTTP3_LOG_ERR("SSL_set1_host failed\n");
             return false;
         }
     }
 
     if (enable_early_data) {
-#ifdef KATHTTP_USE_BORINGSSL
+#ifdef KATHTTP3_USE_BORINGSSL
         SSL_set_early_data_enabled(ssl_, 1);
 #endif
     }
 
-#ifdef KATHTTP_USE_BORINGSSL
+#ifdef KATHTTP3_USE_BORINGSSL
     // BoringSSL's QUIC method is installed on SSL_CTX above.
 #else
     if (ngtcp2_crypto_ossl_configure_client_session(ssl_) != 0) {
-        KATHTTP_LOG_ERR("ngtcp2_crypto_ossl_configure_client_session failed\n");
+        KATHTTP3_LOG_ERR("ngtcp2_crypto_ossl_configure_client_session failed\n");
         return false;
     }
 #endif
@@ -295,7 +295,7 @@ bool TlsClientSession::init(TlsClientContext& ctx, const std::string& server_nam
 
 void TlsClientSession::recordVerifierResult(const VerifyResult& r) {
     last_failure_ =
-        TlsFailure{0, 0, 0, r.ok ? 0 : (r.code ? r.code : KATHTTP_ERR_CERTIFICATE_VERIFY),
+        TlsFailure{0, 0, 0, r.ok ? 0 : (r.code ? r.code : KATHTTP3_ERR_CERTIFICATE_VERIFY),
                    r.ok ? std::string() : r.message};
 }
 
@@ -305,12 +305,12 @@ void TlsClientSession::captureLastError(SSL* ssl, int return_code) {
     char buf[256];
     ERR_error_string_n(e, buf, sizeof(buf));
     std::string msg = buf;
-    int code = KATHTTP_ERR_TLS;
+    int code = KATHTTP3_ERR_TLS;
     if (msg.find("CERTIFICATE_VERIFY") != std::string::npos)
-        code = KATHTTP_ERR_CERTIFICATE_VERIFY;
+        code = KATHTTP3_ERR_CERTIFICATE_VERIFY;
     else if (msg.find("HOST") != std::string::npos)
-        code = KATHTTP_ERR_HOSTNAME_MISMATCH;
+        code = KATHTTP3_ERR_HOSTNAME_MISMATCH;
     last_failure_ = TlsFailure{ssl_err, e, 0, code, msg};
 }
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */

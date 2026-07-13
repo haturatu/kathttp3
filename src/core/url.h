@@ -1,10 +1,10 @@
-#ifndef KATHTTP_URL_H
-#define KATHTTP_URL_H
+#ifndef KATHTTP3_URL_H
+#define KATHTTP3_URL_H
 
 #include <cstdint>
 #include <string>
 
-namespace kathttp {
+namespace kathttp3 {
 
 /* Minimal RFC 3986-ish URL parser. For HTTP/3 we only need
  * scheme / authority (host[:port]) / path?query. */
@@ -32,6 +32,6 @@ uint16_t default_port(std::string_view scheme);
 
 bool parse_url(std::string_view raw, Url& out);
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_URL_H */
+#endif /* KATHTTP3_URL_H */

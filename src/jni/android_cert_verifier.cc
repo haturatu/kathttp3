@@ -4,7 +4,7 @@
 
 #include "log.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 AndroidCertificateVerifier::AndroidCertificateVerifier(JavaVM* vm, jobject ext)
     : vm_(vm), ext_(ext) {}
@@ -23,7 +23,7 @@ VerifyResult AndroidCertificateVerifier::verify(std::string_view hostname,
                                                 const std::vector<DerCertificate>& chain,
                                                 std::string_view auth_type) {
     if (!ext_) {
-        return {false, KATHTTP_ERR_NO_TRUST_PROVIDER, "no Android trust manager available"};
+        return {false, KATHTTP3_ERR_NO_TRUST_PROVIDER, "no Android trust manager available"};
     }
     JNIEnv* env = nullptr;
     bool attached = false;
@@ -35,12 +35,12 @@ VerifyResult AndroidCertificateVerifier::verify(std::string_view hostname,
             vm_->AttachCurrentThread(reinterpret_cast<void**>(&env), nullptr);
 #endif
         if (attach_result != JNI_OK) {
-            return {false, KATHTTP_ERR_NO_TRUST_PROVIDER, "JNI attach failed"};
+            return {false, KATHTTP3_ERR_NO_TRUST_PROVIDER, "JNI attach failed"};
         }
         attached = true;
     }
 
-    VerifyResult result{false, KATHTTP_ERR_CERTIFICATE_VERIFY, "certificate verification failed"};
+    VerifyResult result{false, KATHTTP3_ERR_CERTIFICATE_VERIFY, "certificate verification failed"};
 
     jclass x509_cls = env->FindClass("java/security/cert/X509Certificate");
     jclass cf_cls = env->FindClass("java/security/cert/CertificateFactory");
@@ -111,7 +111,7 @@ VerifyResult AndroidCertificateVerifier::verify(std::string_view hostname,
                                 }
                                 env->DeleteLocalRef(ex);
                             }
-                            result.code = KATHTTP_ERR_CERTIFICATE_VERIFY;
+                            result.code = KATHTTP3_ERR_CERTIFICATE_VERIFY;
                         } else {
                             if (verified) env->DeleteLocalRef(verified);
                             result = {true, 0, ""};
@@ -134,7 +134,7 @@ VerifyResult AndroidCertificateVerifier::verify(std::string_view hostname,
 CertificateVerifier* create_android_platform_verifier(JavaVM* vm) {
     JNIEnv* env = nullptr;
     if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
-        KATHTTP_LOG_ERR("create_android_platform_verifier: no JNI env\n");
+        KATHTTP3_LOG_ERR("create_android_platform_verifier: no JNI env\n");
         return nullptr;
     }
 
@@ -179,4 +179,4 @@ CertificateVerifier* create_android_platform_verifier(JavaVM* vm) {
     return new AndroidCertificateVerifier(vm, global_ext);
 }
 
-}  // namespace kathttp
+}  // namespace kathttp3

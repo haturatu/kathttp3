@@ -5,7 +5,7 @@
 #include <charconv>
 #include <cstdlib>
 
-namespace kathttp {
+namespace kathttp3 {
 
 uint16_t default_port(std::string_view scheme) {
     if (scheme == "https") return 443;
@@ -111,4 +111,4 @@ bool parse_url(std::string_view raw, Url& out) {
     return out.valid();
 }
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */

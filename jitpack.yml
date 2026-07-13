@@ -8,4 +8,4 @@ before_install:
   - chmod +x scripts/build-android-deps.sh
 
 install:
-  - ./gradlew :kathttp:publishReleasePublicationToMavenLocal --stacktrace --no-daemon
+  - ./gradlew :kathttp3:publishReleasePublicationToMavenLocal --stacktrace --no-daemon

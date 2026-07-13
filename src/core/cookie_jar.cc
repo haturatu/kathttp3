@@ -7,7 +7,7 @@
 #include <ctime>
 #include <string>
 
-namespace kathttp {
+namespace kathttp3 {
 
 static std::string to_lower(std::string_view s) {
     std::string o(s);
@@ -166,4 +166,4 @@ std::string CookieJar::cookie_header(const Url& url) {
     return out;
 }
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */

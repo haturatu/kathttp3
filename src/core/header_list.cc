@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace kathttp {
+namespace kathttp3 {
 
 static bool ieq(std::string_view a, std::string_view b) {
     if (a.size() != b.size()) return false;
@@ -43,4 +43,4 @@ std::vector<const char*> HeaderList::value_pointers() const {
     return out;
 }
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */

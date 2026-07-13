@@ -1,5 +1,5 @@
-#ifndef KATHTTP_HTTP3_SESSION_H
-#define KATHTTP_HTTP3_SESSION_H
+#ifndef KATHTTP3_HTTP3_SESSION_H
+#define KATHTTP3_HTTP3_SESSION_H
 
 #include <nghttp3/nghttp3.h>
 #include <ngtcp2/ngtcp2.h>
@@ -9,7 +9,7 @@
 
 #include "quic_client.h"
 
-namespace kathttp {
+namespace kathttp3 {
 
 /* Wraps an nghttp3 connection: manages HTTP/3 streams (control, QPACK and
  * request/response), QPACK and the read/write bridge to ngtcp2. */
@@ -55,6 +55,6 @@ class Http3Session {
     std::unordered_map<int64_t, Job*> streams_;
 };
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_HTTP3_SESSION_H */
+#endif /* KATHTTP3_HTTP3_SESSION_H */

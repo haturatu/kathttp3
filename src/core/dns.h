@@ -1,5 +1,5 @@
-#ifndef KATHTTP_DNS_H
-#define KATHTTP_DNS_H
+#ifndef KATHTTP3_DNS_H
+#define KATHTTP3_DNS_H
 
 #include <atomic>
 #include <cstddef>
@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace kathttp {
+namespace kathttp3 {
 
 struct ResolvedEndpoint {
     std::string ip; /* textual IPv4 or IPv6 */
@@ -37,7 +37,7 @@ HappyEyeballsPlan make_happy_eyeballs_plan(const std::vector<ResolvedEndpoint>& 
  * `stop` (when non-null) lets a long/blocking resolution abort when the
  * request is cancelled. The default GetAddrInfoResolver covers non-Android
  * builds; on Android the per-request addresses are usually supplied via
- * kathttp_request_add_address(). A custom Resolver (e.g. DNS-over-HTTPS)
+ * kathttp3_request_add_address(). A custom Resolver (e.g. DNS-over-HTTPS)
  * can be injected through the client options. */
 class Resolver {
    public:
@@ -97,7 +97,7 @@ class CachedResolver : public Resolver {
     std::shared_ptr<std::atomic<uint64_t>> generation_;
 };
 
-/* Resolver backed by a C++ callback, used to adapt the C kathttp_resolve_cb
+/* Resolver backed by a C++ callback, used to adapt the C kathttp3_resolve_cb
  * hook into the Resolver interface. */
 class CallbackResolver : public Resolver {
    public:
@@ -113,7 +113,7 @@ class CallbackResolver : public Resolver {
     Fn fn_;
 };
 
-/* Submit resolution to KatHttp's bounded DNS worker pool.  The callback runs
+/* Submit resolution to KatHttp3's bounded DNS worker pool.  The callback runs
  * on a DNS worker, therefore it must not touch a QuicClient directly.  The
  * caller owns its result state and can discard it by setting `cancelled`.
  * Returning false means that the bounded queue is full. */
@@ -121,6 +121,6 @@ using DnsResolveCallback = std::function<void(std::vector<ResolvedEndpoint>)>;
 bool resolve_async(std::shared_ptr<Resolver> resolver, std::string host, uint16_t port,
                    std::shared_ptr<std::atomic<bool>> cancelled, DnsResolveCallback callback);
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_DNS_H */
+#endif /* KATHTTP3_DNS_H */

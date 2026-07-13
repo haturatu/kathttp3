@@ -1,5 +1,5 @@
-#ifndef KATHTTP_QUIC_CLIENT_H
-#define KATHTTP_QUIC_CLIENT_H
+#ifndef KATHTTP3_QUIC_CLIENT_H
+#define KATHTTP3_QUIC_CLIENT_H
 
 #include <nghttp3/nghttp3.h>
 #include <ngtcp2/ngtcp2.h>
@@ -23,9 +23,9 @@
 #include "udp_socket.h"
 #include "url.h"
 
-struct kathttp_request;
+struct kathttp3_request;
 
-namespace kathttp {
+namespace kathttp3 {
 
 class Engine;
 class Http3Session;
@@ -36,7 +36,7 @@ enum class ConnectionState { Connecting, Active, Draining, Closing, Closed };
 /* One HTTP/3 request/response exchange multiplexed over a QuicClient. */
 struct Job {
     int64_t id = 0;
-    kathttp_request* request = nullptr; /* owned by Job */
+    kathttp3_request* request = nullptr; /* owned by Job */
     Url url;
     int64_t stream_id = -1;
     bool http3_ready = false;
@@ -240,9 +240,9 @@ class QuicClient {
     uint64_t last_active_ = 0;
     uint64_t connection_started_at_ = 0;
     uint64_t handshake_started_at_ = 0;
-    int terminal_error_ = KATHTTP_ERR_QUIC;
+    int terminal_error_ = KATHTTP3_ERR_QUIC;
 };
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_QUIC_CLIENT_H */
+#endif /* KATHTTP3_QUIC_CLIENT_H */

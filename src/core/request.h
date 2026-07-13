@@ -1,5 +1,5 @@
-#ifndef KATHTTP_REQUEST_H
-#define KATHTTP_REQUEST_H
+#ifndef KATHTTP3_REQUEST_H
+#define KATHTTP3_REQUEST_H
 
 #include <cstdint>
 #include <string>
@@ -8,12 +8,12 @@
 
 #include "header_list.h"
 
-/* Engine-side definition of the opaque kathttp_request handle. The C ABI
+/* Engine-side definition of the opaque kathttp3_request handle. The C ABI
  * functions in request.cc operate on this type. */
-struct kathttp_request {
+struct kathttp3_request {
     std::string method;
     std::string url;
-    kathttp::HeaderList headers;
+    kathttp3::HeaderList headers;
     std::vector<uint8_t> body;
     bool streaming_body = false;
     int64_t streaming_body_length = -1; /* -1 = unknown */
@@ -26,4 +26,4 @@ struct kathttp_request {
     std::vector<std::pair<std::string, uint16_t>> addresses;
 };
 
-#endif /* KATHTTP_REQUEST_H */
+#endif /* KATHTTP3_REQUEST_H */

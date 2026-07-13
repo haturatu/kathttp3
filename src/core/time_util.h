@@ -1,10 +1,10 @@
-#ifndef KATHTTP_TIME_UTIL_H
-#define KATHTTP_TIME_UTIL_H
+#ifndef KATHTTP3_TIME_UTIL_H
+#define KATHTTP3_TIME_UTIL_H
 
 #include <cstdint>
 #include <ctime>
 
-namespace kathttp {
+namespace kathttp3 {
 
 /* Nanosecond timestamp used throughout ngtcp2 / nghttp3. */
 inline uint64_t timestamp_now_ns() {
@@ -13,6 +13,6 @@ inline uint64_t timestamp_now_ns() {
     return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + ts.tv_nsec;
 }
 
-} /* namespace kathttp */
+} /* namespace kathttp3 */
 
-#endif /* KATHTTP_TIME_UTIL_H */
+#endif /* KATHTTP3_TIME_UTIL_H */
