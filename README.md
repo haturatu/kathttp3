@@ -246,7 +246,9 @@ The worker drives `ngtcp2_conn_get_expiry2`/`ngtcp2_conn_handle_expiry` with mon
   records are interleaved in RFC 8305 order; connection attempts are still
   sequential, so fully parallel, timed Happy Eyeballs racing is not yet
   provided.
-- Redirect handling is partial; cross-origin sensitive-header policy needs further hardening. The cookie jar is intentionally minimal and has no public-suffix database.
+- Redirects reject HTTPS-to-HTTP downgrades and strip Authorization,
+  Proxy-Authorization, Cookie, and Host on cross-origin hops. The cookie jar
+  remains intentionally minimal and has no public-suffix database.
 - The cache implementation is disconnected and experimental because it is not a compliant HTTP cache.
 - 0-RTT is disabled by default and session resumption persistence is not complete.
 - C ABI `destroy` requires a live handle; callers must null their handle after destroy. JNI detects stale/double-destroy handles.

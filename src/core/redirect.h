@@ -11,6 +11,7 @@ namespace kathttp {
 
 struct RedirectDecision {
     bool follow = false;
+    bool cross_origin = false;
     std::string new_url;
     std::string new_method; /* 303 downgrades to GET; 307/308 keep method */
 };

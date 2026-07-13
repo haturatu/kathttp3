@@ -253,6 +253,19 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
                 auto* nr = new kathttp_request;
                 nr->method = dec.new_method;
                 nr->url = new_url.to_string();
+                for (const auto& header : job->request->headers.all()) {
+                    const bool sensitive = case_eq(header.name, "authorization") ||
+                                           case_eq(header.name, "proxy-authorization") ||
+                                           case_eq(header.name, "cookie") ||
+                                           case_eq(header.name, "host");
+                    const bool body_header = case_eq(header.name, "content-length") ||
+                                             case_eq(header.name, "content-type") ||
+                                             case_eq(header.name, "content-encoding");
+                    if ((dec.cross_origin && sensitive) ||
+                        ((nr->method == "GET" || nr->method == "HEAD") && body_header))
+                        continue;
+                    nr->headers.add(header.name, header.value);
+                }
                 if (nr->method == "GET" || nr->method == "HEAD") {
                     nr->body.clear();
                 } else {

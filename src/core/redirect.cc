@@ -11,7 +11,7 @@ static bool is_redirect_status(int s) {
 RedirectDecision RedirectPolicy::evaluate(const std::string& method, const Url& from,
                                           const Response& resp, bool auto_redirect,
                                           unsigned remaining) const {
-    RedirectDecision d{false, "", method};
+    RedirectDecision d{false, false, "", method};
     if (!auto_redirect) return d;
     if (!is_redirect_status(resp.status_code)) return d;
     if (remaining == 0) {
@@ -25,7 +25,7 @@ RedirectDecision RedirectPolicy::evaluate(const std::string& method, const Url& 
     // Resolve relative references against `from`.
     Url to;
     if (location.find("://") != std::string::npos) {
-        parse_url(location, to);
+        if (!parse_url(location, to)) return d;
     } else {
         to.scheme = from.scheme;
         to.host = from.host;
@@ -49,13 +49,17 @@ RedirectDecision RedirectPolicy::evaluate(const std::string& method, const Url& 
     if (!to.valid()) return d;
 
     // 301/302/303 switch to GET (dropping the body); 307/308 preserve method.
-    if (resp.status_code == 301 || resp.status_code == 302 || resp.status_code == 303) {
+    if ((resp.status_code == 301 || resp.status_code == 302 || resp.status_code == 303) &&
+        method != "HEAD") {
         d.new_method = "GET";
     } else {
         d.new_method = method;
     }
 
     d.new_url = to.to_string();
+    d.cross_origin = from.scheme != to.scheme || from.host != to.host ||
+                     (from.port ? from.port : default_port(from.scheme)) !=
+                         (to.port ? to.port : default_port(to.scheme));
     d.follow = true;
     return d;
 }

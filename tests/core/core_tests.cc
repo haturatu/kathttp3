@@ -33,6 +33,15 @@ int main() {
     RedirectPolicy redirects;
     auto d = redirects.evaluate("POST", from, response, true, 3);
     assert(d.follow && d.new_method == "GET" && d.new_url == "https://example.com/next");
+    response.status_code = 307;
+    response.headers.clear();
+    response.headers.add("location", "https://other.example/next");
+    d = redirects.evaluate("POST", from, response, true, 3);
+    assert(d.follow && d.cross_origin && d.new_method == "POST");
+    response.status_code = 302;
+    response.headers.clear();
+    response.headers.add("location", "http://example.com/plaintext");
+    assert(!redirects.evaluate("GET", from, response, true, 3).follow);
     CookieJar jar;
     HeaderList set;
     set.add("set-cookie", "a=b; Secure; Path=/");
