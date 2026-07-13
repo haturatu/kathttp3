@@ -201,13 +201,20 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
 }
 
 extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp_internal_NativeBridge_createClient(
-    JNIEnv* env, jobject, jlong connect, jlong request, jlong idle, jint redirects, jint trustMode,
+    JNIEnv* env, jobject, jlong connect, jlong request, jlong idle, jlong dns, jlong handshake,
+    jlong response_headers, jlong read, jlong write, jlong call, jint redirects, jint trustMode,
     jboolean insecure, jstring caFile, jobject resolver) {
     kathttp_client_options o;
     kathttp_client_options_init(&o);
     o.connect_timeout_ms = connect;
     o.request_timeout_ms = request;
     o.idle_timeout_ms = idle;
+    o.dns_timeout_ms = dns;
+    o.handshake_timeout_ms = handshake;
+    o.response_headers_timeout_ms = response_headers;
+    o.read_timeout_ms = read;
+    o.write_timeout_ms = write;
+    o.call_timeout_ms = call;
     o.max_redirects = redirects;
     o.trust_mode = static_cast<uint32_t>(trustMode);
     o.insecure_cert = insecure ? 1 : 0;

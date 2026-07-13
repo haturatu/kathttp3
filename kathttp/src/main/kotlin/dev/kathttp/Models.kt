@@ -14,6 +14,12 @@ data class KatHttpClientConfig(
     val connectTimeoutMillis: Long = 10_000,
     val requestTimeoutMillis: Long = 30_000,
     val idleTimeoutMillis: Long = 30_000,
+    val dnsTimeoutMillis: Long = connectTimeoutMillis,
+    val handshakeTimeoutMillis: Long = connectTimeoutMillis,
+    val responseHeadersTimeoutMillis: Long = requestTimeoutMillis,
+    val readTimeoutMillis: Long = idleTimeoutMillis,
+    val writeTimeoutMillis: Long = idleTimeoutMillis,
+    val callTimeoutMillis: Long = requestTimeoutMillis,
     val followRedirects: Boolean = true,
     val maxRedirects: Int = 10,
     val maxBufferedBodyBytes: Long = 16L * 1024 * 1024,
@@ -24,8 +30,17 @@ data class KatHttpClientConfig(
     val interceptors: List<HttpInterceptor> = emptyList(),
     val resolver: DnsResolver? = null,
 ) {
-    init { require(connectTimeoutMillis > 0); require(requestTimeoutMillis > 0); require(idleTimeoutMillis > 0); require(maxRedirects >= 0); require(maxBufferedBodyBytes > 0); require(caCertificateFile == null || caCertificateFile.isNotBlank()) }
+    init {
+        require(connectTimeoutMillis > 0 && requestTimeoutMillis > 0 && idleTimeoutMillis > 0)
+        require(dnsTimeoutMillis > 0 && handshakeTimeoutMillis > 0)
+        require(responseHeadersTimeoutMillis > 0 && readTimeoutMillis > 0)
+        require(writeTimeoutMillis > 0 && callTimeoutMillis > 0)
+        require(maxRedirects >= 0 && maxBufferedBodyBytes > 0)
+        require(caCertificateFile == null || caCertificateFile.isNotBlank())
+    }
 }
+
+enum class KatHttpTimeoutPhase { Dns, Connect, Handshake, ResponseHeaders, Read, Write, Call }
 
 data class KatHttpHeader(val name: String, val value: String) {
     init { require(name.isNotBlank() && name == name.lowercase() && name.none { it <= ' ' || it == ':' }); require(value.none { it == '\r' || it == '\n' }) }
@@ -39,7 +54,7 @@ data class KatHttpResponse(val status: Int, val headers: List<KatHttpHeader>, va
 
 sealed class KathttpException(message: String) : IOException(message) {
     class Dns : KathttpException("DNS resolution failed")
-    class Timeout : KathttpException("Request timed out")
+    class Timeout(val phase: KatHttpTimeoutPhase) : KathttpException("${phase.name} timed out")
     class Closed : KathttpException("Client is closed")
     class BodyTooLarge : KathttpException("Response exceeds configured body limit")
     class Native(val code: Int) : KathttpException("Native HTTP/3 error: $code")

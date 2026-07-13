@@ -39,6 +39,13 @@ typedef enum {
     KATHTTP_ERR_NOMEM = -12,
     KATHTTP_ERR_CLOSED = -13, /* client destroyed while request in flight */
     KATHTTP_ERR_BODY = -14,   /* response body length mismatch / truncation */
+    KATHTTP_ERR_DNS_TIMEOUT = -15,
+    KATHTTP_ERR_CONNECT_TIMEOUT = -16,
+    KATHTTP_ERR_HANDSHAKE_TIMEOUT = -17,
+    KATHTTP_ERR_RESPONSE_HEADERS_TIMEOUT = -18,
+    KATHTTP_ERR_READ_TIMEOUT = -19,
+    KATHTTP_ERR_WRITE_TIMEOUT = -20,
+    KATHTTP_ERR_CALL_TIMEOUT = -21,
 } kathttp_error;
 
 /* How the peer certificate is verified. Default is PLATFORM. */
@@ -91,6 +98,15 @@ typedef struct kathttp_client_options {
      * addresses and sets *out_count to the number written; return 0 on success. */
     kathttp_resolve_cb resolve_cb;
     void* resolve_cb_userdata; /* opaque, passed to resolve_cb */
+
+    /* Phase-specific monotonic-duration timeouts.  A zero value inherits the
+     * corresponding legacy timeout (connect/request/idle). */
+    uint64_t dns_timeout_ms;
+    uint64_t handshake_timeout_ms;
+    uint64_t response_headers_timeout_ms;
+    uint64_t read_timeout_ms;
+    uint64_t write_timeout_ms;
+    uint64_t call_timeout_ms;
 } kathttp_client_options;
 
 KATHTTP_API uint32_t kathttp_api_version(void);

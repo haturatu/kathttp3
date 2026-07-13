@@ -202,6 +202,12 @@ job.cancel() // propagated to RESET_STREAM / STOP_SENDING
 
 `execute` buffers at most `maxBufferedBodyBytes` (16 MiB by default). `executeStreaming` exposes a bounded `Flow<KatHttpStreamEvent>`; close/cancel its `KatHttpCall` when abandoning collection.
 
+`KatHttpClientConfig` has independent monotonic deadlines for DNS, connect,
+handshake, response headers, read-idle, write-idle, and the complete call.
+`callTimeoutMillis` is an absolute request deadline; read/write timeouts reset
+only when the corresponding direction makes progress. Timeout failures are
+reported as `KathttpException.Timeout` with a `KatHttpTimeoutPhase`.
+
 ## Example app
 
 The local-module Compose app is in `example/` and uses `implementation(project(":kathttp"))`. Install `example/build/outputs/apk/debug/example-debug.apk`, enter an HTTPS URL served over HTTP/3, select GET, POST, PUT, DELETE, PATCH, or HEAD, then press the single `Send <method>` button. POST, PUT, PATCH, and DELETE expose an editable UTF-8 body; headers are entered as lowercase `name: value` lines. Cancel cancels the coroutine and native request. The app shows status, headers, HTTP/3-over-QUIC protocol information, duration, byte count, and errors; response rendering is capped at 16,000 characters to keep the UI responsive. No public endpoint is hard-coded and cleartext traffic is disabled.
@@ -229,7 +235,11 @@ The worker drives `ngtcp2_conn_get_expiry2`/`ngtcp2_conn_handle_expiry` with mon
 
 - Certificate trust defaults to the Android platform provider (`X509TrustManagerExtensions`); the embedded Mozilla bundle and a caller-supplied CA file are also available via `kathttp_trust_mode`.
 - Live GET/POST interoperability has not been verified against a local HTTP/3 server.
-- Request deadline enforcement, graceful GOAWAY draining, response Content-Length validation, trailer exposure, strict response-field validation and robust packet send backpressure are incomplete.
+- DNS, connect, handshake, response-header, read-idle, write-idle and call
+  deadlines use the monotonic QUIC clock. The built-in DNS resolver is still
+  blocking, so an in-progress `getaddrinfo()` cannot be interrupted until the
+  asynchronous resolver work in a future release.
+- Graceful GOAWAY draining, response Content-Length validation, trailer exposure, strict response-field validation and robust packet send backpressure are incomplete.
 - Streaming uses a bounded JNI-to-Kotlin channel but native QUIC flow-control credit is currently returned on callback delivery, not downstream Flow consumption.
 - DNS uses blocking `getaddrinfo`; it enumerates IPv6/IPv4 candidates sequentially but does not implement timed Happy Eyeballs or cancellable resolution.
 - Redirect handling is partial; cross-origin sensitive-header policy needs further hardening. The cookie jar is intentionally minimal and has no public-suffix database.

@@ -20,7 +20,13 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
     private val ids = AtomicLong(1)
     private val active = ConcurrentHashMap.newKeySet<Long>()
     private val nativeLock = Any()
-    private         val handle = NativeBridge.createClient(config.connectTimeoutMillis, config.requestTimeoutMillis, config.idleTimeoutMillis, config.maxRedirects, config.trustMode.native, config.insecureCert, config.caCertificateFile, config.resolver).also { check(it != 0L) }
+    private val handle = NativeBridge.createClient(
+        config.connectTimeoutMillis, config.requestTimeoutMillis, config.idleTimeoutMillis,
+        config.dnsTimeoutMillis, config.handshakeTimeoutMillis,
+        config.responseHeadersTimeoutMillis, config.readTimeoutMillis,
+        config.writeTimeoutMillis, config.callTimeoutMillis, config.maxRedirects,
+        config.trustMode.native, config.insecureCert, config.caCertificateFile, config.resolver,
+    ).also { check(it != 0L) }
 
     suspend fun execute(request: KatHttpRequest): KatHttpResponse {
         return if (config.interceptors.isEmpty()) {
@@ -138,7 +144,14 @@ private fun mapError(code: Int): KathttpException = when (code) {
     -3 -> QuicTransportException("QUIC transport error")
     -4 -> TlsHandshakeException("TLS handshake error")
     -5, -6, -7 -> CertificateVerificationException("Certificate verification failed (code $code)")
-    -9 -> KathttpException.Timeout()
+    -9 -> KathttpException.Timeout(KatHttpTimeoutPhase.Call)
+    -15 -> KathttpException.Timeout(KatHttpTimeoutPhase.Dns)
+    -16 -> KathttpException.Timeout(KatHttpTimeoutPhase.Connect)
+    -17 -> KathttpException.Timeout(KatHttpTimeoutPhase.Handshake)
+    -18 -> KathttpException.Timeout(KatHttpTimeoutPhase.ResponseHeaders)
+    -19 -> KathttpException.Timeout(KatHttpTimeoutPhase.Read)
+    -20 -> KathttpException.Timeout(KatHttpTimeoutPhase.Write)
+    -21 -> KathttpException.Timeout(KatHttpTimeoutPhase.Call)
     -13 -> KathttpException.Closed()
     else -> KathttpException.Native(code)
 }

@@ -266,7 +266,10 @@ constexpr ngtcp2_callbacks kCallbacks = {
 QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& origin,
                        std::shared_ptr<Resolver> resolver, bool enable_0rtt,
                        uint64_t connect_timeout_ms, uint64_t request_timeout_ms,
-                       uint64_t idle_timeout_ms, uint32_t quic_version)
+                       uint64_t idle_timeout_ms, uint64_t dns_timeout_ms,
+                       uint64_t handshake_timeout_ms, uint64_t response_headers_timeout_ms,
+                       uint64_t read_timeout_ms, uint64_t write_timeout_ms,
+                       uint64_t call_timeout_ms, uint32_t quic_version)
     : engine_(engine),
       tls_ctx_(tls_ctx),
       origin_(origin),
@@ -275,6 +278,13 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
       connect_timeout_ms_(connect_timeout_ms),
       request_timeout_ms_(request_timeout_ms),
       idle_timeout_ms_(idle_timeout_ms),
+      dns_timeout_ms_(dns_timeout_ms ? dns_timeout_ms : connect_timeout_ms),
+      handshake_timeout_ms_(handshake_timeout_ms ? handshake_timeout_ms : connect_timeout_ms),
+      response_headers_timeout_ms_(response_headers_timeout_ms ? response_headers_timeout_ms
+                                                                : request_timeout_ms),
+      read_timeout_ms_(read_timeout_ms ? read_timeout_ms : idle_timeout_ms),
+      write_timeout_ms_(write_timeout_ms ? write_timeout_ms : idle_timeout_ms),
+      call_timeout_ms_(call_timeout_ms ? call_timeout_ms : request_timeout_ms),
       quic_version_(quic_version) {
     conn_ref_.get_conn = get_conn_cb;
     conn_ref_.user_data = this;
@@ -309,6 +319,7 @@ void QuicClient::wakeup() {
 
 void QuicClient::submit_job(std::unique_ptr<Job> job) {
     job->submitted_at = now_ns();
+    job->last_write_progress_at = job->submitted_at;
     {
         std::lock_guard<std::mutex> lk(job_mutex_);
         pending_jobs_.push_back(std::move(job));
@@ -336,6 +347,7 @@ void QuicClient::cancel_job(int64_t job_id) {
 bool QuicClient::prepare_endpoints() {
     std::lock_guard<std::mutex> lk(job_mutex_);
     if (pending_jobs_.empty()) return false;
+    const uint64_t started = now_ns();
     const auto* req = pending_jobs_.front()->request;
     if (!req->addresses.empty()) {
         for (const auto& a : req->addresses) {
@@ -345,6 +357,10 @@ bool QuicClient::prepare_endpoints() {
     } else {
         endpoints_ = resolver_->resolve(
             origin_.host, origin_.port ? origin_.port : default_port(origin_.scheme), &stop_);
+    }
+    if (dns_timeout_ms_ != 0 && now_ns() - started >= dns_timeout_ms_ * NGTCP2_MILLISECONDS) {
+        endpoints_.clear();
+        terminal_error_ = KATHTTP_ERR_DNS_TIMEOUT;
     }
     return !endpoints_.empty();
 }
@@ -370,7 +386,7 @@ bool QuicClient::setup_connection() {
     ngtcp2_settings settings;
     ngtcp2_settings_default(&settings);
     settings.initial_ts = now_ns();
-    settings.handshake_timeout = connect_timeout_ms_ * NGTCP2_MILLISECONDS;
+    settings.handshake_timeout = handshake_timeout_ms_ * NGTCP2_MILLISECONDS;
 
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);
@@ -426,18 +442,25 @@ bool QuicClient::setup_connection() {
 }
 
 void QuicClient::run() {
+    connection_started_at_ = now_ns();
     if (!prepare_endpoints()) {
         KATHTTP_LOG_ERR("run: prepare_endpoints failed -> DNS err\n");
-        fail_all_pending(KATHTTP_ERR_DNS);
+        fail_all_pending(terminal_error_ == KATHTTP_ERR_QUIC ? KATHTTP_ERR_DNS : terminal_error_);
         return;
     }
     while (endpoint_idx_ < endpoints_.size() && !stop_ && !handshake_confirmed_) {
+        if (connect_timeout_ms_ != 0 &&
+            now_ns() - connection_started_at_ >= connect_timeout_ms_ * NGTCP2_MILLISECONDS) {
+            terminal_error_ = KATHTTP_ERR_CONNECT_TIMEOUT;
+            break;
+        }
         tls_session_.resetFailure();
         if (!connect_to_endpoint() || !setup_connection()) {
             KATHTTP_LOG_ERR("run: endpoint idx=%zu connect/setup failed\n", endpoint_idx_);
             endpoint_idx_++;
             continue;
         }
+        handshake_started_at_ = now_ns();
         if (event_loop() != 0) {
             // handshake failure / fatal. A certificate / hostname / trust
             // failure is not endpoint-specific, so stop retrying (the
@@ -459,7 +482,7 @@ void QuicClient::run() {
     }
     if (!handshake_confirmed_) {
         int code = tls_session_.lastFailure().code;
-        fail_all_pending(code != 0 ? code : KATHTTP_ERR_QUIC);
+        fail_all_pending(code != 0 ? code : terminal_error_);
     }
     if (conn_) {
         ngtcp2_conn_del(conn_);
@@ -480,6 +503,11 @@ int QuicClient::event_loop() {
 
     while (!stop_) {
         uint64_t now = now_ns();
+        if (!handshake_confirmed_.load() && handshake_timeout_ms_ != 0 &&
+            now - handshake_started_at_ >= handshake_timeout_ms_ * NGTCP2_MILLISECONDS) {
+            terminal_error_ = KATHTTP_ERR_HANDSHAKE_TIMEOUT;
+            return -1;
+        }
         int timeout_ms = compute_timeout(now);
         struct pollfd pfds[2];
         pfds[0].fd = sock_.fd();
@@ -535,24 +563,42 @@ int QuicClient::event_loop() {
 }
 
 void QuicClient::expire_requests(uint64_t now) {
-    if (request_timeout_ms_ == 0) return;
-    const uint64_t timeout_ns = request_timeout_ms_ * NGTCP2_MILLISECONDS;
-    std::vector<Job*> expired;
+    std::vector<std::pair<Job*, int>> expired;
     {
         std::lock_guard<std::mutex> lk(job_mutex_);
         auto collect_expired = [&](auto& jobs) {
             for (auto& job : jobs) {
-                if (!job->cancelled && job->submitted_at != 0 &&
-                    now - job->submitted_at >= timeout_ns) {
+                if (job->cancelled || job->submitted_at == 0) continue;
+                int error = KATHTTP_OK;
+                if (call_timeout_ms_ != 0 &&
+                    now - job->submitted_at >= call_timeout_ms_ * NGTCP2_MILLISECONDS) {
+                    error = KATHTTP_ERR_CALL_TIMEOUT;
+                } else if (job->stream_id >= 0 && !job->saw_headers &&
+                           response_headers_timeout_ms_ != 0 &&
+                           now - job->submitted_at >=
+                               response_headers_timeout_ms_ * NGTCP2_MILLISECONDS) {
+                    error = KATHTTP_ERR_RESPONSE_HEADERS_TIMEOUT;
+                } else if (job->saw_headers && job->last_read_progress_at != 0 &&
+                           read_timeout_ms_ != 0 &&
+                           now - job->last_read_progress_at >=
+                               read_timeout_ms_ * NGTCP2_MILLISECONDS) {
+                    error = KATHTTP_ERR_READ_TIMEOUT;
+                } else if (job->request && job->body_sent < job->request->body.size() &&
+                           job->last_write_progress_at != 0 && write_timeout_ms_ != 0 &&
+                           now - job->last_write_progress_at >=
+                               write_timeout_ms_ * NGTCP2_MILLISECONDS) {
+                    error = KATHTTP_ERR_WRITE_TIMEOUT;
+                }
+                if (error != KATHTTP_OK) {
                     job->cancelled = true;
-                    expired.push_back(job.get());
+                    expired.emplace_back(job.get(), error);
                 }
             }
         };
         collect_expired(pending_jobs_);
         collect_expired(active_jobs_);
     }
-    for (auto* job : expired) notify_job_error(job, KATHTTP_ERR_TIMEOUT);
+    for (const auto& [job, error] : expired) notify_job_error(job, error);
     if (!expired.empty()) wakeup();
 }
 
@@ -636,6 +682,16 @@ void QuicClient::consume(int64_t request_id, size_t bytes) {
         pending_consumes_.emplace_back(stream_id, bytes);
     }
     wakeup();
+}
+
+void QuicClient::note_write_progress(int64_t stream_id) {
+    std::lock_guard<std::mutex> lk(job_mutex_);
+    for (auto& job : active_jobs_) {
+        if (job->stream_id == stream_id) {
+            job->last_write_progress_at = now_ns();
+            return;
+        }
+    }
 }
 
 void QuicClient::try_submit_pending() {

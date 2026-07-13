@@ -43,6 +43,9 @@ struct Job {
     bool saw_headers = false;
     size_t body_sent = 0;      /* request body bytes already offered to nghttp3 */
     uint64_t submitted_at = 0; /* monotonic timestamp; 0 until queued */
+    uint64_t response_headers_at = 0;
+    uint64_t last_read_progress_at = 0;
+    uint64_t last_write_progress_at = 0;
     int redirect_count = 0;
     /* Response body length accounting for Content-Length validation. */
     int64_t declared_content_length = -1; /* from Content-Length header, or -1 */
@@ -64,7 +67,10 @@ class QuicClient {
    public:
     QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& origin,
                std::shared_ptr<Resolver> resolver, bool enable_0rtt, uint64_t connect_timeout_ms,
-               uint64_t request_timeout_ms, uint64_t idle_timeout_ms, uint32_t quic_version);
+               uint64_t request_timeout_ms, uint64_t idle_timeout_ms, uint64_t dns_timeout_ms,
+               uint64_t handshake_timeout_ms, uint64_t response_headers_timeout_ms,
+               uint64_t read_timeout_ms, uint64_t write_timeout_ms, uint64_t call_timeout_ms,
+               uint32_t quic_version);
     ~QuicClient();
 
     QuicClient(const QuicClient&) = delete;
@@ -135,6 +141,7 @@ class QuicClient {
     void on_early_data_rejected();
     void try_submit_pending();
     void write_pending();
+    void note_write_progress(int64_t stream_id);
 
    private:
     bool prepare_endpoints();
@@ -164,6 +171,12 @@ class QuicClient {
     uint64_t connect_timeout_ms_;
     uint64_t request_timeout_ms_;
     uint64_t idle_timeout_ms_;
+    uint64_t dns_timeout_ms_;
+    uint64_t handshake_timeout_ms_;
+    uint64_t response_headers_timeout_ms_;
+    uint64_t read_timeout_ms_;
+    uint64_t write_timeout_ms_;
+    uint64_t call_timeout_ms_;
     uint32_t quic_version_;
     bool http3_ready_ = false;
 
@@ -191,6 +204,9 @@ class QuicClient {
     std::vector<std::unique_ptr<Job>> pending_jobs_;  // not yet submitted
     std::vector<std::unique_ptr<Job>> active_jobs_;   // submitted (stream open)
     uint64_t last_active_ = 0;
+    uint64_t connection_started_at_ = 0;
+    uint64_t handshake_started_at_ = 0;
+    int terminal_error_ = KATHTTP_ERR_QUIC;
 };
 
 } /* namespace kathttp */

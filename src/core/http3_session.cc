@@ -11,6 +11,7 @@
 #include "kathttp.h"
 #include "log.h"
 #include "request.h"
+#include "time_util.h"
 #include "url.h"
 
 namespace kathttp {
@@ -61,7 +62,12 @@ int end_headers_cb(nghttp3_conn*, int64_t stream_id, int /*fin*/, void* conn_use
                    void* /*stream_user_data*/) {
     auto* c = static_cast<Http3Session*>(conn_user_data);
     auto* job = c->find_job(stream_id);
-    if (job) c->client()->notify_job_headers(job, job->response.status_code, job->response.headers);
+    if (job) {
+        job->saw_headers = true;
+        job->response_headers_at = timestamp_now_ns();
+        job->last_read_progress_at = job->response_headers_at;
+        c->client()->notify_job_headers(job, job->response.status_code, job->response.headers);
+    }
     return 0;
 }
 
@@ -70,6 +76,7 @@ int recv_data_cb(nghttp3_conn*, int64_t stream_id, const uint8_t* data, size_t l
     auto* c = static_cast<Http3Session*>(conn_user_data);
     auto* job = c->find_job(stream_id);
     if (!job) return 0;
+    job->last_read_progress_at = timestamp_now_ns();
     c->client()->notify_job_body(job, data, len);
     // Streaming (Flow) requests apply HTTP/3 receive flow-control: the window
     // is extended only as the application consumes chunks (via consume()),
@@ -341,6 +348,7 @@ void Http3Session::pump_write(ngtcp2_tstamp ts) {
             KATHTTP_LOG_ERR("nghttp3_conn_add_write_offset failed\n");
             return;
         }
+        if (ndatalen > 0) client_->note_write_progress(stream_id);
         if (w == 0) return;
         if (w > 0) client_->send_packet(pkt, static_cast<size_t>(w));
     }

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -93,7 +94,11 @@ QuicClient* Engine::get_or_create_client(const Url& origin) {
     }
     auto qc = std::make_unique<QuicClient>(this, tls_ctx_, origin, resolver_, opt_.enable_0rtt != 0,
                                            opt_.connect_timeout_ms, opt_.request_timeout_ms,
-                                           opt_.idle_timeout_ms, opt_.quic_version);
+                                           opt_.idle_timeout_ms, opt_.dns_timeout_ms,
+                                           opt_.handshake_timeout_ms,
+                                           opt_.response_headers_timeout_ms, opt_.read_timeout_ms,
+                                           opt_.write_timeout_ms, opt_.call_timeout_ms,
+                                           opt_.quic_version);
     QuicClient* p = qc.get();
     pool_.emplace(key, std::move(qc));
     return p;
@@ -411,6 +416,12 @@ void kathttp_client_options_init(kathttp_client_options* opt) {
     opt->verify_cert = 1;
     opt->insecure_cert = 0;
     opt->trust_mode = KATHTTP_TRUST_PLATFORM;
+    opt->dns_timeout_ms = opt->connect_timeout_ms;
+    opt->handshake_timeout_ms = opt->connect_timeout_ms;
+    opt->response_headers_timeout_ms = opt->request_timeout_ms;
+    opt->read_timeout_ms = opt->idle_timeout_ms;
+    opt->write_timeout_ms = opt->idle_timeout_ms;
+    opt->call_timeout_ms = opt->request_timeout_ms;
 }
 
 uint32_t kathttp_api_version(void) {
@@ -419,10 +430,16 @@ uint32_t kathttp_api_version(void) {
 
 kathttp_client* kathttp_client_create(const kathttp_client_options* options) {
     if (!options) return nullptr;
-    if (options->struct_size < sizeof(kathttp_client_options)) return nullptr;
+    constexpr size_t kRequiredOptionsSize =
+        offsetof(kathttp_client_options, resolve_cb_userdata) + sizeof(void*);
+    if (options->struct_size < kRequiredOptionsSize) return nullptr;
     if (options->abi_version != KATHTTP_ABI_VERSION) return nullptr;
     try {
-        auto* e = new kathttp::Engine(*options);
+        kathttp_client_options normalized;
+        kathttp_client_options_init(&normalized);
+        std::memcpy(&normalized, options,
+                    std::min<size_t>(options->struct_size, sizeof(normalized)));
+        auto* e = new kathttp::Engine(normalized);
         return reinterpret_cast<kathttp_client*>(e);
     } catch (...) {
         return nullptr;
