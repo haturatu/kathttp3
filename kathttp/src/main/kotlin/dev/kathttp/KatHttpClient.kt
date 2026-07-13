@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfig()) : AutoCloseable {
+class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfig(), applicationContext: android.content.Context? = null) : AutoCloseable {
     private val closed = AtomicBoolean(false)
     private val ids = AtomicLong(1)
     private val active = ConcurrentHashMap.newKeySet<Long>()
@@ -27,6 +27,7 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
         config.writeTimeoutMillis, config.callTimeoutMillis, config.maxRedirects,
         config.trustMode.native, config.insecureCert, config.caCertificateFile, config.resolver,
     ).also { check(it != 0L) }
+    private val networkMonitor = applicationContext?.let { AndroidNetworkMonitor(it) { generation -> synchronized(nativeLock) { if (!closed.get()) NativeBridge.networkChanged(handle, generation) } } }
 
     suspend fun execute(request: KatHttpRequest): KatHttpResponse {
         return if (config.interceptors.isEmpty()) {
@@ -114,6 +115,7 @@ class KatHttpClient(private val config: KatHttpClientConfig = KatHttpClientConfi
     override fun close() {
         synchronized(nativeLock) { if (!closed.compareAndSet(false, true)) return }
         NativeBridge.closeClient(handle)
+        networkMonitor?.close()
         active.clear()
         NativeBridge.destroyClient(handle)
     }

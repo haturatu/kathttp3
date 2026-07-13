@@ -38,6 +38,7 @@ class Engine {
     void cancel(int64_t request_id);
     int consume(int64_t request_id, size_t bytes);
     void destroy();
+    void network_changed(uint64_t generation);
 
     /* Called from QuicClient worker threads. */
     void on_job_headers(Job* job, int status, const HeaderList& headers);
@@ -73,6 +74,7 @@ class Engine {
     std::unordered_map<std::string, std::unique_ptr<QuicClient>> pool_;
 
     std::string policy_tag_;
+    uint64_t network_generation_ = 0;
     kathttp_client_options opt_{};
     std::shared_ptr<Resolver> resolver_;
     TlsClientContext tls_ctx_;

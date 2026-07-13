@@ -311,6 +311,12 @@ extern "C" JNIEXPORT void JNICALL Java_dev_kathttp_internal_NativeBridge_cancel(
     auto* p = reinterpret_cast<kathttp_client*>(static_cast<uintptr_t>(h));
     if (g_handles.count(p)) kathttp_client_cancel(p, id);
 }
+extern "C" JNIEXPORT void JNICALL Java_dev_kathttp_internal_NativeBridge_networkChanged(
+    JNIEnv*, jobject, jlong h, jlong generation) {
+    std::lock_guard<std::mutex> lock(g_handles_mutex);
+    auto* p = reinterpret_cast<kathttp_client*>(static_cast<uintptr_t>(h));
+    if (g_handles.count(p) && generation > 0) kathttp_client_network_changed(p, static_cast<uint64_t>(generation));
+}
 
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp_internal_NativeBridge_execute(
     JNIEnv* env, jobject, jlong h, jlong id, jstring method, jstring url, jobjectArray names,

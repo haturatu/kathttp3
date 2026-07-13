@@ -75,6 +75,20 @@ void Engine::set_origin_policy(const std::string& tag) {
     policy_tag_ = tag;
 }
 
+void Engine::network_changed(uint64_t generation) {
+    std::vector<std::unique_ptr<QuicClient>> old;
+    {
+        std::lock_guard<std::mutex> lk(pool_mutex_);
+        if (generation <= network_generation_) return;
+        network_generation_ = generation;
+        for (auto& entry : pool_) old.push_back(std::move(entry.second));
+        pool_.clear();
+    }
+    // Joining old workers makes their in-flight requests fail deterministically;
+    // subsequent execute calls create sockets on the newly selected network.
+    old.clear();
+}
+
 QuicClient* Engine::get_or_create_client(const Url& origin) {
     std::string key =
         policy_tag_ + "|" + origin.scheme + "://" + origin.host + ":" + std::to_string(origin.port);
@@ -476,6 +490,11 @@ void kathttp_client_set_origin_policy(kathttp_client* client, const char* policy
         reinterpret_cast<kathttp::Engine*>(client)->set_origin_policy(policy_tag ? policy_tag : "");
     } catch (...) {
     }
+}
+
+void kathttp_client_network_changed(kathttp_client* client, uint64_t generation) {
+    if (!client) return;
+    try { reinterpret_cast<kathttp::Engine*>(client)->network_changed(generation); } catch (...) {}
 }
 
 void kathttp_client_execute(kathttp_client* client, kathttp_request* request, int64_t request_id,

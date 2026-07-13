@@ -171,6 +171,7 @@ KATHTTP_API void kathttp_client_destroy(kathttp_client* client);
  * (e.g. a distinct Android Network, TLS policy or proxy). Two clients
  * with different policy tags never share a QUIC connection. */
 KATHTTP_API void kathttp_client_set_origin_policy(kathttp_client* client, const char* policy_tag);
+KATHTTP_API void kathttp_client_network_changed(kathttp_client* client, uint64_t generation);
 
 /* ------------------------------------------------------------------ *
  * Request
