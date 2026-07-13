@@ -15,9 +15,9 @@ class ModelsTest {
         assertEquals(10_000, KatHttp3ClientConfig().handshakeTimeoutMillis)
         assertEquals(30_000, KatHttp3ClientConfig().callTimeoutMillis)
     }
-    @Test fun zeroRttIsExplicitlyOptIn() {
-        assertEquals(false, KatHttp3ClientConfig().enable0Rtt)
-        assertEquals(true, KatHttp3ClientConfig(enable0Rtt = true).enable0Rtt)
+    @Test fun zeroRttIsEnabledByDefault() {
+        assertEquals(true, KatHttp3ClientConfig().enable0Rtt)
+        assertEquals(false, KatHttp3ClientConfig(enable0Rtt = false).enable0Rtt)
     }
     @Test fun requestRequiresHttps() { assertFailsWith<IllegalArgumentException> { KatHttp3Request("GET", "http://example.com") } }
     @Test fun headerRejectsInjection() { assertFailsWith<IllegalArgumentException> { KatHttp3Header("x", "ok\r\nbad") } }

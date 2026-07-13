@@ -83,7 +83,7 @@ typedef struct kathttp3_client_options {
     uint64_t idle_timeout_ms;
     uint32_t max_redirects;
     uint32_t max_connections_per_origin;
-    uint8_t enable_0rtt;      /* 0 = off. 0-RTT is off by default; replayable
+    uint8_t enable_0rtt;      /* 1 = on (default). 0-RTT permits replayable
                                  requests (GET/HEAD, no Authorization) only. */
     const char* ca_cert_file; /* PEM CA bundle; used when trust_mode ==
                                     KATHTTP3_TRUST_CUSTOM_CA. NULL otherwise. */
