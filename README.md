@@ -151,7 +151,7 @@ a repository and depend on the tag you want:
 
 ```kotlin
 repositories { maven("https://jitpack.io") }
-dependencies { implementation("com.github.haturatu:kathttp3:v0.1.0") }
+dependencies { implementation("com.github.haturatu:kathttp3:v0.1.8") }
 ```
 
 For stable releases, build the AAR once in CI (`[Android AAR]` workflow), publish
