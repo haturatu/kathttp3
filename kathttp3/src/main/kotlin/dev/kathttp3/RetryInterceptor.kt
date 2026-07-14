@@ -15,9 +15,15 @@ data class KatHttp3RetryPolicy(
     fun canRetry(request: KatHttp3Request, error: Throwable): Boolean {
         if (!retryOnConnectionFailure || error is CancellationException) return false
         if (error is CertificateVerificationException || error is TlsHandshakeException) return false
-        if (error !is QuicTransportException && error !is KatHttp3Exception.Dns && error !is KatHttp3Exception.Timeout) return false
+        if (!isSafeConnectionRetry(error)) return false
         return retryIdempotentMethods && request.method in setOf("GET", "HEAD", "OPTIONS", "TRACE", "PUT", "DELETE")
     }
+}
+
+private fun isSafeConnectionRetry(error: Throwable): Boolean = when (error) {
+    is QuicTransportException, is KatHttp3Exception.Dns -> true
+    is KatHttp3Exception.Timeout -> error.phase in setOf(KatHttp3TimeoutPhase.Dns, KatHttp3TimeoutPhase.Connect, KatHttp3TimeoutPhase.Handshake)
+    else -> false
 }
 
 /** Retries failed requests with exponential backoff. Cancellation is never retried. */
@@ -26,7 +32,7 @@ class RetryInterceptor(
     private val initialDelayMillis: Long = 500,
     private val maxDelayMillis: Long = 10_000,
     private val retryable: (Throwable) -> Boolean = {
-        it is QuicTransportException || it is KatHttp3Exception.Dns || it is KatHttp3Exception.Timeout
+        isSafeConnectionRetry(it)
     },
 ) : HttpInterceptor {
     override suspend fun intercept(chain: InterceptorChain): KatHttp3Response {

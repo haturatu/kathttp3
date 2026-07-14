@@ -27,6 +27,13 @@ class ModelsTest {
         assertEquals(10_000, KatHttp3ClientConfig().handshakeTimeoutMillis)
         assertEquals(30_000, KatHttp3ClientConfig().callTimeoutMillis)
     }
+    @Test fun retryRejectsAmbiguousAndLocalTimeouts() {
+        val policy = KatHttp3RetryPolicy()
+        val request = KatHttp3Request("GET", "https://example.com")
+        assertEquals(true, policy.canRetry(request, KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Connect)))
+        assertEquals(false, policy.canRetry(request, KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Read)))
+        assertEquals(false, policy.canRetry(request, KatHttp3Exception.ConsumerStallTimeout()))
+    }
     @Test fun zeroRttIsEnabledByDefault() {
         assertEquals(true, KatHttp3ClientConfig().enable0Rtt)
         assertEquals(false, KatHttp3ClientConfig(enable0Rtt = false).enable0Rtt)

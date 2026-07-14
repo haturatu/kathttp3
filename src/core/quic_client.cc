@@ -35,6 +35,7 @@
 namespace kathttp3 {
 
 namespace {
+std::atomic<uint64_t> next_connection_instance_id{1};
 constexpr size_t kMinimumSendQuantum = NGTCP2_MAX_PKTLEN;
 
 // Every route to a client connection must advertise the same bounded receive
@@ -517,7 +518,8 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
       enable_0rtt_(enable_0rtt),
       timeouts_(timeouts),
       quic_version_(quic_version),
-      qlog_path_prefix_(std::move(qlog_path_prefix)) {
+      qlog_path_prefix_(std::move(qlog_path_prefix)),
+      connection_instance_id_(next_connection_instance_id.fetch_add(1, std::memory_order_relaxed)) {
     timeouts_.dns_ms = timeouts_.dns_ms ? timeouts_.dns_ms : timeouts_.connect_ms;
     timeouts_.handshake_ms = timeouts_.handshake_ms ? timeouts_.handshake_ms : timeouts_.connect_ms;
     timeouts_.response_headers_ms =
@@ -1292,12 +1294,16 @@ void QuicClient::expire_requests(uint64_t now) {
         std::lock_guard<std::mutex> lk(job_mutex_);
         size_t connection_unconsumed = 0;
         for (const auto& job : active_jobs_) {
-            if (job->streaming) connection_unconsumed += job->delivered_unconsumed_bytes;
+            if (job->streaming) {
+                std::lock_guard<std::mutex> receive_lock(job->receive_credit_mutex);
+                connection_unconsumed += job->delivered_unconsumed_bytes;
+            }
         }
         auto collect_expired = [&](auto& jobs) {
             for (auto& job : jobs) {
                 if (job->cancelled || job->submitted_at == 0) continue;
                 int error = KATHTTP3_OK;
+                std::lock_guard<std::mutex> receive_lock(job->receive_credit_mutex);
                 const bool consumer_blocked =
                     job->streaming && receive_credit_blocked_by_consumer(
                                           job->delivered_unconsumed_bytes, connection_unconsumed);
@@ -1333,6 +1339,14 @@ void QuicClient::expire_requests(uint64_t now) {
                 }
                 if (error != KATHTTP3_OK) {
                     job->cancelled = true;
+                    if (error == KATHTTP3_ERR_RESPONSE_HEADERS_TIMEOUT ||
+                        error == KATHTTP3_ERR_READ_TIMEOUT || error == KATHTTP3_ERR_WRITE_TIMEOUT) {
+                        state_.store(ConnectionState::Draining);
+                    }
+                    KATHTTP3_LOG_WARN("timeout connection=%llu request=%lld stream=%lld code=%d\n",
+                                      static_cast<unsigned long long>(connection_instance_id_),
+                                      static_cast<long long>(job->id),
+                                      static_cast<long long>(job->stream_id), error);
                     expired.emplace_back(job.get(), error);
                 }
             }
@@ -1447,6 +1461,7 @@ int QuicClient::consume(int64_t request_id, size_t bytes) {
         std::lock_guard<std::mutex> lk(job_mutex_);
         for (auto& job : active_jobs_) {
             if (job->id == request_id) {
+                std::lock_guard<std::mutex> receive_lock(job->receive_credit_mutex);
                 if (job->cancelled || job->completed || bytes > job->delivered_unconsumed_bytes) {
                     return KATHTTP3_ERR_INVALID_ARG;
                 }
@@ -1454,13 +1469,6 @@ int QuicClient::consume(int64_t request_id, size_t bytes) {
                 job->consumed_body_bytes += bytes;
                 stream_id = job->stream_id;
                 job->pending_credit_bytes += bytes;
-                // Batch normal progress, but promptly reopen a stream once it
-                // has fallen below its low watermark so a final small chunk
-                // cannot remain flow-control blocked indefinitely.
-                if (job->pending_credit_bytes < kReceiveCreditThreshold &&
-                    job->delivered_unconsumed_bytes >= kReceiveBufferPerStreamLowWatermark) {
-                    return KATHTTP3_OK;
-                }
                 bytes = job->pending_credit_bytes;
                 job->pending_credit_bytes = 0;
                 break;

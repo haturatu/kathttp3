@@ -104,8 +104,11 @@ int recv_data_cb(nghttp3_conn*, int64_t stream_id, const uint8_t* data, size_t l
     auto* job = c->find_job(stream_id);
     if (!job) return 0;
     job->last_read_progress_at = timestamp_now_ns();
-    job->delivered_body_bytes += len;
-    if (job->streaming) job->delivered_unconsumed_bytes += len;
+    {
+        std::lock_guard<std::mutex> receive_lock(job->receive_credit_mutex);
+        job->delivered_body_bytes += len;
+        if (job->streaming) job->delivered_unconsumed_bytes += len;
+    }
     c->client()->notify_job_body(job, data, len);
     // Streaming (Flow) requests apply HTTP/3 receive flow-control: the window
     // is extended only as the application consumes chunks (via consume()),
