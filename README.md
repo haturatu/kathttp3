@@ -303,7 +303,9 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   collection has completed.
 - Kotlin queues are also guarded by byte budgets: configure
   `maxStreamingBufferedBytesPerStream` and
-  `maxStreamingBufferedBytesPerConnection` (defaults: 4 MiB and 16 MiB).
+  `maxStreamingBufferedBytesPerConnection` (defaults: 1 MiB and 16 MiB).
+  The per-stream cap is deliberate fairness control: a single slow image
+  consumer cannot reserve the shared client budget needed by other streams.
 - Native QUIC receive windows use fixed 1 MiB stream high / 512 KiB low
   watermarks, an 8 MiB connection limit, and 64 KiB credit batching. These
   values are not yet public configuration knobs. The same limits are applied

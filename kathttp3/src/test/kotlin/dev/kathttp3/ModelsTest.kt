@@ -17,6 +17,11 @@ class ModelsTest {
         budget.release(6)
         assertEquals(0, budget.usedBytes())
     }
+    @Test fun streamingDefaultsReserveConnectionCapacityForPeers() {
+        val config = KatHttp3ClientConfig()
+        assertEquals(1L * 1024 * 1024, config.maxStreamingBufferedBytesPerStream)
+        assertEquals(16L * 1024 * 1024, config.maxStreamingBufferedBytesPerConnection)
+    }
     @Test fun phaseTimeoutValidation() {
         assertFailsWith<IllegalArgumentException> { KatHttp3ClientConfig(readTimeoutMillis = 0) }
         assertEquals(10_000, KatHttp3ClientConfig().handshakeTimeoutMillis)
