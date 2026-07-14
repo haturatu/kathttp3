@@ -13,7 +13,7 @@ internal object NativeBridge {
     init { System.loadLibrary("kathttp3") }
     external fun createClient(connectMs: Long, requestMs: Long, idleMs: Long, dnsMs: Long,
         handshakeMs: Long, responseHeadersMs: Long, readMs: Long, writeMs: Long, callMs: Long, consumerStallMs: Long,
-        maxRedirects: Int, trustMode: Int, insecureCert: Boolean, enableCookies: Boolean, enable0Rtt: Boolean, caCertificateFile: String?,
+        maxRedirects: Int, trustMode: Int, insecureCert: Boolean, enableCookies: Boolean, enable0Rtt: Boolean, qlogEnabled: Boolean, caCertificateFile: String?,
         qlogPathPrefix: String?, resolver: DnsResolver?): Long
     external fun closeClient(handle: Long)
     external fun destroyClient(handle: Long)

@@ -45,6 +45,8 @@ data class KatHttp3ClientConfig(
      * qlog can reveal connection metadata, so keep this disabled in releases.
      */
     val qlogPathPrefix: String? = null,
+    /** Enables private ngtcp2 qlog diagnostics. Disabled by default. */
+    val qlogEnabled: Boolean = false,
     val trustMode: TrustMode = TrustMode.PLATFORM,
     val insecureCert: Boolean = false,
     /** Experimental: enables KatHttp3's in-memory cookie jar. It deliberately
@@ -70,6 +72,9 @@ data class KatHttp3ClientConfig(
         require(queueTimeoutMillis > 0)
         require(caCertificateFile == null || caCertificateFile.isNotBlank())
         require(qlogPathPrefix == null || qlogPathPrefix.isNotBlank())
+        require(!qlogEnabled || !qlogPathPrefix.isNullOrBlank()) {
+            "qlogPathPrefix is required when qlogEnabled is true"
+        }
     }
 }
 

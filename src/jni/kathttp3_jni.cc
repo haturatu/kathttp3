@@ -205,7 +205,8 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp3_internal_NativeBridge_creat
     JNIEnv* env, jobject, jlong connect, jlong request, jlong idle, jlong dns, jlong handshake,
     jlong response_headers, jlong read, jlong write, jlong call, jlong consumer_stall,
     jint redirects, jint trustMode, jboolean insecure, jboolean enable_cookies,
-    jboolean enable_0rtt, jstring caFile, jstring qlogPath, jobject resolver) {
+    jboolean enable_0rtt, jboolean enable_qlog, jstring caFile, jstring qlogPath,
+    jobject resolver) {
     kathttp3_client_options o;
     kathttp3_client_options_init(&o);
     o.connect_timeout_ms = connect;
@@ -223,6 +224,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp3_internal_NativeBridge_creat
     o.insecure_cert = insecure ? 1 : 0;
     o.enable_cookies = enable_cookies ? 1 : 0;
     o.enable_0rtt = enable_0rtt ? 1 : 0;
+    o.enable_qlog = enable_qlog ? 1 : 0;
     const char* ca = caFile ? env->GetStringUTFChars(caFile, nullptr) : nullptr;
     if (caFile && !ca) return 0;
     o.ca_cert_file = ca;

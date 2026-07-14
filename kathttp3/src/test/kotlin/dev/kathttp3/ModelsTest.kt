@@ -31,6 +31,11 @@ class ModelsTest {
         assertEquals(true, KatHttp3ClientConfig().enable0Rtt)
         assertEquals(false, KatHttp3ClientConfig(enable0Rtt = false).enable0Rtt)
     }
+    @Test fun qlogRequiresExplicitOptInAndPath() {
+        assertEquals(false, KatHttp3ClientConfig().qlogEnabled)
+        assertFailsWith<IllegalArgumentException> { KatHttp3ClientConfig(qlogEnabled = true) }
+        assertEquals(true, KatHttp3ClientConfig(qlogEnabled = true, qlogPathPrefix = "/tmp/qlog").qlogEnabled)
+    }
     @Test fun requestRequiresHttps() { assertFailsWith<IllegalArgumentException> { KatHttp3Request("GET", "http://example.com") } }
     @Test fun headerRejectsInjection() { assertFailsWith<IllegalArgumentException> { KatHttp3Header("x", "ok\r\nbad") } }
     @Test fun immutableValueBasics() { assertEquals("GET", KatHttp3Request("GET", "https://example.com").method) }

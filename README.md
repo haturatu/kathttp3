@@ -325,11 +325,14 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   contains adjacent equal-sized packets, Linux/Android uses `UDP_SEGMENT` GSO
   to flush up to 16 in one syscall. Unsupported kernels permanently fall back
   to FIFO single-datagram sends; the non-GSO path remains the portable default.
-- qlog is disabled by default. Set `KatHttp3ClientConfig.qlogPathPrefix` to an
-  app-private writable path prefix to produce one mode-0600 ngtcp2 `.qlog`
+- qlog is disabled by default. Set both `KatHttp3ClientConfig(qlogEnabled = true,
+  qlogPathPrefix = "...")` to an app-private writable path prefix to produce one mode-0600 ngtcp2 `.qlog`
   diagnostic file per QUIC connection (including Happy Eyeballs candidates).
   Treat qlog as sensitive connection metadata and do not enable it in normal
-  production builds.
+  production builds. The current output is ngtcp2's qlog writer; KatHttp3 does
+  not claim full conformance to draft-ietf-quic-qlog-main-schema-14, whose
+  protocol-specific QUIC and HTTP/3 event schemas are defined in separate
+  drafts.
 - DNS lookups run in a bounded two-thread resolver pool rather than on a QUIC
   worker. Cancellation and DNS deadlines discard late results. When both
   address families are available, the first resolver-ordered candidate starts

@@ -39,7 +39,8 @@ bool parse_content_length(std::string_view s, uint64_t& out) {
 }  // namespace
 
 Engine::Engine(const kathttp3_client_options& opt)
-    : opt_(opt), qlog_path_prefix_(opt.qlog_path_prefix ? opt.qlog_path_prefix : "") {
+    : opt_(opt),
+      qlog_path_prefix_(opt.enable_qlog && opt.qlog_path_prefix ? opt.qlog_path_prefix : "") {
     if (opt.resolve_cb) {
         kathttp3_resolve_cb cb = opt.resolve_cb;
         void* ud = opt.resolve_cb_userdata;
@@ -479,6 +480,7 @@ void kathttp3_client_options_init(kathttp3_client_options* opt) {
     opt->write_timeout_ms = opt->idle_timeout_ms;
     opt->call_timeout_ms = opt->request_timeout_ms;
     opt->consumer_stall_timeout_ms = opt->read_timeout_ms;
+    opt->enable_qlog = 0;
 }
 
 void kathttp3_client_config_init(kathttp3_client_config* config) {

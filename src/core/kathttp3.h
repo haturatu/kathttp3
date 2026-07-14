@@ -118,6 +118,8 @@ typedef struct kathttp3_client_options {
     /* Maximum time a local streaming consumer may hold a full QUIC receive
      * window. Zero inherits read_timeout_ms. */
     uint64_t consumer_stall_timeout_ms;
+    /* Explicit diagnostic opt-in. qlog_path_prefix is ignored unless set. */
+    uint8_t enable_qlog;
 } kathttp3_client_options;
 
 /* Stable name for new C callers. `kathttp3_client_options` remains source
