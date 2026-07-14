@@ -10,6 +10,13 @@ import kotlin.test.assertEquals
 
 class ModelsTest {
     @Test fun configValidation() { assertFailsWith<IllegalArgumentException> { KatHttp3ClientConfig(maxBufferedBodyBytes = 0) } }
+    @Test fun streamingByteBudgetIsBounded() {
+        val budget = StreamingBufferBudget(10)
+        assertEquals(true, budget.tryAcquire(6))
+        assertEquals(false, budget.tryAcquire(5))
+        budget.release(6)
+        assertEquals(0, budget.usedBytes())
+    }
     @Test fun phaseTimeoutValidation() {
         assertFailsWith<IllegalArgumentException> { KatHttp3ClientConfig(readTimeoutMillis = 0) }
         assertEquals(10_000, KatHttp3ClientConfig().handshakeTimeoutMillis)

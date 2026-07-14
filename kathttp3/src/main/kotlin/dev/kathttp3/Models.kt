@@ -28,6 +28,10 @@ data class KatHttp3ClientConfig(
     val maxRedirects: Int = 10,
     val maxBufferedBodyBytes: Long = 16L * 1024 * 1024,
     val maxStreamingBufferedBodyBytes: Long = 4L * 1024 * 1024,
+    /** Maximum Kotlin-owned queued response bytes for one streaming call. */
+    val maxStreamingBufferedBytesPerStream: Long = 4L * 1024 * 1024,
+    /** Maximum Kotlin-owned queued response bytes across this client. */
+    val maxStreamingBufferedBytesPerConnection: Long = 16L * 1024 * 1024,
     /** Local admission-control limit; distinct from QUIC peer MAX_STREAMS. */
     val maxActiveStreamsPerOrigin: Int = 8,
     /** Maximum calls waiting for a local admission-control permit per origin. */
@@ -60,6 +64,8 @@ data class KatHttp3ClientConfig(
         require(writeTimeoutMillis > 0 && callTimeoutMillis > 0)
         require(consumerStallTimeoutMillis > 0)
         require(maxRedirects >= 0 && maxBufferedBodyBytes > 0 && maxStreamingBufferedBodyBytes > 0)
+        require(maxStreamingBufferedBytesPerStream > 0 && maxStreamingBufferedBytesPerConnection > 0)
+        require(maxStreamingBufferedBytesPerStream <= maxStreamingBufferedBytesPerConnection)
         require(maxActiveStreamsPerOrigin > 0 && maxQueuedRequestsPerOrigin >= 0)
         require(queueTimeoutMillis > 0)
         require(caCertificateFile == null || caCertificateFile.isNotBlank())

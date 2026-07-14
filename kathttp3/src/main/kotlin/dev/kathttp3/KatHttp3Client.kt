@@ -34,6 +34,7 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
         config.queueTimeoutMillis,
     )
     private val schedulerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val streamingBufferBudget = StreamingBufferBudget(config.maxStreamingBufferedBytesPerConnection)
     private val nativeLock = Any()
     private val handle = NativeBridge.createClient(
         config.connectTimeoutMillis, config.requestTimeoutMillis, config.idleTimeoutMillis,
@@ -78,6 +79,24 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
         val stashLock = Any()
         val stash = ArrayDeque<ByteArray>()
         var stashedBytes = 0L
+        val bufferedBytes = AtomicLong(0)
+        fun reserve(bytes: Int): Boolean {
+            if (bytes.toLong() > config.maxStreamingBufferedBytesPerStream) return false
+            if (!streamingBufferBudget.tryAcquire(bytes.toLong())) return false
+            bufferedBytes.addAndGet(bytes.toLong())
+            return true
+        }
+        fun release(bytes: Int) {
+            val released = minOf(bytes.toLong(), bufferedBytes.get())
+            if (released > 0) {
+                bufferedBytes.addAndGet(-released)
+                streamingBufferBudget.release(released)
+            }
+        }
+        fun releaseAll() {
+            val released = bufferedBytes.getAndSet(0)
+            if (released > 0) streamingBufferBudget.release(released)
+        }
         val completePending = AtomicBoolean(false)
         fun drainOneStashedChunk() {
             val next = synchronized(stashLock) {
@@ -94,6 +113,7 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
         val call = KatHttp3Call(channel.receiveAsFlow()
             .onEach {
                 if (it is KatHttp3StreamEvent.Body) {
+                    release(it.bytes.size)
                     // Credit is returned only after this Flow element has been
                     // delivered to the collector, never when native invokes a callback.
                     NativeBridge.consume(handle, id, it.bytes.size.toLong())
@@ -104,22 +124,24 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
         ) {
             startJob.cancel()
             synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle, id) }
+            releaseAll()
             releasePermit()
         }
         val terminal = AtomicBoolean(false)
         val callback = object : NativeCallback {
             override fun onHeaders(status: Int, names: Array<String>, values: Array<String>) { if (!channel.trySend(KatHttp3StreamEvent.Headers(status, names.indices.map { KatHttp3Header(names[it], values[it]) })).isSuccess) cancel() }
             override fun onBody(data: ByteArray) {
+                if (!reserve(data.size)) { cancel(); return }
                 if (channel.trySend(KatHttp3StreamEvent.Body(data)).isSuccess) return
                 val overflow = synchronized(stashLock) {
                     if (stashedBytes + data.size > config.maxStreamingBufferedBodyBytes) true
                     else { stash.addLast(data); stashedBytes += data.size; false }
                 }
-                if (overflow) cancel()
+                if (overflow) { release(data.size); cancel() }
             }
             override fun onComplete() { if (terminal.compareAndSet(false,true)) { active.remove(id); releasePermit(); completePending.set(true); finishIfDrained() } }
             override fun onError(code: Int) { fail(mapError(code)) }
-            fun fail(error: Throwable) { if (terminal.compareAndSet(false,true)) { active.remove(id); releasePermit(); channel.close(error) } }
+            fun fail(error: Throwable) { if (terminal.compareAndSet(false,true)) { active.remove(id); releasePermit(); releaseAll(); channel.close(error) } }
             fun cancel() { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle,id) }; onError(-6) }
         }
         val requestBody = request.streamingBody
@@ -230,6 +252,19 @@ class KatHttp3Call internal constructor(val events: Flow<KatHttp3StreamEvent>, p
     private val cancelled = AtomicBoolean(false)
     fun cancel() { if (cancelled.compareAndSet(false,true)) cancelAction() }
     override fun close() = cancel()
+}
+
+internal class StreamingBufferBudget(private val limit: Long) {
+    private val used = AtomicLong(0)
+    fun tryAcquire(bytes: Long): Boolean {
+        while (true) {
+            val current = used.get()
+            if (bytes > limit - current) return false
+            if (used.compareAndSet(current, current + bytes)) return true
+        }
+    }
+    fun release(bytes: Long) { used.updateAndGet { maxOf(0, it - bytes) } }
+    internal fun usedBytes(): Long = used.get()
 }
 
 private fun mapError(code: Int): KatHttp3Exception = when (code) {

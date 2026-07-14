@@ -300,6 +300,9 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
 - Streaming response credit is limited by `maxStreamingBufferedBodyBytes` and
   is returned by the Kotlin Flow delivery hook. It is not an acknowledgement
   that arbitrary application work after collection has completed.
+- Kotlin queues are also guarded by byte budgets: configure
+  `maxStreamingBufferedBytesPerStream` and
+  `maxStreamingBufferedBytesPerConnection` (defaults: 4 MiB and 16 MiB).
 - Native QUIC receive windows use fixed 1 MiB stream high / 512 KiB low
   watermarks, an 8 MiB connection limit, and 64 KiB credit batching. These
   values are not yet public configuration knobs. The same limits are applied
