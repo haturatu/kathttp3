@@ -100,7 +100,8 @@ class QuicClient {
    public:
     QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& origin,
                std::shared_ptr<Resolver> resolver, bool enable_0rtt, QuicTimeouts timeouts,
-               uint32_t quic_version, std::string qlog_path_prefix);
+               uint32_t quic_version, std::string qlog_path_prefix,
+               kathttp3_qlog_sink_cb qlog_sink_cb, void* qlog_sink_userdata);
     ~QuicClient();
 
     QuicClient(const QuicClient&) = delete;
@@ -184,6 +185,7 @@ class QuicClient {
     void note_write_progress(int64_t stream_id);
     int open_qlog_file();
     void write_qlog(uint32_t flags, const void* data, size_t len) const;
+    void write_qlog_for_file(int fd, uint32_t flags, const void* data, size_t len) const;
 
    private:
     bool prepare_endpoints();
@@ -235,6 +237,8 @@ class QuicClient {
     QuicTimeouts timeouts_;
     uint32_t quic_version_;
     std::string qlog_path_prefix_;
+    kathttp3_qlog_sink_cb qlog_sink_cb_ = nullptr;
+    void* qlog_sink_userdata_ = nullptr;
     uint64_t connection_instance_id_ = 0;
     int qlog_fd_ = -1;
     bool http3_ready_ = false;

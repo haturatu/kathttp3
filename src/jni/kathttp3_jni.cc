@@ -3,12 +3,16 @@
 
 #include <atomic>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "android_cert_verifier.h"
+#ifdef __ANDROID__
+#include "android_qlog_sink.h"
+#endif
 #include "cert_verifier.h"
 #include "kathttp3.h"
 #include "log.h"
@@ -18,6 +22,10 @@ JavaVM* g_vm = nullptr;
 std::mutex g_handles_mutex;
 std::unordered_set<kathttp3_client*> g_handles;
 std::unordered_map<kathttp3_client*, void*> g_resolvers;
+#ifdef __ANDROID__
+std::unordered_map<kathttp3_client*, std::unique_ptr<kathttp3::AndroidQlogLogcatSink>>
+    g_qlog_logcat_sinks;
+#endif
 
 /* Per-client state for a Kotlin DnsResolver injected through the options.
  * Class/method IDs are resolved on the calling (Java) thread at create time,
@@ -205,8 +213,8 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp3_internal_NativeBridge_creat
     JNIEnv* env, jobject, jlong connect, jlong request, jlong idle, jlong dns, jlong handshake,
     jlong response_headers, jlong read, jlong write, jlong call, jlong consumer_stall,
     jint redirects, jint trustMode, jboolean insecure, jboolean enable_cookies,
-    jboolean enable_0rtt, jboolean enable_qlog, jstring caFile, jstring qlogPath,
-    jobject resolver) {
+    jboolean enable_0rtt, jboolean enable_qlog, jboolean enable_qlog_logcat, jstring caFile,
+    jstring qlogPath, jobject resolver) {
     kathttp3_client_options o;
     kathttp3_client_options_init(&o);
     o.connect_timeout_ms = connect;
@@ -225,6 +233,21 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp3_internal_NativeBridge_creat
     o.enable_cookies = enable_cookies ? 1 : 0;
     o.enable_0rtt = enable_0rtt ? 1 : 0;
     o.enable_qlog = enable_qlog ? 1 : 0;
+#ifdef __ANDROID__
+    std::unique_ptr<kathttp3::AndroidQlogLogcatSink> qlog_logcat_sink;
+    if (enable_qlog && enable_qlog_logcat) {
+        try {
+            qlog_logcat_sink = std::make_unique<kathttp3::AndroidQlogLogcatSink>();
+        } catch (...) {
+            KATHTTP3_LOG_ERR("NativeBridge.createClient could not allocate qlog Logcat sink\n");
+            return 0;
+        }
+        o.qlog_sink_cb = kathttp3::AndroidQlogLogcatSink::callback;
+        o.qlog_sink_userdata = qlog_logcat_sink.get();
+    }
+#else
+    (void)enable_qlog_logcat;
+#endif
     const char* ca = caFile ? env->GetStringUTFChars(caFile, nullptr) : nullptr;
     if (caFile && !ca) return 0;
     o.ca_cert_file = ca;
@@ -282,13 +305,36 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp3_internal_NativeBridge_creat
             std::lock_guard<std::mutex> lock(g_handles_mutex);
             g_handles.insert(p);
             if (rctx) g_resolvers[p] = rctx;
+#ifdef __ANDROID__
+            if (qlog_logcat_sink) g_qlog_logcat_sinks.emplace(p, std::move(qlog_logcat_sink));
+#endif
         } catch (...) {
             KATHTTP3_LOG_ERR("NativeBridge.createClient failed while registering native handle\n");
-            if (rctx) {
-                free_resolver_ctx(env, rctx);
-                g_resolvers.erase(p);
+            ResolverCtx* registered_resolver = nullptr;
+#ifdef __ANDROID__
+            std::unique_ptr<kathttp3::AndroidQlogLogcatSink> registered_qlog_sink;
+#endif
+            {
+                std::lock_guard<std::mutex> lock(g_handles_mutex);
+                g_handles.erase(p);
+                auto resolver_it = g_resolvers.find(p);
+                if (resolver_it != g_resolvers.end()) {
+                    registered_resolver = static_cast<ResolverCtx*>(resolver_it->second);
+                    g_resolvers.erase(resolver_it);
+                }
+#ifdef __ANDROID__
+                auto qlog_it = g_qlog_logcat_sinks.find(p);
+                if (qlog_it != g_qlog_logcat_sinks.end()) {
+                    registered_qlog_sink = std::move(qlog_it->second);
+                    g_qlog_logcat_sinks.erase(qlog_it);
+                }
+#endif
             }
             kathttp3_client_destroy(p);
+            if (registered_resolver)
+                free_resolver_ctx(env, registered_resolver);
+            else if (rctx)
+                free_resolver_ctx(env, rctx);
             return 0;
         }
     } else if (rctx) {
@@ -306,6 +352,9 @@ extern "C" JNIEXPORT void JNICALL Java_dev_kathttp3_internal_NativeBridge_destro
                                                                                         jlong h) {
     auto* p = reinterpret_cast<kathttp3_client*>(static_cast<uintptr_t>(h));
     ResolverCtx* rctx = nullptr;
+#ifdef __ANDROID__
+    std::unique_ptr<kathttp3::AndroidQlogLogcatSink> qlog_logcat_sink;
+#endif
     {
         std::lock_guard<std::mutex> lock(g_handles_mutex);
         if (!g_handles.erase(p)) return;
@@ -314,6 +363,13 @@ extern "C" JNIEXPORT void JNICALL Java_dev_kathttp3_internal_NativeBridge_destro
             rctx = reinterpret_cast<ResolverCtx*>(it->second);
             g_resolvers.erase(it);
         }
+#ifdef __ANDROID__
+        auto qlog_it = g_qlog_logcat_sinks.find(p);
+        if (qlog_it != g_qlog_logcat_sinks.end()) {
+            qlog_logcat_sink = std::move(qlog_it->second);
+            g_qlog_logcat_sinks.erase(qlog_it);
+        }
+#endif
     }
     kathttp3_client_destroy(p);
     // destroy joins all native workers before releasing resolver global refs;

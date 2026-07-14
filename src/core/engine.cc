@@ -40,7 +40,12 @@ bool parse_content_length(std::string_view s, uint64_t& out) {
 
 Engine::Engine(const kathttp3_client_options& opt)
     : opt_(opt),
-      qlog_path_prefix_(opt.enable_qlog && opt.qlog_path_prefix ? opt.qlog_path_prefix : "") {
+      qlog_path_prefix_(opt.enable_qlog && opt.qlog_path_prefix ? opt.qlog_path_prefix : ""),
+      qlog_sink_cb_(opt.enable_qlog ? opt.qlog_sink_cb : nullptr),
+      qlog_sink_userdata_(opt.enable_qlog ? opt.qlog_sink_userdata : nullptr) {
+    if (opt_.enable_qlog != 0 && qlog_path_prefix_.empty() && qlog_sink_cb_ == nullptr) {
+        throw std::invalid_argument("qlog enabled without a destination");
+    }
     if (opt.resolve_cb) {
         kathttp3_resolve_cb cb = opt.resolve_cb;
         void* ud = opt.resolve_cb_userdata;
@@ -117,7 +122,8 @@ QuicClient* Engine::get_or_create_client(const Url& origin) {
                                 opt_.read_timeout_ms,      opt_.write_timeout_ms,
                                 opt_.call_timeout_ms,      opt_.consumer_stall_timeout_ms};
     auto qc = std::make_unique<QuicClient>(this, tls_ctx_, origin, resolver_, opt_.enable_0rtt != 0,
-                                           timeouts, opt_.quic_version, qlog_path_prefix_);
+                                           timeouts, opt_.quic_version, qlog_path_prefix_,
+                                           qlog_sink_cb_, qlog_sink_userdata_);
     QuicClient* p = qc.get();
     pool_.emplace(key, std::move(qc));
     return p;

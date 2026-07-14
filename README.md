@@ -336,12 +336,14 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   contains adjacent equal-sized packets, Linux/Android uses `UDP_SEGMENT` GSO
   to flush up to 16 in one syscall. Unsupported kernels permanently fall back
   to FIFO single-datagram sends; the non-GSO path remains the portable default.
-- qlog is disabled by default. Set both `KatHttp3ClientConfig(qlogEnabled = true,
-  qlogPathPrefix = "...")` to an app-private writable path prefix to produce one mode-0600 ngtcp2 `.qlog`
-  diagnostic file per QUIC connection (including Happy Eyeballs candidates).
-  Treat qlog as sensitive connection metadata and do not enable it in normal
-  production builds. The current output is ngtcp2's qlog writer; KatHttp3 does
-  not claim full conformance to draft-ietf-quic-qlog-main-schema-14, whose
+- qlog is disabled by default. `KatHttp3ClientConfig(qlogEnabled = true)` enables the Android-only,
+  bounded buffered Logcat destination. Set `qlogPathPrefix = "..."` to instead produce one
+  mode-0600 ngtcp2 `.qlog` file per connection at an app-private writable prefix; set
+  `qlogLogcatEnabled = true` to use both destinations. A core C ABI `qlog_sink_cb` is also
+  available for non-Android destinations and must be non-blocking. Logcat queue contention or a
+  256 KiB queue overflow drops diagnostics rather than delaying QUIC processing. Treat qlog as
+  sensitive connection metadata and do not enable it in normal production builds. The current
+  output is ngtcp2's qlog writer; KatHttp3 does not claim full conformance to draft-ietf-quic-qlog-main-schema-14, whose
   protocol-specific QUIC and HTTP/3 event schemas are defined in separate
   drafts.
 - DNS lookups run in a bounded two-thread resolver pool rather than on a QUIC

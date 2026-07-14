@@ -80,6 +80,8 @@ class Engine {
         std::make_shared<std::atomic<uint64_t>>(0);
     kathttp3_client_options opt_{};
     std::string qlog_path_prefix_;
+    kathttp3_qlog_sink_cb qlog_sink_cb_ = nullptr;
+    void* qlog_sink_userdata_ = nullptr;
     std::shared_ptr<Resolver> resolver_;
     std::shared_ptr<DnsCache> dns_cache_;
     TlsClientContext tls_ctx_;
