@@ -36,6 +36,24 @@ namespace kathttp3 {
 
 namespace {
 std::atomic<uint64_t> next_connection_instance_id{1};
+
+const char* connection_state_name(ConnectionState state) {
+    switch (state) {
+        case ConnectionState::None:
+            return "none";
+        case ConnectionState::Connecting:
+            return "connecting";
+        case ConnectionState::Active:
+            return "active";
+        case ConnectionState::Draining:
+            return "draining";
+        case ConnectionState::Closing:
+            return "closing";
+        case ConnectionState::Closed:
+            return "closed";
+    }
+    return "unknown";
+}
 constexpr size_t kMinimumSendQuantum = NGTCP2_MAX_PKTLEN;
 
 // Every route to a client connection must advertise the same bounded receive
@@ -671,8 +689,7 @@ bool QuicClient::prepare_endpoints() {
                 cancelled->store(true, std::memory_order_release);
                 return false;
             }
-            if (timeouts_.dns_ms != 0 &&
-                now_ns() - started >= timeouts_.dns_ms * NGTCP2_MILLISECONDS) {
+            if (deadline_elapsed_ns(now_ns(), started, timeouts_.dns_ms * NGTCP2_MILLISECONDS)) {
                 cancelled->store(true, std::memory_order_release);
                 terminal_error_ = KATHTTP3_ERR_DNS_TIMEOUT;
                 return false;
@@ -681,7 +698,7 @@ bool QuicClient::prepare_endpoints() {
         }
         endpoints_ = std::move(result->endpoints);
     }
-    if (timeouts_.dns_ms != 0 && now_ns() - started >= timeouts_.dns_ms * NGTCP2_MILLISECONDS) {
+    if (deadline_elapsed_ns(now_ns(), started, timeouts_.dns_ms * NGTCP2_MILLISECONDS)) {
         endpoints_.clear();
         terminal_error_ = KATHTTP3_ERR_DNS_TIMEOUT;
     }
@@ -706,6 +723,7 @@ bool QuicClient::connect_to_endpoint(const ResolvedEndpoint& ep) {
         sock_.close();
         return false;
     }
+    peer_endpoint_ = ep;
     return true;
 }
 
@@ -910,6 +928,7 @@ bool QuicClient::adopt_handshake_winner(HandshakeCandidate& candidate) {
     conn_ = candidate.conn;
     candidate.owns_connection = false;
     sock_ = std::move(candidate.sock);
+    peer_endpoint_ = candidate.endpoint;
     tls_session_ = std::move(candidate.tls);
     std::memcpy(&local_addr_, &candidate.local_addr, sizeof(local_addr_));
     std::memcpy(&remote_addr_, &candidate.remote_addr, sizeof(remote_addr_));
@@ -968,8 +987,10 @@ void QuicClient::remember_precommit_fallbacks(const ResolvedEndpoint& winner) {
 }
 
 bool QuicClient::can_fail_over_before_request_commit() {
-    if (!::kathttp3::can_fail_over_before_request_commit(
-            precommit_failover_window_, stop_.load(std::memory_order_acquire), false)) {
+    const bool has_live_pending = has_live_pending_job();
+    if (!::kathttp3::can_fail_over_before_request_commit(precommit_failover_window_,
+                                                         stop_.load(std::memory_order_acquire),
+                                                         false, has_live_pending)) {
         return false;
     }
     std::lock_guard<std::mutex> lock(job_mutex_);
@@ -1036,7 +1057,7 @@ bool QuicClient::run_handshake_race() {
 
     while (!stop_.load(std::memory_order_acquire)) {
         const uint64_t now = now_ns();
-        if (!fallback_started && (now - race_started >= kFamilyFallbackDelayNs ||
+        if (!fallback_started && (elapsed_ns(now, race_started) >= kFamilyFallbackDelayNs ||
                                   handshake_candidates_.front()->failed)) {
             fallback_started = true;
             if (!start_handshake_candidate(endpoints_[plan.fallback])) {
@@ -1055,7 +1076,8 @@ bool QuicClient::run_handshake_race() {
             return adopt_handshake_winner(*handshake_candidates_[winner_index]);
         }
         if (timeouts_.connect_ms != 0 &&
-            now - connection_started_at_ >= timeouts_.connect_ms * NGTCP2_MILLISECONDS) {
+            deadline_elapsed_ns(now, connection_started_at_,
+                                timeouts_.connect_ms * NGTCP2_MILLISECONDS)) {
             terminal_error_ = KATHTTP3_ERR_CONNECT_TIMEOUT;
             return false;
         }
@@ -1075,8 +1097,8 @@ bool QuicClient::run_handshake_race() {
         }
         int timeout_ms = 10;
         if (!fallback_started) {
-            uint64_t remaining =
-                kFamilyFallbackDelayNs - std::min(now - race_started, kFamilyFallbackDelayNs);
+            uint64_t remaining = kFamilyFallbackDelayNs -
+                                 std::min(elapsed_ns(now, race_started), kFamilyFallbackDelayNs);
             timeout_ms = static_cast<int>(std::min<uint64_t>(remaining / NGTCP2_MILLISECONDS, 10));
         }
         if (!fds.empty() && poll(fds.data(), fds.size(), timeout_ms) < 0 && errno != EINTR) {
@@ -1113,8 +1135,8 @@ bool QuicClient::run_handshake_race() {
             if (!candidate.failed && !write_candidate(candidate, progressed_at))
                 candidate.failed = true;
             if (!candidate.failed && timeouts_.handshake_ms != 0 &&
-                progressed_at - candidate.started_at >=
-                    timeouts_.handshake_ms * NGTCP2_MILLISECONDS) {
+                deadline_elapsed_ns(progressed_at, candidate.started_at,
+                                    timeouts_.handshake_ms * NGTCP2_MILLISECONDS)) {
                 candidate.failed = true;
                 terminal_error_ = KATHTTP3_ERR_HANDSHAKE_TIMEOUT;
             }
@@ -1173,7 +1195,8 @@ void QuicClient::run() {
 
     while (endpoint_idx_ < endpoints_.size() && !stop_ && !handshake_confirmed_) {
         if (timeouts_.connect_ms != 0 &&
-            now_ns() - connection_started_at_ >= timeouts_.connect_ms * NGTCP2_MILLISECONDS) {
+            deadline_elapsed_ns(now_ns(), connection_started_at_,
+                                timeouts_.connect_ms * NGTCP2_MILLISECONDS)) {
             terminal_error_ = KATHTTP3_ERR_CONNECT_TIMEOUT;
             break;
         }
@@ -1225,7 +1248,8 @@ int QuicClient::event_loop() {
     while (!stop_) {
         uint64_t now = now_ns();
         if (!handshake_confirmed_.load() && timeouts_.handshake_ms != 0 &&
-            now - handshake_started_at_ >= timeouts_.handshake_ms * NGTCP2_MILLISECONDS) {
+            deadline_elapsed_ns(now, handshake_started_at_,
+                                timeouts_.handshake_ms * NGTCP2_MILLISECONDS)) {
             terminal_error_ = KATHTTP3_ERR_HANDSHAKE_TIMEOUT;
             return -1;
         }
@@ -1272,6 +1296,9 @@ int QuicClient::event_loop() {
             return -1;
         }
 
+        // Packet callbacks above can record progress after the poll timestamp.
+        // Refresh it so deadline arithmetic never compares against stale time.
+        now = now_ns();
         expire_requests(now);
         try_submit_pending();
         update_keep_alive();
@@ -1290,6 +1317,7 @@ int QuicClient::event_loop() {
 
 void QuicClient::expire_requests(uint64_t now) {
     std::vector<std::pair<Job*, int>> expired;
+    bool connection_timeout_triggered = false;
     {
         std::lock_guard<std::mutex> lk(job_mutex_);
         size_t connection_unconsumed = 0;
@@ -1302,6 +1330,7 @@ void QuicClient::expire_requests(uint64_t now) {
         auto collect_expired = [&](auto& jobs) {
             for (auto& job : jobs) {
                 if (job->cancelled || job->submitted_at == 0) continue;
+                if (connection_timeout_triggered) continue;
                 int error = KATHTTP3_OK;
                 std::lock_guard<std::mutex> receive_lock(job->receive_credit_mutex);
                 const bool consumer_blocked =
@@ -1309,32 +1338,32 @@ void QuicClient::expire_requests(uint64_t now) {
                                           job->delivered_unconsumed_bytes, connection_unconsumed);
                 if (consumer_blocked) {
                     if (job->consumer_blocked_since == 0) job->consumer_blocked_since = now;
-                    if (timeouts_.consumer_stall_ms != 0 &&
-                        now - job->consumer_blocked_since >=
-                            timeouts_.consumer_stall_ms * NGTCP2_MILLISECONDS) {
+                    if (deadline_elapsed_ns(now, job->consumer_blocked_since,
+                                            timeouts_.consumer_stall_ms * NGTCP2_MILLISECONDS)) {
                         error = KATHTTP3_ERR_CONSUMER_STALL;
                     }
                 } else {
                     job->consumer_blocked_since = 0;
                 }
-                if (timeouts_.call_ms != 0 &&
-                    now - job->submitted_at >= timeouts_.call_ms * NGTCP2_MILLISECONDS) {
+                if (deadline_elapsed_ns(now, job->submitted_at,
+                                        timeouts_.call_ms * NGTCP2_MILLISECONDS)) {
                     error = KATHTTP3_ERR_CALL_TIMEOUT;
                 } else if (job->stream_id >= 0 && !job->saw_headers &&
                            timeouts_.response_headers_ms != 0 &&
-                           now - job->submitted_at >=
-                               timeouts_.response_headers_ms * NGTCP2_MILLISECONDS) {
+                           deadline_elapsed_ns(
+                               now, job->submitted_at,
+                               timeouts_.response_headers_ms * NGTCP2_MILLISECONDS)) {
                     error = KATHTTP3_ERR_RESPONSE_HEADERS_TIMEOUT;
                 } else if (error == KATHTTP3_OK && job->saw_headers &&
                            job->last_read_progress_at != 0 && timeouts_.read_ms != 0 &&
                            !consumer_blocked &&
-                           now - job->last_read_progress_at >=
-                               timeouts_.read_ms * NGTCP2_MILLISECONDS) {
+                           deadline_elapsed_ns(now, job->last_read_progress_at,
+                                               timeouts_.read_ms * NGTCP2_MILLISECONDS)) {
                     error = KATHTTP3_ERR_READ_TIMEOUT;
                 } else if (job->request && job->body_sent < job->request->body.size() &&
                            job->last_write_progress_at != 0 && timeouts_.write_ms != 0 &&
-                           now - job->last_write_progress_at >=
-                               timeouts_.write_ms * NGTCP2_MILLISECONDS) {
+                           deadline_elapsed_ns(now, job->last_write_progress_at,
+                                               timeouts_.write_ms * NGTCP2_MILLISECONDS)) {
                     error = KATHTTP3_ERR_WRITE_TIMEOUT;
                 }
                 if (error != KATHTTP3_OK) {
@@ -1342,17 +1371,72 @@ void QuicClient::expire_requests(uint64_t now) {
                     if (error == KATHTTP3_ERR_RESPONSE_HEADERS_TIMEOUT ||
                         error == KATHTTP3_ERR_READ_TIMEOUT || error == KATHTTP3_ERR_WRITE_TIMEOUT) {
                         state_.store(ConnectionState::Draining);
+                        connection_timeout_triggered = true;
                     }
-                    KATHTTP3_LOG_WARN("timeout connection=%llu request=%lld stream=%lld code=%d\n",
-                                      static_cast<unsigned long long>(connection_instance_id_),
-                                      static_cast<long long>(job->id),
-                                      static_cast<long long>(job->stream_id), error);
+                    uint64_t last_progress = job->submitted_at;
+                    uint64_t configured_ms = timeouts_.call_ms;
+                    if (error == KATHTTP3_ERR_CONSUMER_STALL) {
+                        last_progress = job->consumer_blocked_since;
+                        configured_ms = timeouts_.consumer_stall_ms;
+                    } else if (error == KATHTTP3_ERR_RESPONSE_HEADERS_TIMEOUT) {
+                        configured_ms = timeouts_.response_headers_ms;
+                    } else if (error == KATHTTP3_ERR_READ_TIMEOUT) {
+                        last_progress = job->last_read_progress_at;
+                        configured_ms = timeouts_.read_ms;
+                    } else if (error == KATHTTP3_ERR_WRITE_TIMEOUT) {
+                        last_progress = job->last_write_progress_at;
+                        configured_ms = timeouts_.write_ms;
+                    }
+                    const char* pending_reason =
+                        job->stream_id < 0
+                            ? (http3_ready_ ? "stream_not_open" : "connection_not_ready")
+                            : "active_stream";
+                    KATHTTP3_LOG_WARN(
+                        "timeout connection=%llu request=%lld stream=%lld code=%d now_ns=%llu "
+                        "last_progress_ns=%llu elapsed_ms=%llu configured_timeout_ms=%llu "
+                        "connection_state=%s pending_reason=%s remote_address=%s "
+                        "address_family=%s\n",
+                        static_cast<unsigned long long>(connection_instance_id_),
+                        static_cast<long long>(job->id), static_cast<long long>(job->stream_id),
+                        error, static_cast<unsigned long long>(now),
+                        static_cast<unsigned long long>(last_progress),
+                        static_cast<unsigned long long>(elapsed_ns(now, last_progress) /
+                                                        NGTCP2_MILLISECONDS),
+                        static_cast<unsigned long long>(configured_ms),
+                        connection_state_name(state_.load()), pending_reason,
+                        peer_endpoint_.ip.empty() ? "-" : peer_endpoint_.ip.c_str(),
+                        peer_endpoint_.family == AF_INET6
+                            ? "IPv6"
+                            : (peer_endpoint_.family == AF_INET ? "IPv4" : "unknown"));
                     expired.emplace_back(job.get(), error);
                 }
             }
         };
         collect_expired(pending_jobs_);
         collect_expired(active_jobs_);
+        if (connection_timeout_triggered) {
+            auto fail_remaining = [&](auto& jobs) {
+                for (auto& job : jobs) {
+                    if (job->cancelled) continue;
+                    job->cancelled = true;
+                    KATHTTP3_LOG_WARN(
+                        "timeout connection=%llu request=%lld stream=%lld code=%d now_ns=%llu "
+                        "last_progress_ns=0 elapsed_ms=0 configured_timeout_ms=0 "
+                        "connection_state=draining pending_reason=connection_timeout "
+                        "remote_address=%s address_family=%s\n",
+                        static_cast<unsigned long long>(connection_instance_id_),
+                        static_cast<long long>(job->id), static_cast<long long>(job->stream_id),
+                        KATHTTP3_ERR_QUIC, static_cast<unsigned long long>(now),
+                        peer_endpoint_.ip.empty() ? "-" : peer_endpoint_.ip.c_str(),
+                        peer_endpoint_.family == AF_INET6
+                            ? "IPv6"
+                            : (peer_endpoint_.family == AF_INET ? "IPv4" : "unknown"));
+                    expired.emplace_back(job.get(), KATHTTP3_ERR_QUIC);
+                }
+            };
+            fail_remaining(pending_jobs_);
+            fail_remaining(active_jobs_);
+        }
     }
     for (const auto& [job, error] : expired) notify_job_error(job, error);
     if (!expired.empty()) wakeup();

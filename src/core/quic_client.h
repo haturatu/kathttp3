@@ -249,6 +249,7 @@ class QuicClient {
     UdpSocket sock_;
     int wakeup_fd_ = -1;
     std::vector<ResolvedEndpoint> endpoints_;
+    ResolvedEndpoint peer_endpoint_;
     size_t endpoint_idx_ = 0;
 
     ngtcp2_conn* conn_ = nullptr;

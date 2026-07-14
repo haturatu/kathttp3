@@ -15,6 +15,7 @@
 #include "header_list.h"
 #include "precommit_failover.h"
 #include "redirect.h"
+#include "time_util.h"
 #include "url.h"
 
 using namespace kathttp3;
@@ -108,6 +109,14 @@ int main() {
     assert(!can_fail_over_before_request_commit(false, false, false));
     assert(!can_fail_over_before_request_commit(true, true, false));
     assert(!can_fail_over_before_request_commit(true, false, true));
+    assert(!can_fail_over_before_request_commit(true, false, false, false));
+
+    assert(elapsed_ns(100, 90) == 10);
+    assert(elapsed_ns(90, 100) == 0);
+    assert(saturating_elapsed(90, 100) == 0);
+    assert(deadline_elapsed_ns(200, 100, 100));
+    assert(!deadline_elapsed_ns(99, 100, 1));
+    assert(!deadline_elapsed_ns(200, 0, 100));
 
     // Local streaming backpressure is not a peer read-idle failure.
     assert(!receive_credit_blocked_by_consumer(0, 0));

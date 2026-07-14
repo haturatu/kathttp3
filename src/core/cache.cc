@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <ctime>
 
+#include "time_util.h"
+
 namespace kathttp3 {
 
 bool ResponseCache::cacheable(std::string_view method, const Response& resp) const {
@@ -29,7 +31,7 @@ bool ResponseCache::get(std::string_view method, std::string_view url, Response&
     if (it == map_.end()) return false;
     Entry& e = *it->second;
     uint64_t now = static_cast<uint64_t>(std::time(nullptr));
-    if (e.max_age && now - e.cached_at > e.max_age) {
+    if (e.max_age && saturating_elapsed(now, e.cached_at) > e.max_age) {
         lru_.erase(it->second);
         map_.erase(it);
         return false;

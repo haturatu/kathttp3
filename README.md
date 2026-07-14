@@ -311,6 +311,12 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   response-header, and write timeouts drain the affected connection from the
   pool before a retry. Automatic retries are limited to DNS, connect, and
   handshake failures; read, call, and consumer-stall timeouts are not retried.
+- Deadline arithmetic uses saturating monotonic elapsed time, so callback
+  progress recorded later in an event-loop iteration cannot wrap and cause an
+  immediate timeout. Timeout diagnostics include the process-local connection
+  ID, timestamps, configured deadline, state, pending reason, remote address,
+  and address family. A connection-level timeout reports only its triggering
+  request as that phase; remaining requests fail as connection errors.
 - Native QUIC receive windows use fixed 1 MiB stream high / 512 KiB low
   watermarks, an 8 MiB connection limit, and 64 KiB credit batching. These
   values are not yet public configuration knobs. The same limits are applied
