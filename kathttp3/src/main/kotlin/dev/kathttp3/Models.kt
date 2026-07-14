@@ -22,6 +22,8 @@ data class KatHttp3ClientConfig(
     val readTimeoutMillis: Long = idleTimeoutMillis,
     val writeTimeoutMillis: Long = idleTimeoutMillis,
     val callTimeoutMillis: Long = requestTimeoutMillis,
+    /** Maximum time a streaming consumer may keep its QUIC receive window full. */
+    val consumerStallTimeoutMillis: Long = readTimeoutMillis,
     val followRedirects: Boolean = true,
     val maxRedirects: Int = 10,
     val maxBufferedBodyBytes: Long = 16L * 1024 * 1024,
@@ -56,6 +58,7 @@ data class KatHttp3ClientConfig(
         require(dnsTimeoutMillis > 0 && handshakeTimeoutMillis > 0)
         require(responseHeadersTimeoutMillis > 0 && readTimeoutMillis > 0)
         require(writeTimeoutMillis > 0 && callTimeoutMillis > 0)
+        require(consumerStallTimeoutMillis > 0)
         require(maxRedirects >= 0 && maxBufferedBodyBytes > 0 && maxStreamingBufferedBodyBytes > 0)
         require(maxActiveStreamsPerOrigin > 0 && maxQueuedRequestsPerOrigin >= 0)
         require(queueTimeoutMillis > 0)
@@ -87,6 +90,7 @@ sealed class KatHttp3Exception(message: String) : IOException(message) {
     class Timeout(val phase: KatHttp3TimeoutPhase) : KatHttp3Exception("${phase.name} timed out")
     class Closed : KatHttp3Exception("Client is closed")
     class BodyTooLarge : KatHttp3Exception("Response exceeds configured body limit")
+    class ConsumerStallTimeout : KatHttp3Exception("Streaming response consumer stalled")
     class RequestQueueFull(val origin: String) : KatHttp3Exception("Request queue is full for $origin")
     class RequestQueueTimeout(val origin: String, val timeoutMillis: Long) :
         KatHttp3Exception("Request queue timed out for $origin after $timeoutMillis ms")

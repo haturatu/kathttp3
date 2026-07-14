@@ -525,6 +525,8 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
     timeouts_.read_ms = timeouts_.read_ms ? timeouts_.read_ms : timeouts_.idle_ms;
     timeouts_.write_ms = timeouts_.write_ms ? timeouts_.write_ms : timeouts_.idle_ms;
     timeouts_.call_ms = timeouts_.call_ms ? timeouts_.call_ms : timeouts_.request_ms;
+    timeouts_.consumer_stall_ms =
+        timeouts_.consumer_stall_ms ? timeouts_.consumer_stall_ms : timeouts_.read_ms;
     conn_ref_.get_conn = get_conn_cb;
     conn_ref_.user_data = this;
     wakeup_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -1296,6 +1298,19 @@ void QuicClient::expire_requests(uint64_t now) {
             for (auto& job : jobs) {
                 if (job->cancelled || job->submitted_at == 0) continue;
                 int error = KATHTTP3_OK;
+                const bool consumer_blocked =
+                    job->streaming && receive_credit_blocked_by_consumer(
+                                          job->delivered_unconsumed_bytes, connection_unconsumed);
+                if (consumer_blocked) {
+                    if (job->consumer_blocked_since == 0) job->consumer_blocked_since = now;
+                    if (timeouts_.consumer_stall_ms != 0 &&
+                        now - job->consumer_blocked_since >=
+                            timeouts_.consumer_stall_ms * NGTCP2_MILLISECONDS) {
+                        error = KATHTTP3_ERR_CONSUMER_STALL;
+                    }
+                } else {
+                    job->consumer_blocked_since = 0;
+                }
                 if (timeouts_.call_ms != 0 &&
                     now - job->submitted_at >= timeouts_.call_ms * NGTCP2_MILLISECONDS) {
                     error = KATHTTP3_ERR_CALL_TIMEOUT;
@@ -1304,10 +1319,9 @@ void QuicClient::expire_requests(uint64_t now) {
                            now - job->submitted_at >=
                                timeouts_.response_headers_ms * NGTCP2_MILLISECONDS) {
                     error = KATHTTP3_ERR_RESPONSE_HEADERS_TIMEOUT;
-                } else if (job->saw_headers && job->last_read_progress_at != 0 &&
-                           timeouts_.read_ms != 0 &&
-                           !receive_credit_blocked_by_consumer(job->delivered_unconsumed_bytes,
-                                                               connection_unconsumed) &&
+                } else if (error == KATHTTP3_OK && job->saw_headers &&
+                           job->last_read_progress_at != 0 && timeouts_.read_ms != 0 &&
+                           !consumer_blocked &&
                            now - job->last_read_progress_at >=
                                timeouts_.read_ms * NGTCP2_MILLISECONDS) {
                     error = KATHTTP3_ERR_READ_TIMEOUT;

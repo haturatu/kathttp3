@@ -39,7 +39,7 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
         config.connectTimeoutMillis, config.requestTimeoutMillis, config.idleTimeoutMillis,
         config.dnsTimeoutMillis, config.handshakeTimeoutMillis,
         config.responseHeadersTimeoutMillis, config.readTimeoutMillis,
-        config.writeTimeoutMillis, config.callTimeoutMillis, config.maxRedirects,
+        config.writeTimeoutMillis, config.callTimeoutMillis, config.consumerStallTimeoutMillis, config.maxRedirects,
         config.trustMode.native, config.insecureCert, config.enableCookies, config.enable0Rtt, config.caCertificateFile,
         config.qlogPathPrefix, config.resolver,
     ).also { check(it != 0L) }
@@ -245,6 +245,7 @@ private fun mapError(code: Int): KatHttp3Exception = when (code) {
     -19 -> KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Read)
     -20 -> KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Write)
     -21 -> KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Call)
+    -22 -> KatHttp3Exception.ConsumerStallTimeout()
     -13 -> KatHttp3Exception.Closed()
     else -> KatHttp3Exception.Native(code)
 }

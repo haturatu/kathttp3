@@ -43,6 +43,7 @@ struct QuicTimeouts {
     uint64_t read_ms = 0;
     uint64_t write_ms = 0;
     uint64_t call_ms = 0;
+    uint64_t consumer_stall_ms = 0;
 };
 
 /* One HTTP/3 request/response exchange multiplexed over a QuicClient. */
@@ -76,6 +77,7 @@ struct Job {
     size_t delivered_body_bytes = 0;
     size_t consumed_body_bytes = 0;
     size_t pending_credit_bytes = 0; /* coalesced receive-window credit */
+    uint64_t consumer_blocked_since = 0;
     int redirect_count = 0;
     /* Response body length accounting for Content-Length validation. */
     int64_t declared_content_length = -1; /* from Content-Length header, or -1 */

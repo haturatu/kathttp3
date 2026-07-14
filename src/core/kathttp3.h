@@ -49,6 +49,7 @@ typedef enum {
     KATHTTP3_ERR_READ_TIMEOUT = -19,
     KATHTTP3_ERR_WRITE_TIMEOUT = -20,
     KATHTTP3_ERR_CALL_TIMEOUT = -21,
+    KATHTTP3_ERR_CONSUMER_STALL = -22, /* local streaming consumer stopped */
 } kathttp3_error;
 
 /* How the peer certificate is verified. Default is PLATFORM. */
@@ -114,6 +115,9 @@ typedef struct kathttp3_client_options {
     /* NULL = disabled.  When set, KatHttp3 writes one private .qlog file per
      * QUIC connection using this path as a prefix. */
     const char* qlog_path_prefix;
+    /* Maximum time a local streaming consumer may hold a full QUIC receive
+     * window. Zero inherits read_timeout_ms. */
+    uint64_t consumer_stall_timeout_ms;
 } kathttp3_client_options;
 
 /* Stable name for new C callers. `kathttp3_client_options` remains source

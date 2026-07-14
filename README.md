@@ -306,7 +306,9 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   to normal and Happy Eyeballs connection candidates before the winner is
   adopted. A stream or shared connection window intentionally blocked by the
   local consumer does not trigger a network read-idle timeout; a separate
-  consumer-stall timeout governs abandoned streaming calls.
+  consumer-stall timeout governs abandoned streaming calls. Configure it with
+  `consumerStallTimeoutMillis` (default: `readTimeoutMillis`); it is reported
+  as `KatHttp3Exception.ConsumerStallTimeout`, not as a network timeout.
 - While at least one request stream is active, the worker configures ngtcp2
   keep-alive at half of the peer-advertised idle timeout. It disables probes
   when no request stream is active; keep-alive is therefore not a background
