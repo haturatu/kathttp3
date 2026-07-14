@@ -10,6 +10,7 @@
 
 #include "cookie_jar.h"
 #include "dns.h"
+#include "flow_control.h"
 #include "handshake_race.h"
 #include "header_list.h"
 #include "precommit_failover.h"
@@ -107,6 +108,11 @@ int main() {
     assert(!can_fail_over_before_request_commit(false, false, false));
     assert(!can_fail_over_before_request_commit(true, true, false));
     assert(!can_fail_over_before_request_commit(true, false, true));
+
+    // Local streaming backpressure is not a peer read-idle failure.
+    assert(!receive_credit_blocked_by_consumer(0, 0));
+    assert(receive_credit_blocked_by_consumer(kReceiveBufferPerStreamHighWatermark, 0));
+    assert(receive_credit_blocked_by_consumer(0, kReceiveBufferPerConnectionLimit));
 
     DnsCache cache({.max_entries = 1, .positive_ttl_ms = 1000, .negative_ttl_ms = 1000});
     cache.put_success("one.test", 443, 1, endpoints);

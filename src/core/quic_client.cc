@@ -17,6 +17,7 @@
 #include <cstring>
 
 #include "engine.h"
+#include "flow_control.h"
 #include "handshake_race.h"
 #include "http3_session.h"
 #include "log.h"
@@ -34,10 +35,6 @@
 namespace kathttp3 {
 
 namespace {
-constexpr uint64_t kReceiveBufferPerStreamHighWatermark = 1 * 1024 * 1024;
-constexpr uint64_t kReceiveBufferPerStreamLowWatermark = 512 * 1024;
-constexpr uint64_t kReceiveBufferPerConnectionLimit = 8 * 1024 * 1024;
-constexpr size_t kReceiveCreditThreshold = 64 * 1024;
 constexpr size_t kMinimumSendQuantum = NGTCP2_MAX_PKTLEN;
 
 // Every route to a client connection must advertise the same bounded receive
@@ -1291,6 +1288,10 @@ void QuicClient::expire_requests(uint64_t now) {
     std::vector<std::pair<Job*, int>> expired;
     {
         std::lock_guard<std::mutex> lk(job_mutex_);
+        size_t connection_unconsumed = 0;
+        for (const auto& job : active_jobs_) {
+            if (job->streaming) connection_unconsumed += job->delivered_unconsumed_bytes;
+        }
         auto collect_expired = [&](auto& jobs) {
             for (auto& job : jobs) {
                 if (job->cancelled || job->submitted_at == 0) continue;
@@ -1305,6 +1306,8 @@ void QuicClient::expire_requests(uint64_t now) {
                     error = KATHTTP3_ERR_RESPONSE_HEADERS_TIMEOUT;
                 } else if (job->saw_headers && job->last_read_progress_at != 0 &&
                            timeouts_.read_ms != 0 &&
+                           !receive_credit_blocked_by_consumer(job->delivered_unconsumed_bytes,
+                                                               connection_unconsumed) &&
                            now - job->last_read_progress_at >=
                                timeouts_.read_ms * NGTCP2_MILLISECONDS) {
                     error = KATHTTP3_ERR_READ_TIMEOUT;
