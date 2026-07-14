@@ -306,6 +306,11 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   `maxStreamingBufferedBytesPerConnection` (defaults: 1 MiB and 16 MiB).
   The per-stream cap is deliberate fairness control: a single slow image
   consumer cannot reserve the shared client budget needed by other streams.
+- Receive-window credit is queued and wakes the QUIC worker on every accepted
+  consume operation; it is never left waiting solely for a 64 KiB batch. Read,
+  response-header, and write timeouts drain the affected connection from the
+  pool before a retry. Automatic retries are limited to DNS, connect, and
+  handshake failures; read, call, and consumer-stall timeouts are not retried.
 - Native QUIC receive windows use fixed 1 MiB stream high / 512 KiB low
   watermarks, an 8 MiB connection limit, and 64 KiB credit batching. These
   values are not yet public configuration knobs. The same limits are applied

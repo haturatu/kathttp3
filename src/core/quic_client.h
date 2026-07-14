@@ -78,6 +78,7 @@ struct Job {
     size_t consumed_body_bytes = 0;
     size_t pending_credit_bytes = 0; /* coalesced receive-window credit */
     uint64_t consumer_blocked_since = 0;
+    std::mutex receive_credit_mutex;
     int redirect_count = 0;
     /* Response body length accounting for Content-Length validation. */
     int64_t declared_content_length = -1; /* from Content-Length header, or -1 */
@@ -234,6 +235,7 @@ class QuicClient {
     QuicTimeouts timeouts_;
     uint32_t quic_version_;
     std::string qlog_path_prefix_;
+    uint64_t connection_instance_id_ = 0;
     int qlog_fd_ = -1;
     bool http3_ready_ = false;
     bool early_data_enabled_ = false;
