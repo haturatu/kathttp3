@@ -29,7 +29,7 @@ data class KatHttp3ClientConfig(
     val maxBufferedBodyBytes: Long = 16L * 1024 * 1024,
     val maxStreamingBufferedBodyBytes: Long = 4L * 1024 * 1024,
     /** Maximum Kotlin-owned queued response bytes for one streaming call. */
-    val maxStreamingBufferedBytesPerStream: Long = 4L * 1024 * 1024,
+    val maxStreamingBufferedBytesPerStream: Long = 1L * 1024 * 1024,
     /** Maximum Kotlin-owned queued response bytes across this client. */
     val maxStreamingBufferedBytesPerConnection: Long = 16L * 1024 * 1024,
     /** Local admission-control limit; distinct from QUIC peer MAX_STREAMS. */
