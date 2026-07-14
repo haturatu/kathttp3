@@ -481,7 +481,8 @@ int candidate_early_data_rejected_cb(ngtcp2_conn*, void* user_data) {
 }
 
 void candidate_qlog_write_cb(void* user_data, uint32_t flags, const void* data, size_t len) {
-    write_qlog_fd(candidate_from(user_data)->qlog_fd, flags, data, len);
+    auto* candidate = candidate_from(user_data);
+    candidate->owner->write_qlog_for_file(candidate->qlog_fd, flags, data, len);
 }
 
 constexpr ngtcp2_callbacks kCandidateCallbacks = {
@@ -528,7 +529,8 @@ constexpr ngtcp2_callbacks kCandidateCallbacks = {
 
 QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& origin,
                        std::shared_ptr<Resolver> resolver, bool enable_0rtt, QuicTimeouts timeouts,
-                       uint32_t quic_version, std::string qlog_path_prefix)
+                       uint32_t quic_version, std::string qlog_path_prefix,
+                       kathttp3_qlog_sink_cb qlog_sink_cb, void* qlog_sink_userdata)
     : engine_(engine),
       tls_ctx_(tls_ctx),
       origin_(origin),
@@ -537,6 +539,8 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
       timeouts_(timeouts),
       quic_version_(quic_version),
       qlog_path_prefix_(std::move(qlog_path_prefix)),
+      qlog_sink_cb_(qlog_sink_cb),
+      qlog_sink_userdata_(qlog_sink_userdata),
       connection_instance_id_(next_connection_instance_id.fetch_add(1, std::memory_order_relaxed)) {
     timeouts_.dns_ms = timeouts_.dns_ms ? timeouts_.dns_ms : timeouts_.connect_ms;
     timeouts_.handshake_ms = timeouts_.handshake_ms ? timeouts_.handshake_ms : timeouts_.connect_ms;
@@ -581,7 +585,17 @@ int QuicClient::open_qlog_file() {
 }
 
 void QuicClient::write_qlog(uint32_t flags, const void* data, size_t len) const {
-    write_qlog_fd(qlog_fd_, flags, data, len);
+    write_qlog_for_file(qlog_fd_, flags, data, len);
+}
+
+void QuicClient::write_qlog_for_file(int fd, uint32_t flags, const void* data, size_t len) const {
+    write_qlog_fd(fd, flags, data, len);
+    if (!qlog_sink_cb_ || !data || len == 0) return;
+    try {
+        qlog_sink_cb_(qlog_sink_userdata_, flags, static_cast<const uint8_t*>(data), len);
+    } catch (...) {
+        KATHTTP3_LOG_WARN("qlog sink threw; ignoring diagnostic record\n");
+    }
 }
 
 void QuicClient::generate_reset_token(uint8_t* token, const ngtcp2_cid* cid) {
@@ -772,7 +786,7 @@ bool QuicClient::setup_connection() {
     // sequence unless a future platform-specific policy supplies probes.
     settings.no_pmtud = 0;
     qlog_fd_ = open_qlog_file();
-    if (qlog_fd_ != -1) settings.qlog_write = qlog_write_cb;
+    if (qlog_fd_ != -1 || qlog_sink_cb_ != nullptr) settings.qlog_write = qlog_write_cb;
 
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);
@@ -862,7 +876,8 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
     settings.initial_ts = candidate->started_at;
     settings.handshake_timeout = timeouts_.handshake_ms * NGTCP2_MILLISECONDS;
     settings.no_pmtud = 0;
-    if (candidate->qlog_fd != -1) settings.qlog_write = candidate_qlog_write_cb;
+    if (candidate->qlog_fd != -1 || qlog_sink_cb_ != nullptr)
+        settings.qlog_write = candidate_qlog_write_cb;
 
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);

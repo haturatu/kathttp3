@@ -39,14 +39,17 @@ data class KatHttp3ClientConfig(
     /** Time a call may wait before native request creation; excludes read timeout. */
     val queueTimeoutMillis: Long = 30_000,
     val caCertificateFile: String? = null,
-    /**
-     * Optional app-private path prefix for ngtcp2 qlog diagnostics. Each QUIC
-     * connection creates a separate `${qlogPathPrefix}-<pid>-<id>.qlog` file.
-     * qlog can reveal connection metadata, so keep this disabled in releases.
-     */
+    /** Optional app-private file sink prefix. Each QUIC connection creates a
+     * separate `${qlogPathPrefix}-<pid>-<id>.qlog` file when qlog is enabled. */
     val qlogPathPrefix: String? = null,
-    /** Enables private ngtcp2 qlog diagnostics. Disabled by default. */
+    /** Enables qlog diagnostics. With no [qlogPathPrefix], Android uses its
+     * bounded buffered Logcat sink. Disabled by default. */
     val qlogEnabled: Boolean = false,
+    /** Also writes qlog records to Android Logcat when [qlogPathPrefix] is set.
+     * It has no effect when no file prefix is supplied because Logcat is then
+     * the default qlog destination. qlog can reveal connection metadata, so
+     * do not enable either destination in normal production builds. */
+    val qlogLogcatEnabled: Boolean = false,
     val trustMode: TrustMode = TrustMode.PLATFORM,
     val insecureCert: Boolean = false,
     /** Experimental: enables KatHttp3's in-memory cookie jar. It deliberately
@@ -72,9 +75,8 @@ data class KatHttp3ClientConfig(
         require(queueTimeoutMillis > 0)
         require(caCertificateFile == null || caCertificateFile.isNotBlank())
         require(qlogPathPrefix == null || qlogPathPrefix.isNotBlank())
-        require(!qlogEnabled || !qlogPathPrefix.isNullOrBlank()) {
-            "qlogPathPrefix is required when qlogEnabled is true"
-        }
+        require(qlogEnabled || qlogPathPrefix == null) { "qlogPathPrefix requires qlogEnabled" }
+        require(qlogEnabled || !qlogLogcatEnabled) { "qlogLogcatEnabled requires qlogEnabled" }
     }
 }
 

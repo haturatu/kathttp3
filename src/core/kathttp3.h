@@ -73,6 +73,13 @@ typedef struct kathttp3_resolved_address {
 typedef int (*kathttp3_resolve_cb)(const char* host, uint16_t port, void* userdata,
                                    kathttp3_resolved_address* out, size_t* out_count);
 
+/* Receives an ngtcp2 qlog record. The byte span is valid only until this
+ * callback returns. The callback runs on a QUIC worker thread and therefore
+ * must be non-blocking and must not call back into this client. qlog is
+ * diagnostic-only: callback failures must not affect request processing. */
+typedef void (*kathttp3_qlog_sink_cb)(void* userdata, uint32_t flags, const uint8_t* data,
+                                      size_t len);
+
 /* Client construction options. Always initialize with
  * kathttp3_client_options_init() so struct_size/abi_version are set. */
 typedef struct kathttp3_client_options {
@@ -112,14 +119,20 @@ typedef struct kathttp3_client_options {
     uint64_t write_timeout_ms;
     uint64_t call_timeout_ms;
     uint8_t enable_cookies; /* 0 = disabled (default); 1 = experimental jar */
-    /* NULL = disabled.  When set, KatHttp3 writes one private .qlog file per
-     * QUIC connection using this path as a prefix. */
+    /* Optional private qlog file path prefix. When qlog is enabled, KatHttp3
+     * writes one mode-0600 .qlog file per QUIC connection using this prefix. */
     const char* qlog_path_prefix;
     /* Maximum time a local streaming consumer may hold a full QUIC receive
      * window. Zero inherits read_timeout_ms. */
     uint64_t consumer_stall_timeout_ms;
-    /* Explicit diagnostic opt-in. qlog_path_prefix is ignored unless set. */
+    /* Explicit diagnostic opt-in. At least one qlog destination (a path
+     * prefix or qlog_sink_cb) must be supplied when this is enabled. */
     uint8_t enable_qlog;
+    /* Optional generic diagnostic sink. Its userdata remains caller-owned and
+     * must remain valid until kathttp3_client_destroy returns. These fields
+     * are appended for ABI compatibility. */
+    kathttp3_qlog_sink_cb qlog_sink_cb;
+    void* qlog_sink_userdata;
 } kathttp3_client_options;
 
 /* Stable name for new C callers. `kathttp3_client_options` remains source
