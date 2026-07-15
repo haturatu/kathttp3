@@ -123,9 +123,11 @@ int main() {
     assert(!deadline_elapsed_ns(200, 0, 100));
 
     size_t body_remaining = 0;
-    assert(request_body_remaining(10, 4, &body_remaining));
+    const bool has_remaining_body = request_body_remaining(10, 4, &body_remaining);
+    assert(has_remaining_body);
     assert(body_remaining == 6);
-    assert(!request_body_remaining(4, 10, &body_remaining));
+    const bool rejected_body_offset = request_body_remaining(4, 10, &body_remaining);
+    assert(!rejected_body_offset);
     assert(request_body_can_advance(4, 6, 10));
     assert(!request_body_can_advance(4, 7, 10));
     assert(request_body_next_chunk_size(kMaxHttp3DataReaderBytes + 1) == kMaxHttp3DataReaderBytes);
