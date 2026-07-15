@@ -62,6 +62,11 @@ constexpr size_t kMinimumSendQuantum = NGTCP2_MAX_PKTLEN;
 void configure_receive_windows(ngtcp2_transport_params* params) {
     params->initial_max_stream_data_bidi_local = kReceiveBufferPerStreamHighWatermark;
     params->initial_max_stream_data_bidi_remote = kReceiveBufferPerStreamHighWatermark;
+    // Server-initiated unidirectional streams carry the peer HTTP/3 control
+    // stream and the QPACK encoder/decoder streams.  Leaving this at ngtcp2's
+    // zero default makes the peer immediately send STREAM_DATA_BLOCKED and
+    // prevents SETTINGS and header decoding from progressing.
+    params->initial_max_stream_data_uni = kReceiveBufferPerStreamHighWatermark;
     params->initial_max_data = kReceiveBufferPerConnectionLimit;
 }
 
