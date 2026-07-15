@@ -194,7 +194,7 @@ int shutdown_cb(nghttp3_conn*, int64_t stream_id, void* conn_user_data) {
 }
 
 nghttp3_ssize data_read_cb(nghttp3_conn*, int64_t stream_id, nghttp3_vec* vec, size_t veccnt,
-                           uint32_t* pflags, void* stream_user_data, void* conn_user_data) {
+                           uint32_t* pflags, void* conn_user_data, void* stream_user_data) {
     (void)conn_user_data;
     auto* job = static_cast<Job*>(stream_user_data);
     if (!job || !job->request || !vec || veccnt == 0 || !pflags)
@@ -382,6 +382,11 @@ bool Http3Session::submit_request(Job* job) {
 
     nghttp3_data_reader dr{data_read_cb};
     const nghttp3_data_reader* drp = nullptr;
+    // nghttp3_conn_submit_request() reads the name/value buffers supplied in
+    // nva. Keep an automatically generated Content-Length alive through that
+    // call; a block-local string here would leave nva pointing at destroyed
+    // storage before nghttp3 has encoded the header block.
+    std::string generated_content_length;
     if (!req.body.empty() || req.streaming_body) {
         // Ensure a Content-Length is present so servers parse the body.
         bool has_cl = false;
@@ -392,12 +397,12 @@ bool Http3Session::submit_request(Job* job) {
             }
         }
         if (!has_cl && (!req.streaming_body || req.streaming_body_length >= 0)) {
-            std::string cl =
+            generated_content_length =
                 std::to_string(req.streaming_body ? req.streaming_body_length
                                                   : static_cast<int64_t>(req.body.size()));
             nva.push_back({reinterpret_cast<const uint8_t*>("content-length"),
-                           reinterpret_cast<const uint8_t*>(cl.data()), 14, cl.size(),
-                           NGHTTP3_NV_FLAG_NONE});
+                           reinterpret_cast<const uint8_t*>(generated_content_length.data()), 14,
+                           generated_content_length.size(), NGHTTP3_NV_FLAG_NONE});
         }
         drp = &dr;
     }
