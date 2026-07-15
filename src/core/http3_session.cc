@@ -7,10 +7,12 @@
 #include <charconv>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 #include "kathttp3.h"
 #include "log.h"
 #include "request.h"
+#include "request_body_offset.h"
 #include "time_util.h"
 #include "url.h"
 
@@ -194,15 +196,24 @@ int shutdown_cb(nghttp3_conn*, int64_t stream_id, void* conn_user_data) {
 nghttp3_ssize data_read_cb(nghttp3_conn*, int64_t stream_id, nghttp3_vec* vec, size_t veccnt,
                            uint32_t* pflags, void* stream_user_data, void* conn_user_data) {
     (void)conn_user_data;
-    (void)veccnt;
     auto* job = static_cast<Job*>(stream_user_data);
+    if (!job || !job->request || !vec || veccnt == 0 || !pflags)
+        return NGHTTP3_ERR_CALLBACK_FAILURE;
     auto* req = job->request;
     vec[0].base = nullptr;
     vec[0].len = 0;
+    *pflags = 0;
     if (req->streaming_body) {
         std::lock_guard<std::mutex> lock(job->request_body_mutex);
-        if (!job->request_body_chunks.empty() &&
-            job->request_body_chunk_offset == job->request_body_chunks.front().size()) {
+        while (!job->request_body_chunks.empty()) {
+            const size_t chunk_size = job->request_body_chunks.front().size();
+            if (job->request_body_chunk_offset > chunk_size) {
+                KATHTTP3_LOG_ERR("request body offset overflow stream=%lld offset=%zu chunk=%zu\n",
+                                 static_cast<long long>(stream_id), job->request_body_chunk_offset,
+                                 chunk_size);
+                return NGHTTP3_ERR_CALLBACK_FAILURE;
+            }
+            if (job->request_body_chunk_offset != chunk_size) break;
             job->request_body_chunks.pop_front();
             job->request_body_chunk_offset = 0;
         }
@@ -217,24 +228,48 @@ nghttp3_ssize data_read_cb(nghttp3_conn*, int64_t stream_id, nghttp3_vec* vec, s
             return NGHTTP3_ERR_WOULDBLOCK;
         }
         auto& chunk = job->request_body_chunks.front();
-        if (req->streaming_body_length >= 0 &&
-            job->body_sent + chunk.size() - job->request_body_chunk_offset >
-                static_cast<size_t>(req->streaming_body_length))
+        size_t remaining = 0;
+        if (!request_body_remaining(chunk.size(), job->request_body_chunk_offset, &remaining) ||
+            remaining == 0)
             return NGHTTP3_ERR_CALLBACK_FAILURE;
+        const size_t offered = request_body_next_chunk_size(remaining);
+        if (!request_body_can_advance(job->body_sent, offered, std::numeric_limits<size_t>::max()))
+            return NGHTTP3_ERR_CALLBACK_FAILURE;
+        if (req->streaming_body_length >= 0) {
+            const uint64_t declared_length = static_cast<uint64_t>(req->streaming_body_length);
+            if (declared_length > std::numeric_limits<size_t>::max() ||
+                !request_body_can_advance(job->body_sent, offered,
+                                          static_cast<size_t>(declared_length)))
+                return NGHTTP3_ERR_CALLBACK_FAILURE;
+        }
+        if (job->request_body_buffered_bytes < offered) {
+            KATHTTP3_LOG_ERR(
+                "request body buffer accounting underflow stream=%lld buffered=%zu "
+                "offered=%zu\n",
+                static_cast<long long>(stream_id), job->request_body_buffered_bytes, offered);
+            return NGHTTP3_ERR_CALLBACK_FAILURE;
+        }
         vec[0].base = chunk.data() + job->request_body_chunk_offset;
-        vec[0].len = chunk.size() - job->request_body_chunk_offset;
+        vec[0].len = offered;
         job->body_sent += vec[0].len;
         job->request_body_buffered_bytes -= vec[0].len;
         job->request_body_chunk_offset += vec[0].len;
-        *pflags = job->request_body_finished &&
+        *pflags = job->request_body_finished && job->request_body_chunks.size() == 1 &&
                           job->request_body_chunk_offset == job->request_body_chunks.front().size()
                       ? NGHTTP3_DATA_FLAG_EOF
                       : 0;
         return 1;
     }
-    if (job->body_sent < req->body.size()) {
+    size_t remaining = 0;
+    if (!request_body_remaining(req->body.size(), job->body_sent, &remaining)) {
+        KATHTTP3_LOG_ERR("request body offset overflow stream=%lld offset=%zu body=%zu\n",
+                         static_cast<long long>(stream_id), job->body_sent, req->body.size());
+        return NGHTTP3_ERR_CALLBACK_FAILURE;
+    }
+    if (remaining != 0) {
+        const size_t offered = request_body_next_chunk_size(remaining);
         vec[0].base = req->body.data() + job->body_sent;
-        vec[0].len = req->body.size() - job->body_sent;
+        vec[0].len = offered;
         job->body_sent += vec[0].len;
         // EOF must accompany the last non-empty DATA vector.  Waiting for a
         // later zero-length callback leaves the request stream open and makes
