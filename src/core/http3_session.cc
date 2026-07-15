@@ -362,11 +362,10 @@ bool Http3Session::submit_request(Job* job) {
     };
     add_nv(":method", 7, req.method);
     add_nv(":scheme", 7, url.scheme);
-    std::string authority = url.host;
-    if (!((url.scheme == "https" && url.port == 443) || (url.scheme == "http" && url.port == 80))) {
-        authority += ":";
-        authority += std::to_string(url.port);
-    }
+    // Url stores an omitted port as zero.  Building :authority directly from
+    // url.port therefore produced "host:0" for ordinary HTTPS URLs even
+    // though the QUIC connection used the effective port 443.
+    const std::string authority = url.authority();
     add_nv(":authority", 10, authority);
     std::string path = url.path.empty() ? "/" : url.path;
     if (!url.query.empty()) {
