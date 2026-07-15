@@ -15,6 +15,7 @@
 #include "header_list.h"
 #include "precommit_failover.h"
 #include "redirect.h"
+#include "request_body_offset.h"
 #include "time_util.h"
 #include "url.h"
 
@@ -117,6 +118,14 @@ int main() {
     assert(deadline_elapsed_ns(200, 100, 100));
     assert(!deadline_elapsed_ns(99, 100, 1));
     assert(!deadline_elapsed_ns(200, 0, 100));
+
+    size_t body_remaining = 0;
+    assert(request_body_remaining(10, 4, &body_remaining));
+    assert(body_remaining == 6);
+    assert(!request_body_remaining(4, 10, &body_remaining));
+    assert(request_body_can_advance(4, 6, 10));
+    assert(!request_body_can_advance(4, 7, 10));
+    assert(request_body_next_chunk_size(kMaxHttp3DataReaderBytes + 1) == kMaxHttp3DataReaderBytes);
 
     // Local streaming backpressure is not a peer read-idle failure.
     assert(!receive_credit_blocked_by_consumer(0, 0));
