@@ -55,6 +55,40 @@ jobs:
           cmake --build build-${{ matrix.sanitizer }} --parallel &&
           ctest --test-dir build-${{ matrix.sanitizer }} --output-on-failure
 
+  linux-ngtcp2-interop:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install HTTP/3 build prerequisites
+        run: >-
+          sudo apt-get update -qq && sudo apt-get install -y
+          cmake ninja-build pkg-config git openssl libssl-dev
+          libnghttp3-dev libngtcp2-dev libngtcp2-crypto-ossl-dev
+      - name: Build ngtcp2 example HTTP/3 server
+        run: |
+          git clone --depth 1 --recurse-submodules https://github.com/ngtcp2/ngtcp2.git ../ngtcp2
+          cmake -S ../ngtcp2 -B ../ngtcp2-build -G Ninja -DENABLE_EXAMPLES=ON
+          cmake --build ../ngtcp2-build --parallel
+          SERVER="$(find ../ngtcp2-build/examples -maxdepth 1 -type f \( -name bsslserver -o -name wsslserver \) -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "NGTCP2_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - name: Build KatHttp3 interop client
+        run: >-
+          cmake -S . -B build-interop -G Ninja
+          -DKATHTTP3_BUILD_INTEROP_CLIENT=ON
+          -DKATHTTP3_BUILD_TESTS=OFF &&
+          cmake --build build-interop --parallel
+      - name: Exercise KatHttp3 against ngtcp2 HTTP/3
+        run: |
+          mkdir cert
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
+            -keyout cert/server.key -out cert/server.crt
+          "$NGTCP2_SERVER" 127.0.0.1 4433 cert/server.key cert/server.crt >server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; cat server.log' EXIT
+          sleep 1
+          ./build-interop/kathttp3_test_client --url https://localhost:4433/ --ca-cert cert/server.crt
+
   static-analysis:
     runs-on: ubuntu-24.04
     steps:
