@@ -1,0 +1,105 @@
+name: Native
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "include/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".clang-format"
+      - ".clang-tidy"
+      - ".github/workflows/native.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".clang-format"
+      - ".clang-tidy"
+      - ".github/workflows/native.yml"
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update -qq && sudo apt-get install -y clang-format
+      - run: >-
+          find src include tests -type f ! -name ca_bundle.h \( -name '*.cc' -o -name '*.cpp' -o -name '*.c' -o -name '*.h' -o -name '*.hpp' \) -print0 |
+          xargs -0 clang-format --dry-run --Werror
+
+  core-sanitizers:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address-undefined]
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update -qq && sudo apt-get install -y cmake ninja-build
+      - name: Build and run deterministic C++ state tests
+        run: >-
+          cmake -S . -B build-${{ matrix.sanitizer }} -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DKATHTTP3_ANALYSIS_ONLY=ON
+          -DKATHTTP3_SANITIZE=ON
+          -DKATHTTP3_BUILD_JNI=OFF &&
+          cmake --build build-${{ matrix.sanitizer }} --parallel &&
+          ctest --test-dir build-${{ matrix.sanitizer }} --output-on-failure
+
+  static-analysis:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update -qq && sudo apt-get install -y clang clang-tidy cppcheck cmake ninja-build pkg-config libngtcp2-dev libnghttp3-dev libngtcp2-crypto-ossl-dev
+      - run: >-
+          cmake -S . -B build-tidy -G Ninja
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          -DKATHTTP3_ANALYSIS_ONLY=ON
+          -DKATHTTP3_BUILD_JNI=OFF
+      - run: run-clang-tidy -p build-tidy -quiet
+      - run: >-
+          cppcheck --project=build-tidy/compile_commands.json
+          --enable=warning,performance,portability
+          --inline-suppr --suppress=missingIncludeSystem --error-exitcode=1
+
+  thread-sanitizer-nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update -qq && sudo apt-get install -y cmake ninja-build
+      - name: Long-running lifecycle state test under TSan
+        run: >-
+          cmake -S . -B build-tsan -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DKATHTTP3_ANALYSIS_ONLY=ON
+          -DKATHTTP3_THREAD_SANITIZE=ON
+          -DKATHTTP3_BUILD_JNI=OFF &&
+          cmake --build build-tsan --parallel &&
+          ctest --test-dir build-tsan --output-on-failure --repeat until-fail:100
+
+  fuzz-nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update -qq && sudo apt-get install -y clang cmake ninja-build pkg-config libngtcp2-dev libnghttp3-dev libngtcp2-crypto-ossl-dev
+      - run: >-
+          cmake -S . -B build-fuzz -G Ninja
+          -DCMAKE_CXX_COMPILER=clang++
+          -DKATHTTP3_BUILD_FUZZERS=ON
+          -DKATHTTP3_BUILD_TESTS=OFF &&
+          cmake --build build-fuzz --parallel
+      - run: |
+          ./build-fuzz/kathttp3_fuzz_url_and_headers -max_total_time=120
+          ./build-fuzz/kathttp3_fuzz_request_body -max_total_time=120

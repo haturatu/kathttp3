@@ -1,0 +1,71 @@
+name: Android Build
+
+on:
+  pull_request:
+    paths:
+      - "example/**"
+      - "kathttp3/**"
+      - "src/**"
+      - "include/**"
+      - "CMakeLists.txt"
+      - "settings.gradle.kts"
+      - "build.gradle.kts"
+      - "gradle.properties"
+      - "gradle/**"
+      - "gradlew"
+      - "scripts/build-android-deps.sh"
+      - "third_party/versions.*"
+      - ".github/workflows/android-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "example/**"
+      - "kathttp3/**"
+      - "src/**"
+      - "include/**"
+      - "CMakeLists.txt"
+      - "settings.gradle.kts"
+      - "build.gradle.kts"
+      - "gradle.properties"
+      - "gradle/**"
+      - "gradlew"
+      - "scripts/build-android-deps.sh"
+      - "third_party/versions.*"
+      - ".github/workflows/android-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+      - run: >-
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "platforms;android-36" "build-tools;36.0.0"
+          "ndk;27.0.12077973" "cmake;3.22.1"
+      - name: Build Android library, AAR, and example APK
+        run: >-
+          ./gradlew --no-daemon --stacktrace
+          :kathttp3:assembleRelease :example:assembleDebug
+          -PandroidNativeDepsJobs=2 -PandroidNativeDepsParallelAbis=2
+      - name: Verify release outputs
+        run: |
+          find kathttp3/build/outputs/aar -name '*.aar' -print -quit | grep .
+          test -f example/build/outputs/apk/debug/example-debug.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kathttp3-android-build
+          path: |
+            kathttp3/build/outputs/aar/*.aar
+            example/build/outputs/apk/debug/example-debug.apk
