@@ -3,6 +3,7 @@ package dev.kathttp3
 import org.junit.Test
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
 import kotlin.test.assertFailsWith
@@ -21,6 +22,40 @@ class ModelsTest {
         val config = KatHttp3ClientConfig()
         assertEquals(1L * 1024 * 1024, config.maxStreamingBufferedBytesPerStream)
         assertEquals(16L * 1024 * 1024, config.maxStreamingBufferedBytesPerConnection)
+    }
+    @Test fun streamingResponseQueuePreservesBodyOrderAndDrainsBeforeCompletion() = runBlocking {
+        val budget = StreamingBufferBudget(64)
+        val queue = StreamingResponseQueue(64, budget)
+        assertEquals(true, queue.offer(KatHttp3StreamEvent.Body(byteArrayOf(1, 2))))
+        assertEquals(true, queue.offer(KatHttp3StreamEvent.Body(byteArrayOf(3))))
+        assertEquals(true, queue.offer(KatHttp3StreamEvent.Body(byteArrayOf(4, 5, 6))))
+        queue.finish()
+
+        val bytes = queue.events.toList().flatMap { event ->
+            (event as KatHttp3StreamEvent.Body).bytes.toList()
+        }
+        assertEquals(listOf<Byte>(1, 2, 3, 4, 5, 6), bytes)
+        assertEquals(0, queue.bufferedBytes())
+        assertEquals(0, budget.usedBytes())
+    }
+    @Test fun streamingResponseQueueRejectsOverflowWithoutLeakingBudget() = runBlocking {
+        val budget = StreamingBufferBudget(5)
+        val queue = StreamingResponseQueue(4, budget)
+        assertEquals(true, queue.offer(KatHttp3StreamEvent.Body(byteArrayOf(1, 2, 3))))
+        assertEquals(false, queue.offer(KatHttp3StreamEvent.Body(byteArrayOf(4, 5))))
+        queue.finish()
+        assertEquals(listOf<Byte>(1, 2, 3), queue.events.toList().flatMap {
+            (it as KatHttp3StreamEvent.Body).bytes.toList()
+        })
+        assertEquals(0, budget.usedBytes())
+    }
+    @Test fun streamingResponseQueueAbortDropsChunksAndReleasesBudget() = runBlocking {
+        val budget = StreamingBufferBudget(16)
+        val queue = StreamingResponseQueue(16, budget)
+        assertEquals(true, queue.offer(KatHttp3StreamEvent.Body(byteArrayOf(1, 2, 3))))
+        queue.abort()
+        assertEquals(emptyList(), queue.events.toList())
+        assertEquals(0, budget.usedBytes())
     }
     @Test fun phaseTimeoutValidation() {
         assertFailsWith<IllegalArgumentException> { KatHttp3ClientConfig(readTimeoutMillis = 0) }

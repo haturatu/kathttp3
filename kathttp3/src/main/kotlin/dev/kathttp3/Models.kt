@@ -102,7 +102,10 @@ sealed class KatHttp3Exception(message: String) : IOException(message) {
     class Dns : KatHttp3Exception("DNS resolution failed")
     class Timeout(val phase: KatHttp3TimeoutPhase) : KatHttp3Exception("${phase.name} timed out")
     class Closed : KatHttp3Exception("Client is closed")
+    class Cancelled : KatHttp3Exception("Request was cancelled")
     class BodyTooLarge : KatHttp3Exception("Response exceeds configured body limit")
+    class StreamingBufferLimitExceeded :
+        KatHttp3Exception("Streaming response exceeded its configured buffer limit")
     class ConsumerStallTimeout : KatHttp3Exception("Streaming response consumer stalled")
     class RequestQueueFull(val origin: String) : KatHttp3Exception("Request queue is full for $origin")
     class RequestQueueTimeout(val origin: String, val timeoutMillis: Long) :

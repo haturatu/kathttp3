@@ -77,78 +77,67 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
         val id = ids.getAndIncrement()
         val permit = AtomicReference<OriginRequestScheduler.Permit?>(null)
         fun releasePermit() { permit.getAndSet(null)?.close() }
-        val channel = Channel<KatHttp3StreamEvent>(capacity = 8)
-        val stashLock = Any()
-        val stash = ArrayDeque<ByteArray>()
-        var stashedBytes = 0L
-        val bufferedBytes = AtomicLong(0)
-        fun reserve(bytes: Int): Boolean {
-            if (bytes.toLong() > config.maxStreamingBufferedBytesPerStream) return false
-            if (!streamingBufferBudget.tryAcquire(bytes.toLong())) return false
-            bufferedBytes.addAndGet(bytes.toLong())
-            return true
-        }
-        fun release(bytes: Int) {
-            val released = minOf(bytes.toLong(), bufferedBytes.get())
-            if (released > 0) {
-                bufferedBytes.addAndGet(-released)
-                streamingBufferBudget.release(released)
-            }
-        }
-        fun releaseAll() {
-            val released = bufferedBytes.getAndSet(0)
-            if (released > 0) streamingBufferBudget.release(released)
-        }
-        val completePending = AtomicBoolean(false)
-        fun drainOneStashedChunk() {
-            val next = synchronized(stashLock) {
-                if (stash.isEmpty()) null else stash.removeFirst().also { stashedBytes -= it.size }
-            }
-            if (next != null && !channel.trySend(KatHttp3StreamEvent.Body(next)).isSuccess) {
-                synchronized(stashLock) { stash.addFirst(next); stashedBytes += next.size }
-            }
-        }
-        fun finishIfDrained() {
-            if (completePending.get() && synchronized(stashLock) { stash.isEmpty() }) channel.close()
-        }
+        val responseQueue = StreamingResponseQueue(
+            config.maxStreamingBufferedBytesPerStream,
+            streamingBufferBudget,
+        )
         lateinit var startJob: Job
-        val call = KatHttp3Call(channel.receiveAsFlow()
-            .onEach {
-                if (it is KatHttp3StreamEvent.Body) {
-                    release(it.bytes.size)
-                    drainOneStashedChunk()
-                    finishIfDrained()
-                }
-            }
-        ) {
-            startJob.cancel()
-            synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle, id) }
-            releaseAll()
-            releasePermit()
-        }
         val terminal = AtomicBoolean(false)
         val callback = object : NativeCallback {
-            override fun onHeaders(status: Int, names: Array<String>, values: Array<String>) { if (!channel.trySend(KatHttp3StreamEvent.Headers(status, names.indices.map { KatHttp3Header(names[it], values[it]) })).isSuccess) cancel() }
+            override fun onHeaders(status: Int, names: Array<String>, values: Array<String>) {
+                if (!responseQueue.offer(
+                        KatHttp3StreamEvent.Headers(
+                            status,
+                            names.indices.map { KatHttp3Header(names[it], values[it]) },
+                        ),
+                    )
+                ) {
+                    fail(KatHttp3Exception.Closed())
+                }
+            }
             override fun onBody(data: ByteArray) {
-                if (!reserve(data.size)) { cancel(); return }
-                if (channel.trySend(KatHttp3StreamEvent.Body(data)).isSuccess) {
-                    // JNI has copied the native callback bytes into a Kotlin-owned
-                    // bounded buffer. Return QUIC credit now, independently of
-                    // downstream Flow scheduling or image decoding work.
+                if (responseQueue.offer(KatHttp3StreamEvent.Body(data))) {
+                    // The callback bytes are now copied into one byte-bounded FIFO.
+                    // Returning credit here is independent of downstream decoding,
+                    // without allowing a newer chunk to bypass an older stashed one.
                     NativeBridge.consume(handle, id, data.size.toLong())
                     return
                 }
-                val overflow = synchronized(stashLock) {
-                    if (stashedBytes + data.size > config.maxStreamingBufferedBodyBytes) true
-                    else { stash.addLast(data); stashedBytes += data.size; false }
+                synchronized(nativeLock) {
+                    if (!closed.get()) NativeBridge.cancel(handle, id)
                 }
-                if (overflow) { release(data.size); cancel() }
-                else NativeBridge.consume(handle, id, data.size.toLong())
+                fail(KatHttp3Exception.StreamingBufferLimitExceeded())
             }
-            override fun onComplete() { if (terminal.compareAndSet(false,true)) { active.remove(id); releasePermit(); completePending.set(true); finishIfDrained() } }
+            override fun onComplete() {
+                if (terminal.compareAndSet(false, true)) {
+                    active.remove(id)
+                    releasePermit()
+                    responseQueue.finish()
+                }
+            }
             override fun onError(code: Int) { fail(mapError(code)) }
-            fun fail(error: Throwable) { if (terminal.compareAndSet(false,true)) { active.remove(id); releasePermit(); releaseAll(); channel.close(error) } }
-            fun cancel() { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle,id) }; onError(-6) }
+            fun fail(error: Throwable) {
+                if (terminal.compareAndSet(false, true)) {
+                    active.remove(id)
+                    releasePermit()
+                    responseQueue.abort(error)
+                }
+            }
+            fun cancelByCaller(): Boolean {
+                if (!terminal.compareAndSet(false, true)) return false
+                active.remove(id)
+                releasePermit()
+                responseQueue.abort()
+                return true
+            }
+        }
+        val call = KatHttp3Call(responseQueue.events) {
+            startJob.cancel()
+            if (callback.cancelByCaller()) {
+                synchronized(nativeLock) {
+                    if (!closed.get()) NativeBridge.cancel(handle, id)
+                }
+            }
         }
         val requestBody = request.streamingBody
         val bytes = (requestBody as? KatHttp3RequestBody.Bytes)?.value ?: request.body
@@ -273,12 +262,70 @@ internal class StreamingBufferBudget(private val limit: Long) {
     internal fun usedBytes(): Long = used.get()
 }
 
+/** A single FIFO for response events. The channel itself is unbounded, but
+ * body storage is strictly bounded by byte reservations. This avoids the old
+ * channel-plus-stash path where a newer callback could bypass an older chunk. */
+internal class StreamingResponseQueue(
+    private val perStreamLimit: Long,
+    private val connectionBudget: StreamingBufferBudget,
+) {
+    private val lock = Any()
+    private val channel = Channel<KatHttp3StreamEvent>(Channel.UNLIMITED)
+    private var bufferedBodyBytes = 0L
+    private var terminal = false
+
+    val events: Flow<KatHttp3StreamEvent> = channel.receiveAsFlow().onEach { event ->
+        if (event is KatHttp3StreamEvent.Body) release(event.bytes.size.toLong())
+    }
+
+    fun offer(event: KatHttp3StreamEvent): Boolean = synchronized(lock) {
+        if (terminal) return@synchronized false
+        val bytes = (event as? KatHttp3StreamEvent.Body)?.bytes?.size?.toLong() ?: 0L
+        if (bytes > perStreamLimit - bufferedBodyBytes) return@synchronized false
+        if (bytes > 0 && !connectionBudget.tryAcquire(bytes)) return@synchronized false
+        if (!channel.trySend(event).isSuccess) {
+            if (bytes > 0) connectionBudget.release(bytes)
+            return@synchronized false
+        }
+        bufferedBodyBytes += bytes
+        true
+    }
+
+    fun finish() = synchronized(lock) {
+        if (!terminal) {
+            terminal = true
+            channel.close()
+        }
+    }
+
+    fun abort(cause: Throwable? = null) = synchronized(lock) {
+        if (terminal) return@synchronized
+        terminal = true
+        while (channel.tryReceive().isSuccess) {
+            // Release the aggregate reservation once after discarding the FIFO.
+        }
+        val released = bufferedBodyBytes
+        bufferedBodyBytes = 0
+        if (released > 0) connectionBudget.release(released)
+        channel.close(cause)
+    }
+
+    internal fun bufferedBytes(): Long = synchronized(lock) { bufferedBodyBytes }
+
+    private fun release(bytes: Long) = synchronized(lock) {
+        val released = minOf(bytes, bufferedBodyBytes)
+        bufferedBodyBytes -= released
+        if (released > 0) connectionBudget.release(released)
+    }
+}
+
 private fun mapError(code: Int): KatHttp3Exception = when (code) {
     -1 -> KatHttp3Exception.Dns()
     -3 -> QuicTransportException("QUIC transport error")
     -4 -> TlsHandshakeException("TLS handshake error")
     -5, -6, -7 -> CertificateVerificationException("Certificate verification failed (code $code)")
     -9 -> KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Call)
+    -10 -> KatHttp3Exception.Cancelled()
     -15 -> KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Dns)
     -16 -> KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Connect)
     -17 -> KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Handshake)
