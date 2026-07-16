@@ -49,9 +49,15 @@ typedef enum {
     KATHTTP3_ERR_READ_TIMEOUT = -19,
     KATHTTP3_ERR_WRITE_TIMEOUT = -20,
     KATHTTP3_ERR_CALL_TIMEOUT = -21,
-    KATHTTP3_ERR_CONSUMER_STALL = -22, /* local streaming consumer stopped */
-    KATHTTP3_ERR_NETWORK_LOST = -23,   /* selected Android network/path was lost */
+    KATHTTP3_ERR_CONSUMER_STALL = -22,   /* local streaming consumer stopped */
+    KATHTTP3_ERR_NETWORK_LOST = -23,     /* selected Android network/path was lost */
+    KATHTTP3_ERR_CONNECTION_LIMIT = -24, /* worker-pool admission limit reached */
 } kathttp3_error;
+
+typedef enum {
+    KATHTTP3_NETWORK_CHANGE_ATTEMPT_MIGRATION = 0,
+    KATHTTP3_NETWORK_CHANGE_CLOSE_AND_RECONNECT = 1,
+} kathttp3_network_change_policy;
 
 /* How the peer certificate is verified. Default is PLATFORM. */
 typedef enum {
@@ -134,6 +140,9 @@ typedef struct kathttp3_client_options {
      * are appended for ABI compatibility. */
     kathttp3_qlog_sink_cb qlog_sink_cb;
     void* qlog_sink_userdata;
+    /* Bounds origin-owned QUIC workers. Zero selects the safe default (32). */
+    uint32_t max_connection_workers;
+    uint32_t network_change_policy; /* kathttp3_network_change_policy */
 } kathttp3_client_options;
 
 /* Stable name for new C callers. `kathttp3_client_options` remains source

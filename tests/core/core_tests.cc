@@ -331,6 +331,8 @@ int main() {
     assert(network_change_action({2, NetworkHandle{42}}, 1, false) ==
            NetworkChangeAction::Reconnect);
     assert(network_change_action({2, NetworkHandle{42}}, 1, true) == NetworkChangeAction::Migrate);
+    assert(network_change_action({2, NetworkHandle{42}}, 1, true, false) ==
+           NetworkChangeAction::Reconnect);
     assert(udp_error_is_temporary(EAGAIN));
     assert(udp_error_is_temporary(ENOBUFS));
     assert(udp_error_is_network_lost(ENETUNREACH));

@@ -11,6 +11,11 @@ import kotlin.test.assertEquals
 
 class ModelsTest {
     @Test fun configValidation() { assertFailsWith<IllegalArgumentException> { KatHttp3ClientConfig(maxBufferedBodyBytes = 0) } }
+    @Test fun connectionWorkerPolicyHasSafeBoundedDefault() {
+        assertEquals(32, KatHttp3ClientConfig().maxConnectionWorkers)
+        assertEquals(NetworkChangePolicy.ATTEMPT_MIGRATION, KatHttp3ClientConfig().networkChangePolicy)
+        assertFailsWith<IllegalArgumentException> { KatHttp3ClientConfig(maxConnectionWorkers = 0) }
+    }
     @Test fun streamingByteBudgetIsBounded() {
         val budget = StreamingBufferBudget(10)
         assertEquals(true, budget.tryAcquire(6))

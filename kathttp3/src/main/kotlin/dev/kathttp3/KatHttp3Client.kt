@@ -44,7 +44,8 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
         config.trustMode.native, config.insecureCert, config.enableCookies, config.enable0Rtt,
         config.qlogEnabled, config.qlogEnabled &&
             (config.qlogPathPrefix == null || config.qlogLogcatEnabled), config.caCertificateFile,
-        config.qlogPathPrefix, config.resolver,
+        config.qlogPathPrefix, config.maxConnectionWorkers, config.networkChangePolicy.ordinal,
+        config.resolver,
     ).also { check(it != 0L) }
     private val networkMonitor = applicationContext?.let {
         AndroidNetworkMonitor(it) { generation, networkHandle ->
@@ -341,6 +342,7 @@ private fun mapError(code: Int): KatHttp3Exception = when (code) {
     -21 -> KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Call)
     -22 -> KatHttp3Exception.ConsumerStallTimeout()
     -23 -> KatHttp3Exception.NetworkLost()
+    -24 -> KatHttp3Exception.ConnectionWorkerLimit()
     -13 -> KatHttp3Exception.Closed()
     else -> KatHttp3Exception.Native(code)
 }

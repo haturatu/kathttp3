@@ -18,9 +18,11 @@ struct NetworkChangeRequest {
 
 inline NetworkChangeAction network_change_action(NetworkChangeRequest requested,
                                                  uint64_t applied_generation,
-                                                 bool handshake_confirmed) {
+                                                 bool handshake_confirmed,
+                                                 bool attempt_migration = true) {
     if (requested.generation <= applied_generation) return NetworkChangeAction::None;
-    if (requested.network.value == 0 || !handshake_confirmed) return NetworkChangeAction::Reconnect;
+    if (!attempt_migration || requested.network.value == 0 || !handshake_confirmed)
+        return NetworkChangeAction::Reconnect;
     return NetworkChangeAction::Migrate;
 }
 

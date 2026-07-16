@@ -12,6 +12,9 @@ enum class TrustMode {
     val native: Int get() = ordinal
 }
 
+/** Behaviour after Android reports that the selected Network changed. */
+enum class NetworkChangePolicy { ATTEMPT_MIGRATION, CLOSE_AND_RECONNECT }
+
 data class KatHttp3ClientConfig(
     val connectTimeoutMillis: Long = 10_000,
     val requestTimeoutMillis: Long = 30_000,
@@ -36,6 +39,9 @@ data class KatHttp3ClientConfig(
     val maxActiveStreamsPerOrigin: Int = 8,
     /** Maximum calls waiting for a local admission-control permit per origin. */
     val maxQueuedRequestsPerOrigin: Int = 64,
+    /** Hard cap for native origin workers (each owns a thread and UDP socket). */
+    val maxConnectionWorkers: Int = 32,
+    val networkChangePolicy: NetworkChangePolicy = NetworkChangePolicy.ATTEMPT_MIGRATION,
     /** Time a call may wait before native request creation; excludes read timeout. */
     val queueTimeoutMillis: Long = 30_000,
     val caCertificateFile: String? = null,
@@ -72,6 +78,7 @@ data class KatHttp3ClientConfig(
         require(maxStreamingBufferedBytesPerStream > 0 && maxStreamingBufferedBytesPerConnection > 0)
         require(maxStreamingBufferedBytesPerStream <= maxStreamingBufferedBytesPerConnection)
         require(maxActiveStreamsPerOrigin > 0 && maxQueuedRequestsPerOrigin >= 0)
+        require(maxConnectionWorkers > 0)
         require(queueTimeoutMillis > 0)
         require(caCertificateFile == null || caCertificateFile.isNotBlank())
         require(qlogPathPrefix == null || qlogPathPrefix.isNotBlank())
@@ -124,6 +131,7 @@ sealed class KatHttp3Exception(message: String) : IOException(message) {
         KatHttp3Exception("Streaming response exceeded its configured buffer limit")
     class ConsumerStallTimeout : KatHttp3Exception("Streaming response consumer stalled")
     class NetworkLost : KatHttp3Exception("The selected network path was lost")
+    class ConnectionWorkerLimit : KatHttp3Exception("Native connection worker limit reached")
     class RequestQueueFull(val origin: String) : KatHttp3Exception("Request queue is full for $origin")
     class RequestQueueTimeout(val origin: String, val timeoutMillis: Long) :
         KatHttp3Exception("Request queue timed out for $origin after $timeoutMillis ms")

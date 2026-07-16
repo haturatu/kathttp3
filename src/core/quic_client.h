@@ -107,7 +107,7 @@ class QuicClient {
                std::shared_ptr<Resolver> resolver, bool enable_0rtt, QuicTimeouts timeouts,
                uint32_t quic_version, std::string qlog_path_prefix,
                kathttp3_qlog_sink_cb qlog_sink_cb, void* qlog_sink_userdata,
-               uint64_t network_handle);
+               uint64_t network_handle, bool attempt_migration);
     ~QuicClient();
 
     QuicClient(const QuicClient&) = delete;
@@ -267,6 +267,7 @@ class QuicClient {
     std::atomic<uint64_t> requested_network_handle_{0};
     uint64_t applied_network_generation_ = 0;
     uint64_t current_network_handle_ = 0;
+    bool attempt_migration_ = true;
     bool migration_in_progress_ = false;
     bool socket_failed_ = false;
     std::atomic<bool> random_failed_{false};

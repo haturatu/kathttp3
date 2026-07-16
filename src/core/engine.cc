@@ -24,6 +24,7 @@ namespace kathttp3 {
 
 namespace {
 constexpr int kDefaultMaxRedirects = 10;
+constexpr uint32_t kDefaultMaxConnectionWorkers = 32;
 
 int case_eq(const std::string& a, const char* b) {
     return strcasecmp(a.c_str(), b) == 0;
@@ -37,8 +38,8 @@ bool parse_content_length(std::string_view s, uint64_t& out) {
     return error == std::errc{} && parsed == end;
 }
 
-void invoke_callback(kathttp3_event_callback callback, void* user_data,
-                     const kathttp3_event& event, const char* context) noexcept {
+void invoke_callback(kathttp3_event_callback callback, void* user_data, const kathttp3_event& event,
+                     const char* context) noexcept {
     if (!callback) return;
     try {
         callback(user_data, &event);
@@ -55,6 +56,8 @@ Engine::Engine(const kathttp3_client_options& opt)
       qlog_path_prefix_(opt.enable_qlog && opt.qlog_path_prefix ? opt.qlog_path_prefix : ""),
       qlog_sink_cb_(opt.enable_qlog ? opt.qlog_sink_cb : nullptr),
       qlog_sink_userdata_(opt.enable_qlog ? opt.qlog_sink_userdata : nullptr) {
+    max_connection_workers_ =
+        opt_.max_connection_workers ? opt_.max_connection_workers : kDefaultMaxConnectionWorkers;
     if (opt_.enable_qlog != 0 && qlog_path_prefix_.empty() && qlog_sink_cb_ == nullptr) {
         throw std::invalid_argument("qlog enabled without a destination");
     }
@@ -131,6 +134,16 @@ QuicClient* Engine::get_or_create_client(const Url& origin) {
             return it->second.get();
         }
     }
+    // Each pooled origin owns a worker and a UDP socket. Reap closed entries
+    // before enforcing a process-wide bound; never grow one worker per origin
+    // without limit.
+    for (auto candidate = pool_.begin(); candidate != pool_.end();) {
+        if (candidate->second->is_closed())
+            candidate = pool_.erase(candidate);
+        else
+            ++candidate;
+    }
+    if (pool_.size() >= max_connection_workers_) return nullptr;
     const QuicTimeouts timeouts{opt_.connect_timeout_ms,   opt_.request_timeout_ms,
                                 opt_.idle_timeout_ms,      opt_.dns_timeout_ms,
                                 opt_.handshake_timeout_ms, opt_.response_headers_timeout_ms,
@@ -139,7 +152,8 @@ QuicClient* Engine::get_or_create_client(const Url& origin) {
     auto qc = std::make_unique<QuicClient>(
         this, tls_ctx_, origin, resolver_, opt_.enable_0rtt != 0, timeouts, opt_.quic_version,
         qlog_path_prefix_, qlog_sink_cb_, qlog_sink_userdata_,
-        android_network_handle_->load(std::memory_order_acquire));
+        android_network_handle_->load(std::memory_order_acquire),
+        opt_.network_change_policy != KATHTTP3_NETWORK_CHANGE_CLOSE_AND_RECONNECT);
     QuicClient* p = qc.get();
     pool_.emplace(key, std::move(qc));
     return p;
@@ -176,6 +190,15 @@ void Engine::execute(kathttp3_request* req, int64_t request_id, kathttp3_event_c
     job->streaming = req->streaming != 0;
 
     QuicClient* c = get_or_create_client(url);
+    if (!c) {
+        kathttp3_event ev{};
+        ev.type = KATHTTP3_EVENT_ERROR;
+        ev.request_id = request_id;
+        ev.error_code = KATHTTP3_ERR_CONNECTION_LIMIT;
+        invoke_callback(cb, user_data, ev, "connection-worker admission");
+        delete req;
+        return;
+    }
     {
         std::lock_guard<std::mutex> lk(mtx_);
         registry_[request_id] = ReqEntry{cb, user_data, c, false, false, 0};
@@ -322,6 +345,11 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
                 njob->redirect_count = job->redirect_count + 1;
 
                 QuicClient* nc = get_or_create_client(new_url);
+                if (!nc) {
+                    on_job_error(job, KATHTTP3_ERR_CONNECTION_LIMIT,
+                                 "connection-worker admission limit");
+                    return;
+                }
                 {
                     std::lock_guard<std::mutex> lk(mtx_);
                     auto it = registry_.find(job->id);
@@ -501,6 +529,8 @@ void kathttp3_client_options_init(kathttp3_client_options* opt) {
     opt->call_timeout_ms = opt->request_timeout_ms;
     opt->consumer_stall_timeout_ms = opt->read_timeout_ms;
     opt->enable_qlog = 0;
+    opt->max_connection_workers = 32;
+    opt->network_change_policy = KATHTTP3_NETWORK_CHANGE_ATTEMPT_MIGRATION;
 }
 
 void kathttp3_client_config_init(kathttp3_client_config* config) {

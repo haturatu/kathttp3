@@ -277,7 +277,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp3_internal_NativeBridge_creat
     jlong response_headers, jlong read, jlong write, jlong call, jlong consumer_stall,
     jint redirects, jint trustMode, jboolean insecure, jboolean enable_cookies,
     jboolean enable_0rtt, jboolean enable_qlog, jboolean enable_qlog_logcat, jstring caFile,
-    jstring qlogPath, jobject resolver) {
+    jstring qlogPath, jint max_connection_workers, jint network_change_policy, jobject resolver) {
     kathttp3_client_options o;
     kathttp3_client_options_init(&o);
     o.connect_timeout_ms = static_cast<uint64_t>(connect);
@@ -296,6 +296,11 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp3_internal_NativeBridge_creat
     o.enable_cookies = enable_cookies ? 1 : 0;
     o.enable_0rtt = enable_0rtt ? 1 : 0;
     o.enable_qlog = enable_qlog ? 1 : 0;
+    o.max_connection_workers =
+        max_connection_workers > 0 ? static_cast<uint32_t>(max_connection_workers) : 0;
+    o.network_change_policy = network_change_policy == KATHTTP3_NETWORK_CHANGE_CLOSE_AND_RECONNECT
+                                  ? KATHTTP3_NETWORK_CHANGE_CLOSE_AND_RECONNECT
+                                  : KATHTTP3_NETWORK_CHANGE_ATTEMPT_MIGRATION;
 #ifdef __ANDROID__
     std::unique_ptr<kathttp3::AndroidQlogLogcatSink> qlog_logcat_sink;
     if (enable_qlog && enable_qlog_logcat) {

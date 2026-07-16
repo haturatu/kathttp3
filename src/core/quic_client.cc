@@ -558,7 +558,7 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
                        std::shared_ptr<Resolver> resolver, bool enable_0rtt, QuicTimeouts timeouts,
                        uint32_t quic_version, std::string qlog_path_prefix,
                        kathttp3_qlog_sink_cb qlog_sink_cb, void* qlog_sink_userdata,
-                       uint64_t network_handle)
+                       uint64_t network_handle, bool attempt_migration)
     : engine_(engine),
       tls_ctx_(tls_ctx),
       origin_(origin),
@@ -570,7 +570,8 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
       qlog_sink_cb_(qlog_sink_cb),
       qlog_sink_userdata_(qlog_sink_userdata),
       connection_instance_id_(next_connection_instance_id.fetch_add(1, std::memory_order_relaxed)),
-      current_network_handle_(network_handle) {
+      current_network_handle_(network_handle),
+      attempt_migration_(attempt_migration) {
     timeouts_.dns_ms = timeouts_.dns_ms ? timeouts_.dns_ms : timeouts_.connect_ms;
     timeouts_.handshake_ms = timeouts_.handshake_ms ? timeouts_.handshake_ms : timeouts_.connect_ms;
     timeouts_.response_headers_ms =
@@ -1643,7 +1644,8 @@ bool QuicClient::process_network_change() {
     const uint64_t network_handle = requested_network_handle_.load(std::memory_order_acquire);
     const NetworkChangeRequest request{generation, NetworkHandle{network_handle}};
     const NetworkChangeAction action = network_change_action(
-        request, applied_network_generation_, handshake_confirmed_.load(std::memory_order_acquire));
+        request, applied_network_generation_, handshake_confirmed_.load(std::memory_order_acquire),
+        attempt_migration_);
     if (action == NetworkChangeAction::None) return true;
     applied_network_generation_ = generation;
     if (action == NetworkChangeAction::Reconnect || !conn_ || peer_endpoint_.family == 0) {

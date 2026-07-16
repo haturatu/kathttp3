@@ -73,6 +73,7 @@ class Engine {
 
     std::mutex pool_mutex_;
     std::unordered_map<std::string, std::unique_ptr<QuicClient>> pool_;
+    uint32_t max_connection_workers_ = 32;
 
     std::string policy_tag_;
     uint64_t network_generation_ = 0;
