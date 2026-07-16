@@ -60,9 +60,14 @@ struct Job {
     bool completed = false;
     bool redirected = false;
     Response response;
+    /* Each header block is accumulated separately.  Informational response
+     * blocks are deliberately not exposed as the final response. */
+    HeaderList response_header_block;
     bool saw_headers = false;
     uint8_t status_field_count = 0;
     bool saw_regular_response_header = false;
+    size_t response_header_section_bytes = 0;
+    size_t response_header_count = 0;
     size_t body_sent = 0; /* request body bytes already offered to nghttp3 */
     std::mutex request_body_mutex;
     std::deque<std::vector<uint8_t>> request_body_chunks;

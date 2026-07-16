@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <string_view>
 
 #include "kathttp3.h"
 #include "log.h"
@@ -24,15 +25,52 @@ namespace kathttp3 {
 
 namespace {
 
+/* Bound decoded header memory before copying it into the response and JNI.
+ * The nghttp3 setting below applies the same bound to peer field sections. */
+constexpr size_t kMaxResponseHeaderSectionBytes = 256 * 1024;
+constexpr size_t kMaxResponseHeaderCount = 256;
+constexpr size_t kMaxSingleHeaderValueBytes = 64 * 1024;
+
+bool equals_ascii_case_insensitive(std::string_view lhs, std::string_view rhs) {
+    if (lhs.size() != rhs.size()) return false;
+    for (size_t i = 0; i < lhs.size(); ++i) {
+        const unsigned char a = static_cast<unsigned char>(lhs[i]);
+        const unsigned char b = static_cast<unsigned char>(rhs[i]);
+        const unsigned char lower_a = a >= 'A' && a <= 'Z' ? a + ('a' - 'A') : a;
+        const unsigned char lower_b = b >= 'A' && b <= 'Z' ? b + ('a' - 'A') : b;
+        if (lower_a != lower_b) return false;
+    }
+    return true;
+}
+
+bool is_trailers_value(const std::string_view value) {
+    size_t first = 0;
+    while (first < value.size() && (value[first] == ' ' || value[first] == '\t')) ++first;
+    size_t last = value.size();
+    while (last > first && (value[last - 1] == ' ' || value[last - 1] == '\t')) --last;
+    return equals_ascii_case_insensitive(value.substr(first, last - first), "trailers");
+}
+
+void reset_header_block(Job* job) {
+    job->response_header_block.clear();
+    job->status_field_count = 0;
+    job->saw_regular_response_header = false;
+    job->response_header_section_bytes = 0;
+    job->response_header_count = 0;
+}
+
 int begin_headers_cb(nghttp3_conn*, int64_t stream_id, void* conn_user_data,
                      void* /*stream_user_data*/) {
     auto* c = static_cast<Http3Session*>(conn_user_data);
     auto* job = c->find_job(stream_id);
-    if (job && !job->saw_headers) {
-        job->response.headers.clear();
-        job->response.status_code = 0;
-        job->status_field_count = 0;
-        job->saw_regular_response_header = false;
+    if (job) {
+        /* begin_headers is used for every response block, including 1xx.
+         * A final response is stored only after its status is known. */
+        if (!job->saw_headers) {
+            job->response.headers.clear();
+            job->response.status_code = 0;
+        }
+        reset_header_block(job);
     }
     return 0;
 }
@@ -46,7 +84,13 @@ int recv_header_cb(nghttp3_conn*, int64_t stream_id, int32_t token, nghttp3_rcbu
     if (!job) return 0;
     nghttp3_vec n = nghttp3_rcbuf_get_buf(name);
     nghttp3_vec v = nghttp3_rcbuf_get_buf(value);
-    if (n.len == 0 || v.len > (1U << 20)) return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
+    if (n.len == 0 || v.len > kMaxSingleHeaderValueBytes ||
+        ++job->response_header_count > kMaxResponseHeaderCount ||
+        n.len > kMaxResponseHeaderSectionBytes - job->response_header_section_bytes ||
+        v.len > kMaxResponseHeaderSectionBytes - job->response_header_section_bytes - n.len) {
+        return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
+    }
+    job->response_header_section_bytes += n.len + v.len;
     const auto* name_bytes = reinterpret_cast<const uint8_t*>(n.base);
     for (size_t i = 0; i < n.len; ++i) {
         const uint8_t ch = name_bytes[i];
@@ -68,6 +112,7 @@ int recv_header_cb(nghttp3_conn*, int64_t stream_id, int32_t token, nghttp3_rcbu
         if (error != std::errc{} || end != last || status < 100 || status > 599) {
             return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
         }
+        /* The final status is committed only by end_headers_cb. */
         job->response.status_code = status;
     } else {
         if (n.base[0] == ':') return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
@@ -76,10 +121,10 @@ int recv_header_cb(nghttp3_conn*, int64_t stream_id, int32_t token, nghttp3_rcbu
         const std::string header_value(reinterpret_cast<const char*>(v.base), v.len);
         if (header_name == "connection" || header_name == "keep-alive" ||
             header_name == "proxy-connection" || header_name == "transfer-encoding" ||
-            header_name == "upgrade" || (header_name == "te" && header_value != "trailers")) {
+            header_name == "upgrade" || (header_name == "te" && !is_trailers_value(header_value))) {
             return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
         }
-        job->response.headers.add(header_name, header_value);
+        job->response_header_block.add(header_name, header_value);
     }
     return 0;
 }
@@ -89,10 +134,21 @@ int end_headers_cb(nghttp3_conn*, int64_t stream_id, int /*fin*/, void* conn_use
     auto* c = static_cast<Http3Session*>(conn_user_data);
     auto* job = c->find_job(stream_id);
     if (job) {
-        if (!job->saw_headers && job->status_field_count != 1) {
+        if (job->status_field_count != 1) {
             return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
         }
+        const int status = job->response.status_code;
+        if (status >= 100 && status < 200) {
+            /* HTTP/3 forbids 101.  Other informational responses are legal,
+             * may repeat, and are intentionally not surfaced by this API. */
+            if (status == 101) return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
+            job->response.status_code = 0;
+            reset_header_block(job);
+            return 0;
+        }
+        if (job->saw_headers) return NGHTTP3_ERR_MALFORMED_HTTP_HEADER;
         job->saw_headers = true;
+        job->response.headers = std::move(job->response_header_block);
         job->response_headers_at = timestamp_now_ns();
         job->last_read_progress_at = job->response_headers_at;
         c->client()->notify_job_headers(job, job->response.status_code, job->response.headers);
@@ -328,6 +384,11 @@ void Http3Session::unmap_stream(int64_t stream_id) {
 bool Http3Session::setup_codec() {
     nghttp3_settings settings;
     nghttp3_settings_default(&settings);
+    /* Keep QPACK's memory and head-of-line behaviour predictable on mobile.
+     * A zero dynamic table prevents peer-controlled dynamic-table growth. */
+    settings.qpack_max_dtable_capacity = 0;
+    settings.max_field_section_size = kMaxResponseHeaderSectionBytes;
+    settings.enable_connect_protocol = 0;
     nghttp3_conn* conn = nullptr;
     int rv = nghttp3_conn_client_new_versioned(&conn, NGHTTP3_CALLBACKS_VERSION, &kH3Callbacks,
                                                NGHTTP3_SETTINGS_VERSION, &settings, nullptr, this);

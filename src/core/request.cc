@@ -1,5 +1,6 @@
 #include "request.h"
 
+#include <cctype>
 #include <cstring>
 #include <exception>
 #include <new>
@@ -11,13 +12,23 @@ namespace {
 bool valid_header(const char* name, const char* value) {
     if (!*name) return false;
     for (const unsigned char* p = reinterpret_cast<const unsigned char*>(name); *p; ++p) {
-        if (*p <= 32 || *p >= 127 || *p == ':' || (*p >= 'A' && *p <= 'Z')) return false;
+        if (*p <= 32 || *p >= 127 || *p == ':') return false;
     }
     for (const unsigned char* p = reinterpret_cast<const unsigned char*>(value); *p; ++p)
         if (*p == '\r' || *p == '\n' || *p == 0) return false;
-    return std::strcmp(name, "connection") != 0 && std::strcmp(name, "proxy-connection") != 0 &&
-           std::strcmp(name, "transfer-encoding") != 0 && std::strcmp(name, "upgrade") != 0 &&
-           std::strcmp(name, "host") != 0;
+    return true;
+}
+
+std::string lower_header_name(const char* name) {
+    std::string normalized(name);
+    for (char& ch : normalized)
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return normalized;
+}
+
+bool forbidden_http3_header(const std::string& name) {
+    return name == "connection" || name == "proxy-connection" || name == "transfer-encoding" ||
+           name == "upgrade" || name == "host";
 }
 
 void log_request_exception(const char* operation) noexcept {
@@ -55,7 +66,9 @@ void kathttp3_request_destroy(kathttp3_request* request) {
 int kathttp3_request_add_header(kathttp3_request* request, const char* name, const char* value) {
     if (!request || !name || !value || !valid_header(name, value)) return KATHTTP3_ERR_INVALID_ARG;
     try {
-        request->headers.add(name, value);
+        std::string normalized_name = lower_header_name(name);
+        if (forbidden_http3_header(normalized_name)) return KATHTTP3_ERR_INVALID_ARG;
+        request->headers.add(std::move(normalized_name), value);
         return KATHTTP3_OK;
     } catch (...) {
         log_request_exception("kathttp3_request_add_header");

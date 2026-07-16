@@ -134,7 +134,7 @@ if(KATHTTP3_BUILD_TESTS AND NOT ANDROID)
   enable_testing()
   add_executable(kathttp3_core_tests tests/core/core_tests.cc
     src/core/url.cc src/core/header_list.cc src/core/redirect.cc
-    src/core/cookie_jar.cc src/core/dns.cc)
+    src/core/cookie_jar.cc src/core/dns.cc src/core/request.cc)
   target_include_directories(kathttp3_core_tests PRIVATE src/core)
   target_compile_options(kathttp3_core_tests PRIVATE -Wall -Wextra -Wpedantic)
   target_link_libraries(kathttp3_core_tests PRIVATE pthread)

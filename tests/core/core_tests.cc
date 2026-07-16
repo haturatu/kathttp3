@@ -15,6 +15,7 @@
 #include "handshake_race.h"
 #include "handshake_stream_buffer.h"
 #include "header_list.h"
+#include "kathttp3.h"
 #include "network_change.h"
 #include "precommit_failover.h"
 #include "redirect.h"
@@ -37,6 +38,13 @@ int main() {
     HeaderList h;
     h.add("Content-Type", "text/plain");
     assert(h.get("content-type") == "text/plain");
+    // Public request input accepts conventional mixed-case names but stores
+    // the HTTP/3 wire form in lowercase.
+    kathttp3_request* request = kathttp3_request_create("GET", "https://example.com/");
+    assert(request != nullptr);
+    assert(kathttp3_request_add_header(request, "TE", " Trailers\t") == KATHTTP3_OK);
+    assert(kathttp3_request_add_header(request, "Connection", "close") == KATHTTP3_ERR_INVALID_ARG);
+    kathttp3_request_destroy(request);
     Response response;
     response.status_code = 303;
     response.headers.add("location", "/next");
