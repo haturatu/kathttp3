@@ -24,5 +24,6 @@ tasks.register<Exec>("buildAndroidNativeDeps") {
     inputs.file("scripts/build-android-deps.sh")
     inputs.file("third_party/versions.env")
     inputs.file("third_party/versions.cmake")
+    inputs.dir("third_party/patches")
     outputs.dir("third_party/android-deps")
 }

@@ -2,10 +2,10 @@
 
 KatHttp3 is an independent, native HTTP/3 client library for Android (API 26+) that does not depend on Cronet. It ships its own C++20 core built directly on `ngtcp2 1.24.0 + nghttp3 1.17.0 + BoringSSL`, exposed through a stable C ABI, a JNI bridge, and a coroutine-based Kotlin API, with a Jetpack Compose example.
 
-> Status: host core tests and Android library/example builds are automated. The
-> repository does not include a local HTTP/3-server integration test, so
-> interoperability, redirects, uploads, and cancellation still need validation
-> against the target server and Android network.
+> Status: host core tests, an ngtcp2/nghttp3/BoringSSL HTTP/3 interoperability
+> smoke test, and Android library/example builds are automated. Redirects,
+> uploads, cancellation, and Android network changes still need validation
+> against each target server and real device network.
 
 ## Architecture and ownership
 
@@ -80,20 +80,22 @@ The script is incremental and safe to run repeatedly. Sources are kept under `th
 
 ## CI cache
 
-The GitHub Actions workflows cache Gradle state, the pinned Android SDK/NDK/CMake
-packages, pinned dependency source checkouts, and generated
-`third_party/android-deps` static libraries. The source-cache key is based on
-the pinned revisions; the library-cache key additionally includes the build
-script. The build script validates each cached ABI (headers, all five libraries,
-API level, revisions, and recipe version) before skipping it, so an incomplete
-cache is rebuilt rather than used.
+The GitHub Actions workflows pin action commits, cancel superseded runs for the
+same branch or pull request, and bound every job with a timeout. Gradle's setup
+action caches Gradle state. Android and native-analysis jobs additionally cache
+the fixed SDK toolchains plus pinned dependency source checkouts and generated
+`third_party/android-deps` static libraries. The native-dependency cache key
+includes the dependency revisions, build recipe, and every
+`third_party/patches/**` input. The build script validates each cached ABI
+(headers, all five libraries, API level, revisions, and recipe version) before
+skipping it, so an incomplete cache is rebuilt rather than used.
 
-The Android example workflow uses a four-ABI GitHub Actions matrix
-(`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`), so each ABI's dependency and APK
-build runs independently. The AAR workflow still produces one combined AAR and
-builds two ABI dependency sets concurrently with one compiler job per set,
-avoiding CPU oversubscription on hosted runners. The Gradle build cache and
-parallel project execution are enabled in `gradle.properties`.
+The Android build produces one combined AAR and verifies that it contains
+`arm64-v8a`, `armeabi-v7a`, `x86_64`, and `x86` native libraries before it
+publishes the build artifact. It builds two ABI dependency sets concurrently
+with two compiler jobs per set, avoiding CPU oversubscription on hosted
+runners. The Gradle build cache and parallel project execution are enabled in
+`gradle.properties`.
 
 Build the APK after dependencies:
 
@@ -105,8 +107,12 @@ ls -l example/build/outputs/apk/debug/example-debug.apk
 
 ## Native code quality checks
 
-GitHub Actions runs native formatting, clang-tidy, cppcheck, and the host core
-tests under AddressSanitizer and UndefinedBehaviorSanitizer.  The default
+GitHub Actions runs native formatting, clang-tidy and cppcheck against the
+project-pinned Android dependency headers, host core tests under
+AddressSanitizer and UndefinedBehaviorSanitizer, and a Linux HTTP/3 smoke test
+against a pinned ngtcp2 example server built with pinned nghttp3 and BoringSSL.
+The Android workflow runs Kotlin unit tests, library lint, release-AAR ABI
+contents verification, and the example APK build. The default
 clang-tidy profile is deliberately staged: it reports selected bug-prone,
 analyzer, performance, portability, and low-noise modernize/readability checks
 without treating the existing baseline as errors.
