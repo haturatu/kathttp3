@@ -92,7 +92,7 @@ jobs:
           git -C ../boringssl remote add origin https://github.com/google/boringssl.git
           git -C ../boringssl fetch --depth 1 origin 3c6315e00ab02d7bc9b8922aff1f85d8f81ee130
           git -C ../boringssl checkout --detach FETCH_HEAD
-          cmake -S ../boringssl -B ../boringssl-build -G Ninja
+          cmake -S ../boringssl -B ../boringssl-build -G Ninja -DCMAKE_POSITION_INDEPENDENT_CODE=ON
           cmake --build ../boringssl-build --parallel
           # The BoringSSL archives are deliberately static.  ngtcp2's CMake
           # symbol probes link them with the C linker, which is not reliable
