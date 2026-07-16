@@ -100,7 +100,7 @@ jobs:
           cmake -S ../ngtcp2 -B ../ngtcp2-build -G Ninja -DCMAKE_INSTALL_PREFIX="$PWD/../quic-prefix" -DENABLE_EXAMPLES=ON -DENABLE_OPENSSL=OFF -DENABLE_BORINGSSL=ON \
             -DHAVE_BORINGSSL=1 -DHAVE_SSL_SET_QUIC_EARLY_DATA_CONTEXT=1 \
             -DBORINGSSL_INCLUDE_DIR="$PWD/../boringssl/include" \
-            -DBORINGSSL_LIBRARIES="$PWD/../boringssl-build/ssl/libssl.a;$PWD/../boringssl-build/crypto/libcrypto.a" \
+            -DBORINGSSL_LIBRARIES="$PWD/../boringssl-build/libssl.a;$PWD/../boringssl-build/libcrypto.a" \
             -DLIBNGHTTP3_INCLUDE_DIR="$PWD/../h3-prefix/include" \
             -DLIBNGHTTP3_LIBRARY="$PWD/../h3-prefix/lib/libnghttp3.so"
           cmake --build ../ngtcp2-build --parallel
