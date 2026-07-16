@@ -118,6 +118,8 @@ jobs:
         run: >-
           cmake -S . -B build-interop -G Ninja
           -DKATHTTP3_USE_BORINGSSL=ON
+          -DKATHTTP3_BORINGSSL_INCLUDE_DIR="$PWD/../boringssl/include"
+          -DKATHTTP3_BORINGSSL_LIBRARIES="$PWD/../boringssl-build/libssl.a;$PWD/../boringssl-build/libcrypto.a"
           -DKATHTTP3_BUILD_INTEROP_CLIENT=ON
           -DKATHTTP3_BUILD_TESTS=OFF &&
           cmake --build build-interop --parallel

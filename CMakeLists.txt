@@ -11,6 +11,10 @@ option(KATHTTP3_ANALYSIS_ONLY "Build compile-only targets for static analysis" O
 option(KATHTTP3_ENABLE_IWYU "Run include-what-you-use during CMake builds" OFF)
 set(KATHTTP3_ANALYSIS_DEPS_INCLUDE_DIR "" CACHE PATH
     "Pinned Android dependency include directory used by host static analysis")
+set(KATHTTP3_BORINGSSL_INCLUDE_DIR "" CACHE PATH
+    "BoringSSL include directory for host builds using libngtcp2_crypto_boringssl")
+set(KATHTTP3_BORINGSSL_LIBRARIES "" CACHE STRING
+    "Semicolon-separated BoringSSL libraries for host builds using libngtcp2_crypto_boringssl")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -96,6 +100,13 @@ else()
 endif()
 target_include_directories(kathttp3 PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_include_directories(kathttp3 PRIVATE src/core)
+if(KATHTTP3_USE_BORINGSSL AND KATHTTP3_BORINGSSL_INCLUDE_DIR)
+  # libngtcp2_crypto_boringssl.pc intentionally does not own BoringSSL's
+  # headers.  Make the TLS backend explicit so a host integration build never
+  # falls back to a system OpenSSL include directory.
+  target_include_directories(kathttp3 SYSTEM BEFORE PRIVATE
+    "${KATHTTP3_BORINGSSL_INCLUDE_DIR}")
+endif()
 if(KATHTTP3_DEP_INCLUDE_DIR)
   target_include_directories(kathttp3 SYSTEM PRIVATE "${KATHTTP3_DEP_INCLUDE_DIR}")
 endif()
@@ -110,6 +121,9 @@ target_compile_options(kathttp3 PRIVATE
   -Wformat=2 -Wundef -Wcast-align -Wnull-dereference -Wdouble-promotion)
 if(NOT KATHTTP3_ANALYSIS_ONLY)
   target_link_libraries(kathttp3 PRIVATE ${KATHTTP3_DEP_TARGETS})
+endif()
+if(KATHTTP3_USE_BORINGSSL AND KATHTTP3_BORINGSSL_LIBRARIES AND NOT KATHTTP3_ANALYSIS_ONLY)
+  target_link_libraries(kathttp3 PRIVATE ${KATHTTP3_BORINGSSL_LIBRARIES})
 endif()
 if(NOT ANDROID)
   target_link_libraries(kathttp3 PRIVATE pthread)
