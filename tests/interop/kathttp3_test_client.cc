@@ -78,7 +78,11 @@ int main(int argc, char** argv) {
         }
     }
     kathttp3_client_destroy(client);
-    if (result.error != KATHTTP3_OK || result.status < 200 || result.status >= 400) return 6;
+    if (result.error != KATHTTP3_OK || result.status < 200 || result.status >= 400) {
+        std::fprintf(stderr, "unexpected HTTP/3 result: error=%d status=%d bytes=%zu\n",
+                     result.error, result.status, result.body_bytes);
+        return 6;
+    }
     std::printf("HTTP %d bytes=%zu\n", result.status, result.body_bytes);
     return 0;
 }

@@ -126,9 +126,11 @@ jobs:
       - name: Exercise KatHttp3 against ngtcp2 HTTP/3
         run: |
           mkdir cert
+          mkdir interop-htdocs
+          printf 'KatHttp3 ngtcp2 interoperability fixture\n' > interop-htdocs/index.html
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
             -keyout cert/server.key -out cert/server.crt
-          "$NGTCP2_SERVER" 127.0.0.1 4433 cert/server.key cert/server.crt >server.log 2>&1 &
+          "$NGTCP2_SERVER" --htdocs="$PWD/interop-htdocs" 127.0.0.1 4433 cert/server.key cert/server.crt >server.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true; cat server.log' EXIT
           sleep 1
