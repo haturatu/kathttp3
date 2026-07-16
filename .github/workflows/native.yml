@@ -74,7 +74,13 @@ jobs:
           cmake ninja-build pkg-config git openssl libev-dev libbrotli-dev
       - name: Build ngtcp2 example HTTP/3 server
         run: |
-          git clone --depth 1 --branch v1.17.0 https://github.com/ngtcp2/nghttp3.git ../nghttp3
+          # v1.17.0 is an annotated tag; fetch its resolved commit and the
+          # parser/test submodules required by nghttp3's CMake build.
+          git init ../nghttp3
+          git -C ../nghttp3 remote add origin https://github.com/ngtcp2/nghttp3.git
+          git -C ../nghttp3 fetch --depth 1 origin 06b46ec9189be3a49c78a283b625882d8a6e3237
+          git -C ../nghttp3 checkout --detach FETCH_HEAD
+          git -C ../nghttp3 submodule update --init --recursive
           cmake -S ../nghttp3 -B ../nghttp3-build -G Ninja -DCMAKE_INSTALL_PREFIX="$PWD/../h3-prefix"
           cmake --build ../nghttp3-build --parallel
           cmake --install ../nghttp3-build
