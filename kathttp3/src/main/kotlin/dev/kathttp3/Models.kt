@@ -118,6 +118,7 @@ sealed class KatHttp3Exception(message: String) : IOException(message) {
     class StreamingBufferLimitExceeded :
         KatHttp3Exception("Streaming response exceeded its configured buffer limit")
     class ConsumerStallTimeout : KatHttp3Exception("Streaming response consumer stalled")
+    class NetworkLost : KatHttp3Exception("The selected network path was lost")
     class RequestQueueFull(val origin: String) : KatHttp3Exception("Request queue is full for $origin")
     class RequestQueueTimeout(val origin: String, val timeoutMillis: Long) :
         KatHttp3Exception("Request queue timed out for $origin after $timeoutMillis ms")

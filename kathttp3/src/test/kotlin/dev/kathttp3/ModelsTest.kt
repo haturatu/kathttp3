@@ -88,6 +88,36 @@ class ModelsTest {
         assertFailsWith<IllegalArgumentException> { KatHttp3RequestPriority(urgency = -1) }
         assertFailsWith<IllegalArgumentException> { KatHttp3RequestPriority(urgency = 8) }
     }
+    @Test fun networkIdentityTrackerSuppressesStaleAndPostCloseCallbacks() {
+        val changes = mutableListOf<Pair<Long, Long>>()
+        val tracker = NetworkIdentityTracker { generation, handle -> changes += generation to handle }
+        tracker.available(100)
+        tracker.available(100)
+        tracker.lost(99)
+        tracker.available(200)
+        tracker.lost(100)
+        tracker.lost(200)
+        tracker.close()
+        tracker.available(300)
+        assertEquals(listOf(1L to 100L, 2L to 200L, 3L to 0L), changes)
+    }
+    @Test fun retryPolicyTreatsNetworkLossAsConnectionFailure() {
+        val policy = KatHttp3RetryPolicy()
+        assertEquals(
+            true,
+            policy.canRetry(
+                KatHttp3Request("GET", "https://example.com"),
+                KatHttp3Exception.NetworkLost(),
+            ),
+        )
+        assertEquals(
+            false,
+            policy.canRetry(
+                KatHttp3Request("POST", "https://example.com"),
+                KatHttp3Exception.NetworkLost(),
+            ),
+        )
+    }
     @Test fun requestSchedulerUsesEffectiveOrigin() {
         assertEquals("https://example.com:443", OriginRequestScheduler.originOf("https://EXAMPLE.com/path"))
         assertEquals("https://example.com:8443", OriginRequestScheduler.originOf("https://example.com:8443/path"))

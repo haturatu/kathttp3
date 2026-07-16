@@ -236,9 +236,14 @@ it ends with `KatHttp3Exception.RequestQueueTimeout` or
 `KatHttp3Exception.RequestQueueFull` before native stream creation.
 
 Pass an application `Context` to `KatHttp3Client` to enable its internal
-`ConnectivityManager` observer. On a network-generation change it closes the
-existing connection pool and DNS entries; it does not perform QUIC connection
-migration.
+`ConnectivityManager` observer. A confirmed QUIC connection is rebound to the
+new Android default `Network` and uses a fresh UDP socket, connection ID and
+ngtcp2 path validation while keeping its HTTP/3 streams. If no replacement
+network exists, the handshake is not confirmed, socket binding fails, or path
+validation fails, active calls end with `KatHttp3Exception.NetworkLost`; a
+configured retry policy may retry only replay-safe methods on a new connection.
+DNS is scoped to the new Android network handle and its old cache generation is
+invalidated. KatHttp3 never binds the entire application process to a network.
 
 ## Example app
 
@@ -365,15 +370,18 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   caches successful A/AAAA results for the minimum answer TTL and caches
   NXDOMAIN/NODATA only when an SOA supplies the RFC 2308 negative TTL; malformed,
   timeout, and SOA-less failures are not cached. Network changes partition
-  in-flight work and invalidate native connection state. Cancellation and DNS
+  in-flight work and invalidate the previous DNS generation. Cancellation and DNS
   deadlines discard late results. When both
   address families are available, the first resolver-ordered candidate starts
   a QUIC/TLS handshake immediately and the first opposite-family candidate
   starts after 250ms (or immediately after the first candidate fails). The
   handshake winner is selected before any HTTP request stream is opened; the
   loser socket and QUIC state are released. Additional addresses retain the
-  sequential fallback path. This is a connection-establishment race, not QUIC
-  connection migration.
+  sequential fallback path. This handshake race is separate from established
+  connection migration. Established Android connections use a network-bound
+  replacement socket and ngtcp2's immediate migration, which sends on the new
+  path while mandatory PATH_CHALLENGE/PATH_RESPONSE validation is pending; this
+  is required when the old mobile or Wi-Fi path has already disappeared.
 - JNI caches callback/resolver classes and method IDs at `JNI_OnLoad`. Native
   DNS and QUIC workers attach as daemon threads once, reuse their thread-local
   `JNIEnv*`, and detach when the worker exits; `JNIEnv*` is never shared across

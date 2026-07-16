@@ -96,7 +96,7 @@ if(NOT ANDROID)
   target_link_libraries(kathttp3 PRIVATE pthread)
 endif()
 if(ANDROID AND NOT KATHTTP3_ANALYSIS_ONLY)
-  target_link_libraries(kathttp3 PRIVATE log)
+  target_link_libraries(kathttp3 PRIVATE android log)
 endif()
 if(ANDROID)
   # NDK r27 defaults to 4 KB ELF load-segment alignment.  Android 15 devices

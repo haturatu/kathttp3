@@ -54,8 +54,14 @@ class Resolver {
 
 class GetAddrInfoResolver : public Resolver {
    public:
+    explicit GetAddrInfoResolver(std::shared_ptr<std::atomic<uint64_t>> network_handle =
+                                     std::make_shared<std::atomic<uint64_t>>(0))
+        : network_handle_(std::move(network_handle)) {}
     std::vector<ResolvedEndpoint> resolve(const std::string& host, uint16_t port,
                                           const std::atomic<bool>* stop = nullptr) override;
+
+   private:
+    std::shared_ptr<std::atomic<uint64_t>> network_handle_;
 };
 
 /* Small, network-scoped cache for resolver results. A zero lifetime disables

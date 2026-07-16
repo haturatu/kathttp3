@@ -62,7 +62,7 @@ Engine::Engine(const kathttp3_client_options& opt)
                 return out;
             });
     } else {
-        resolver_ = std::make_shared<GetAddrInfoResolver>();
+        resolver_ = std::make_shared<GetAddrInfoResolver>(android_network_handle_);
     }
     dns_cache_ = std::make_shared<DnsCache>();
     resolver_ =
@@ -85,20 +85,20 @@ void Engine::set_origin_policy(const std::string& tag) {
     policy_tag_ = tag;
 }
 
-void Engine::network_changed(uint64_t generation) {
-    std::vector<std::unique_ptr<QuicClient>> old;
-    {
-        std::lock_guard<std::mutex> lk(pool_mutex_);
-        if (generation <= network_generation_) return;
-        network_generation_ = generation;
-        resolver_network_generation_->store(generation, std::memory_order_release);
-        dns_cache_->invalidate_network(generation);
-        for (auto& entry : pool_) old.push_back(std::move(entry.second));
-        pool_.clear();
-    }
-    // Joining old workers makes their in-flight requests fail deterministically;
-    // subsequent execute calls create sockets on the newly selected network.
-    old.clear();
+void Engine::network_changed(uint64_t generation, uint64_t network_handle) {
+    std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
+    if (destroyed_.load(std::memory_order_acquire)) return;
+    std::lock_guard<std::mutex> lk(pool_mutex_);
+    if (generation <= network_generation_) return;
+    network_generation_ = generation;
+    android_network_handle_->store(network_handle, std::memory_order_release);
+    resolver_network_generation_->store(generation, std::memory_order_release);
+    dns_cache_->invalidate_network(generation);
+    // Never destroy a worker from the Android callback thread. Each client
+    // serializes migration or failure on its own QUIC event loop, preventing
+    // consume/cancel callbacks from racing a freed raw registry pointer.
+    for (auto& entry : pool_)
+        entry.second->request_network_change({generation, NetworkHandle{network_handle}});
 }
 
 QuicClient* Engine::get_or_create_client(const Url& origin) {
@@ -124,9 +124,10 @@ QuicClient* Engine::get_or_create_client(const Url& origin) {
                                 opt_.handshake_timeout_ms, opt_.response_headers_timeout_ms,
                                 opt_.read_timeout_ms,      opt_.write_timeout_ms,
                                 opt_.call_timeout_ms,      opt_.consumer_stall_timeout_ms};
-    auto qc = std::make_unique<QuicClient>(this, tls_ctx_, origin, resolver_, opt_.enable_0rtt != 0,
-                                           timeouts, opt_.quic_version, qlog_path_prefix_,
-                                           qlog_sink_cb_, qlog_sink_userdata_);
+    auto qc = std::make_unique<QuicClient>(
+        this, tls_ctx_, origin, resolver_, opt_.enable_0rtt != 0, timeouts, opt_.quic_version,
+        qlog_path_prefix_, qlog_sink_cb_, qlog_sink_userdata_,
+        android_network_handle_->load(std::memory_order_acquire));
     QuicClient* p = qc.get();
     pool_.emplace(key, std::move(qc));
     return p;
@@ -177,6 +178,7 @@ void Engine::execute(kathttp3_request* req, int64_t request_id, kathttp3_event_c
 }
 
 int Engine::consume(int64_t request_id, size_t bytes) {
+    std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     QuicClient* c = nullptr;
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -189,6 +191,7 @@ int Engine::consume(int64_t request_id, size_t bytes) {
 
 int Engine::append_request_body(int64_t request_id, const uint8_t* data, size_t len,
                                 bool finished) {
+    std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     QuicClient* c = nullptr;
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -236,8 +239,9 @@ void Engine::destroy() {
         for (auto& kv : pool_) clients.push_back(std::move(kv.second));
         pool_.clear();
     }
-    lifecycle.unlock();
-    // clients are destructed (threads joined) when `clients` leaves scope.
+    // Keep lifecycle exclusion while workers are joined. consume(), request
+    // body append and cancel otherwise could fetch a registry raw pointer and
+    // call it while this vector destroys the owning QuicClient.
     clients.clear();
 
     std::vector<std::pair<int64_t, kathttp3_event_callback>> pending;
@@ -252,6 +256,7 @@ void Engine::destroy() {
         }
         registry_.clear();
     }
+    lifecycle.unlock();
     for (size_t i = 0; i < pending.size(); ++i) {
         if (!pending[i].second) continue;
         std::lock_guard<std::recursive_mutex> callback_lock(callback_mutex_);
@@ -550,11 +555,16 @@ void kathttp3_client_set_origin_policy(kathttp3_client* client, const char* poli
 }
 
 void kathttp3_client_network_changed(kathttp3_client* client, uint64_t generation) {
+    kathttp3_client_network_changed2(client, generation, 0);
+}
+
+void kathttp3_client_network_changed2(kathttp3_client* client, uint64_t generation,
+                                      uint64_t network_handle) {
     if (!client) return;
     try {
-        reinterpret_cast<kathttp3::Engine*>(client)->network_changed(generation);
+        reinterpret_cast<kathttp3::Engine*>(client)->network_changed(generation, network_handle);
     } catch (...) {
-        KATHTTP3_LOG_WARN("kathttp3_client_network_changed caught a native exception\n");
+        KATHTTP3_LOG_WARN("kathttp3_client_network_changed2 caught a native exception\n");
     }
 }
 

@@ -4,6 +4,9 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#if defined(__ANDROID__)
+#include <android/multinetwork.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -389,7 +392,17 @@ std::vector<ResolvedEndpoint> GetAddrInfoResolver::resolve(const std::string& ho
         hints.ai_protocol = IPPROTO_UDP;
         std::string port_str = std::to_string(port);
         addrinfo* res = nullptr;
-        if (getaddrinfo(host.c_str(), port_str.c_str(), &hints, &res) != 0) {
+        int result = 0;
+#if defined(__ANDROID__)
+        const uint64_t network_handle = network_handle_->load(std::memory_order_acquire);
+        result = network_handle == 0
+                     ? getaddrinfo(host.c_str(), port_str.c_str(), &hints, &res)
+                     : android_getaddrinfofornetwork(static_cast<net_handle_t>(network_handle),
+                                                     host.c_str(), port_str.c_str(), &hints, &res);
+#else
+        result = getaddrinfo(host.c_str(), port_str.c_str(), &hints, &res);
+#endif
+        if (result != 0) {
             KATHTTP3_LOG_ERR("getaddrinfo failed for %s:%u\n", host.c_str(), port);
             return;
         }

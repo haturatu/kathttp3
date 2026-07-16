@@ -39,7 +39,7 @@ class Engine {
     int consume(int64_t request_id, size_t bytes);
     int append_request_body(int64_t request_id, const uint8_t* data, size_t len, bool finished);
     void destroy();
-    void network_changed(uint64_t generation);
+    void network_changed(uint64_t generation, uint64_t network_handle);
 
     /* Called from QuicClient worker threads. */
     void on_job_headers(Job* job, int status, const HeaderList& headers);
@@ -77,6 +77,8 @@ class Engine {
     std::string policy_tag_;
     uint64_t network_generation_ = 0;
     std::shared_ptr<std::atomic<uint64_t>> resolver_network_generation_ =
+        std::make_shared<std::atomic<uint64_t>>(0);
+    std::shared_ptr<std::atomic<uint64_t>> android_network_handle_ =
         std::make_shared<std::atomic<uint64_t>>(0);
     kathttp3_client_options opt_{};
     std::string qlog_path_prefix_;

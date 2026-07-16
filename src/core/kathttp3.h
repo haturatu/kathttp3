@@ -50,6 +50,7 @@ typedef enum {
     KATHTTP3_ERR_WRITE_TIMEOUT = -20,
     KATHTTP3_ERR_CALL_TIMEOUT = -21,
     KATHTTP3_ERR_CONSUMER_STALL = -22, /* local streaming consumer stopped */
+    KATHTTP3_ERR_NETWORK_LOST = -23,   /* selected Android network/path was lost */
 } kathttp3_error;
 
 /* How the peer certificate is verified. Default is PLATFORM. */
@@ -206,6 +207,10 @@ KATHTTP3_API void kathttp3_client_destroy(kathttp3_client* client);
 KATHTTP3_API void kathttp3_client_set_origin_policy(kathttp3_client* client,
                                                     const char* policy_tag);
 KATHTTP3_API void kathttp3_client_network_changed(kathttp3_client* client, uint64_t generation);
+/* Android-aware variant. `network_handle` is Network.getNetworkHandle(), or
+ * zero when no replacement default network is currently available. */
+KATHTTP3_API void kathttp3_client_network_changed2(kathttp3_client* client, uint64_t generation,
+                                                   uint64_t network_handle);
 
 /* ------------------------------------------------------------------ *
  * Request

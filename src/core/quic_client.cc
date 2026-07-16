@@ -25,6 +25,7 @@
 #include "precommit_failover.h"
 #include "request.h"
 #include "time_util.h"
+#include "udp_error.h"
 
 #ifndef NGTCP2_MAX_PKTLEN
 #define NGTCP2_MAX_PKTLEN 2048
@@ -272,8 +273,13 @@ int update_key_cb(ngtcp2_conn*, uint8_t*, uint8_t*, ngtcp2_crypto_aead_ctx*, uin
 }
 
 int path_validation_cb(ngtcp2_conn*, uint32_t, const ngtcp2_path*, const ngtcp2_path*,
-                       ngtcp2_path_validation_result, void* user_data) {
-    (void)user_data;
+                       ngtcp2_path_validation_result result, void* user_data) {
+    static_cast<QuicClient*>(user_data)->on_path_validation(result);
+    return 0;
+}
+
+int candidate_path_validation_cb(ngtcp2_conn*, uint32_t, const ngtcp2_path*, const ngtcp2_path*,
+                                 ngtcp2_path_validation_result, void*) {
     return 0;
 }
 
@@ -525,7 +531,7 @@ constexpr ngtcp2_callbacks kCandidateCallbacks = {
     .get_new_connection_id = candidate_get_new_connection_id_cb,
     .remove_connection_id = [](ngtcp2_conn*, const ngtcp2_cid*, void*) -> int { return 0; },
     .update_key = update_key_cb,
-    .path_validation = path_validation_cb,
+    .path_validation = candidate_path_validation_cb,
     .select_preferred_addr = select_preferred_addr_cb,
     .stream_reset = candidate_stream_reset_cb,
     .extend_max_stream_data = candidate_extend_max_stream_data_cb,
@@ -551,7 +557,8 @@ constexpr ngtcp2_callbacks kCandidateCallbacks = {
 QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& origin,
                        std::shared_ptr<Resolver> resolver, bool enable_0rtt, QuicTimeouts timeouts,
                        uint32_t quic_version, std::string qlog_path_prefix,
-                       kathttp3_qlog_sink_cb qlog_sink_cb, void* qlog_sink_userdata)
+                       kathttp3_qlog_sink_cb qlog_sink_cb, void* qlog_sink_userdata,
+                       uint64_t network_handle)
     : engine_(engine),
       tls_ctx_(tls_ctx),
       origin_(origin),
@@ -562,7 +569,8 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
       qlog_path_prefix_(std::move(qlog_path_prefix)),
       qlog_sink_cb_(qlog_sink_cb),
       qlog_sink_userdata_(qlog_sink_userdata),
-      connection_instance_id_(next_connection_instance_id.fetch_add(1, std::memory_order_relaxed)) {
+      connection_instance_id_(next_connection_instance_id.fetch_add(1, std::memory_order_relaxed)),
+      current_network_handle_(network_handle) {
     timeouts_.dns_ms = timeouts_.dns_ms ? timeouts_.dns_ms : timeouts_.connect_ms;
     timeouts_.handshake_ms = timeouts_.handshake_ms ? timeouts_.handshake_ms : timeouts_.connect_ms;
     timeouts_.response_headers_ms =
@@ -646,6 +654,15 @@ void QuicClient::submit_job(std::unique_ptr<Job> job) {
     wakeup();
 }
 
+void QuicClient::request_network_change(NetworkChangeRequest request) {
+    // Engine serializes and filters these requests by generation. Publish the
+    // handle first so an event-loop acquire of the generation can never see a
+    // new generation paired with the previous network.
+    requested_network_handle_.store(request.network.value, std::memory_order_relaxed);
+    requested_network_generation_.store(request.generation, std::memory_order_release);
+    wakeup();
+}
+
 void QuicClient::update_keep_alive() {
     if (!conn_) return;
     bool active = false;
@@ -694,6 +711,11 @@ bool QuicClient::prepare_endpoints() {
         supplied_addresses = pending_jobs_.front()->request->addresses;
     }
     const uint64_t started = now_ns();
+    if (requested_network_generation_.load(std::memory_order_acquire) >
+        applied_network_generation_) {
+        terminal_error_ = KATHTTP3_ERR_NETWORK_LOST;
+        return false;
+    }
     if (!supplied_addresses.empty()) {
         for (const auto& a : supplied_addresses) {
             int family = a.first.find(':') == std::string::npos ? AF_INET : AF_INET6;
@@ -720,6 +742,12 @@ bool QuicClient::prepare_endpoints() {
         // do not depend on a resolver implementation cooperating promptly.
         std::unique_lock<std::mutex> lock(result->mutex);
         while (!result->complete) {
+            if (requested_network_generation_.load(std::memory_order_acquire) >
+                applied_network_generation_) {
+                cancel_resolve(cancelled);
+                terminal_error_ = KATHTTP3_ERR_NETWORK_LOST;
+                return false;
+            }
             if (stop_.load(std::memory_order_acquire) || !has_live_pending_job()) {
                 cancel_resolve(cancelled);
                 return false;
@@ -752,7 +780,7 @@ bool QuicClient::connect_to_endpoint() {
 }
 
 bool QuicClient::connect_to_endpoint(const ResolvedEndpoint& ep) {
-    if (!sock_.open(ep.family)) return false;
+    if (!sock_.open(ep.family, NetworkHandle{current_network_handle_})) return false;
     sock_.set_nonblocking();
     if (!sock_.connect(ep)) {
         sock_.close();
@@ -879,7 +907,8 @@ bool QuicClient::setup_connection() {
 
 bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
     auto candidate = std::make_unique<HandshakeCandidate>(this, endpoint);
-    if (!candidate->sock.open(endpoint.family)) return false;
+    if (!candidate->sock.open(endpoint.family, NetworkHandle{current_network_handle_}))
+        return false;
     candidate->sock.set_nonblocking();
     if (!candidate->sock.connect(endpoint)) return false;
 
@@ -1113,6 +1142,11 @@ bool QuicClient::run_handshake_race() {
     };
 
     while (!stop_.load(std::memory_order_acquire)) {
+        if (requested_network_generation_.load(std::memory_order_acquire) >
+            applied_network_generation_) {
+            terminal_error_ = KATHTTP3_ERR_NETWORK_LOST;
+            return false;
+        }
         const uint64_t now = now_ns();
         if (!fallback_started && (elapsed_ns(now, race_started) >= kFamilyFallbackDelayNs ||
                                   handshake_candidates_.front()->failed)) {
@@ -1223,6 +1257,7 @@ void QuicClient::run() {
              * other non-idempotent methods. */
             int final_loop_result = event_loop();
             if (final_loop_result != 0 && !stop_.load(std::memory_order_acquire) &&
+                terminal_error_ != KATHTTP3_ERR_NETWORK_LOST &&
                 can_fail_over_before_request_commit()) {
                 while (restart_precommit_fallback()) {
                     final_loop_result = event_loop();
@@ -1231,9 +1266,10 @@ void QuicClient::run() {
                 }
             }
             if (final_loop_result != 0 && !stop_.load(std::memory_order_acquire) &&
-                !can_fail_over_before_request_commit()) {
+                (terminal_error_ == KATHTTP3_ERR_NETWORK_LOST ||
+                 !can_fail_over_before_request_commit())) {
                 const int tls_error = tls_session_.lastFailure().code;
-                fail_all_pending(tls_error != 0 ? tls_error : KATHTTP3_ERR_QUIC);
+                fail_all_pending(tls_error != 0 ? tls_error : terminal_error_);
             }
             if (conn_) {
                 ngtcp2_conn_del(conn_);
@@ -1248,8 +1284,15 @@ void QuicClient::run() {
          * attempts and retain the old sequential path as a last-resort
          * fallback for additional resolver results. */
         handshake_candidates_.clear();
+        if (terminal_error_ == KATHTTP3_ERR_NETWORK_LOST) {
+            fail_all_pending(terminal_error_);
+            closed_.store(true);
+            state_.store(ConnectionState::Closed);
+            return;
+        }
     }
 
+    bool connection_failed = false;
     while (endpoint_idx_ < endpoints_.size() && !stop_ && !handshake_confirmed_) {
         if (timeouts_.connect_ms != 0 &&
             deadline_elapsed_ns(now_ns(), connection_started_at_,
@@ -1265,10 +1308,12 @@ void QuicClient::run() {
         }
         handshake_started_at_ = now_ns();
         if (event_loop() != 0) {
+            connection_failed = true;
             // handshake failure / fatal. A certificate / hostname / trust
             // failure is not endpoint-specific, so stop retrying (the
             // captured code is already the right one).
             int code = tls_session_.lastFailure().code;
+            if (terminal_error_ == KATHTTP3_ERR_NETWORK_LOST) break;
             if (code == KATHTTP3_ERR_CERTIFICATE_VERIFY || code == KATHTTP3_ERR_HOSTNAME_MISMATCH ||
                 code == KATHTTP3_ERR_NO_TRUST_PROVIDER) {
                 break;
@@ -1279,11 +1324,15 @@ void QuicClient::run() {
                 conn_ = nullptr;
             }
             sock_.close();
+            connection_failed = false;
             continue;
         }
         break;
     }
-    if (!handshake_confirmed_) {
+    if (connection_failed && handshake_confirmed_) {
+        const int code = tls_session_.lastFailure().code;
+        fail_all_pending(code != 0 ? code : terminal_error_);
+    } else if (!handshake_confirmed_) {
         int code = tls_session_.lastFailure().code;
         fail_all_pending(code != 0 ? code : terminal_error_);
     }
@@ -1303,6 +1352,7 @@ int QuicClient::event_loop() {
     last_active_ = now_ns();
 
     while (!stop_) {
+        if (!process_network_change()) return -1;
         uint64_t now = now_ns();
         if (!handshake_confirmed_.load() && timeouts_.handshake_ms != 0 &&
             deadline_elapsed_ns(now, handshake_started_at_,
@@ -1318,20 +1368,32 @@ int QuicClient::event_loop() {
         pfds[1].events = POLLIN;
         int nfd = wakeup_fd_ != -1 ? 2 : 1;
         int pr = poll(pfds, nfd, timeout_ms);
-        if (pr < 0 && errno != EINTR) {
+        if (pr < 0 && errno == EINTR) continue;
+        if (pr < 0) {
+            (void)record_socket_error(errno, "poll");
             return -1;
         }
         now = now_ns();
 
-        if (wakeup_fd_ != -1 && (pfds[1].revents & POLLIN)) {
-            drain_wakeup();
-            process_wakeup();
+        if (pfds[0].revents & static_cast<short>(POLLERR | POLLHUP | POLLNVAL)) {
+            terminal_error_ = KATHTTP3_ERR_NETWORK_LOST;
+            KATHTTP3_LOG_WARN("UDP poll path failure connection=%llu revents=0x%x\n",
+                              static_cast<unsigned long long>(connection_instance_id_),
+                              static_cast<unsigned int>(pfds[0].revents));
+            return -1;
         }
         if (pfds[0].revents & POLLIN) {
             for (int i = 0; i < 16; ++i) {
                 UdpReceiveDatagram datagram{pkt, sizeof(pkt)};
                 ssize_t n = sock_.recv(datagram);
-                if (n <= 0) break;
+                if (n < 0) {
+                    const int error = errno;
+                    if (error == EINTR) continue;
+                    if (error == EAGAIN || error == EWOULDBLOCK) break;
+                    (void)record_socket_error(error, "UDP receive");
+                    return -1;
+                }
+                if (n == 0) break;
                 ngtcp2_pkt_info pi{};
                 pi.ecn = datagram.ecn;
                 int rv = ngtcp2_conn_read_pkt_versioned(
@@ -1344,7 +1406,18 @@ int QuicClient::event_loop() {
             }
         }
         if (pfds[0].revents & POLLOUT) {
-            if (!sock_.flush_send_queue()) return -1;
+            if (!sock_.flush_send_queue()) {
+                (void)record_socket_error(errno, "UDP queue flush");
+                return -1;
+            }
+        }
+        // Migrate only after all events associated with the descriptor polled
+        // above are consumed. Swapping the socket before this point could
+        // interpret stale revents as belonging to the replacement fd.
+        if (wakeup_fd_ != -1 && (pfds[1].revents & POLLIN)) {
+            drain_wakeup();
+            process_wakeup();
+            if (!process_network_change()) return -1;
         }
 
         int rv = ngtcp2_conn_handle_expiry(conn_, now);
@@ -1360,6 +1433,7 @@ int QuicClient::event_loop() {
         try_submit_pending();
         update_keep_alive();
         write_pending();
+        if (socket_failed_) return -1;
 
         // Keep the QUIC connection alive so it can be reused for more
         // requests within its idle timeout.  ngtcp2 ends the connection
@@ -1517,6 +1591,100 @@ void QuicClient::drain_wakeup() {
 
 void QuicClient::on_readable() {}
 
+bool QuicClient::record_socket_error(int error, const char* operation) {
+    if (udp_error_is_temporary(error)) return false;
+    terminal_error_ =
+        udp_error_is_network_lost(error) ? KATHTTP3_ERR_NETWORK_LOST : KATHTTP3_ERR_QUIC;
+    socket_failed_ = true;
+    KATHTTP3_LOG_WARN("%s failed connection=%llu errno=%d (%s)\n", operation,
+                      static_cast<unsigned long long>(connection_instance_id_), error,
+                      strerror(error));
+    return true;
+}
+
+void QuicClient::send_packet(const uint8_t* data, size_t len) {
+    const ssize_t sent = sock_.send({data, len, 0});
+    if (sent != static_cast<ssize_t>(len)) {
+        const int error = errno;
+        (void)record_socket_error(error, "UDP send");
+        return;
+    }
+    bytes_sent_in_quantum_ += len;
+    sent_packet_in_quantum_ = true;
+}
+
+bool QuicClient::process_network_change() {
+    const uint64_t generation = requested_network_generation_.load(std::memory_order_acquire);
+    const uint64_t network_handle = requested_network_handle_.load(std::memory_order_acquire);
+    const NetworkChangeRequest request{generation, NetworkHandle{network_handle}};
+    const NetworkChangeAction action = network_change_action(
+        request, applied_network_generation_, handshake_confirmed_.load(std::memory_order_acquire));
+    if (action == NetworkChangeAction::None) return true;
+    applied_network_generation_ = generation;
+    if (action == NetworkChangeAction::Reconnect || !conn_ || peer_endpoint_.family == 0) {
+        terminal_error_ = KATHTTP3_ERR_NETWORK_LOST;
+        KATHTTP3_LOG_INFO("network generation=%llu requires reconnect connection=%llu\n",
+                          static_cast<unsigned long long>(generation),
+                          static_cast<unsigned long long>(connection_instance_id_));
+        return false;
+    }
+
+    UdpSocket replacement;
+    if (!replacement.open(peer_endpoint_.family, NetworkHandle{network_handle})) {
+        terminal_error_ = KATHTTP3_ERR_NETWORK_LOST;
+        return false;
+    }
+    replacement.set_nonblocking();
+    if (!replacement.connect(peer_endpoint_)) {
+        terminal_error_ = KATHTTP3_ERR_NETWORK_LOST;
+        return false;
+    }
+    sockaddr_storage new_local{};
+    sockaddr_storage new_remote{};
+    socklen_t new_local_len = 0;
+    socklen_t new_remote_len = 0;
+    if (!replacement.local_address(new_local, new_local_len) ||
+        !replacement.remote_address(new_remote, new_remote_len)) {
+        terminal_error_ = KATHTTP3_ERR_NETWORK_LOST;
+        return false;
+    }
+
+    const bool local_changed =
+        path_.local.addrlen != new_local_len ||
+        std::memcmp(&local_addr_, &new_local, static_cast<size_t>(new_local_len)) != 0;
+    if (local_changed) {
+        ngtcp2_path new_path{};
+        new_path.local.addr = reinterpret_cast<ngtcp2_sockaddr*>(&new_local);
+        new_path.local.addrlen = new_local_len;
+        new_path.remote.addr = reinterpret_cast<ngtcp2_sockaddr*>(&new_remote);
+        new_path.remote.addrlen = new_remote_len;
+        const int rv = ngtcp2_conn_initiate_immediate_migration(conn_, &new_path, now_ns());
+        if (rv != 0) {
+            KATHTTP3_LOG_WARN("ngtcp2 migration failed connection=%llu: %s\n",
+                              static_cast<unsigned long long>(connection_instance_id_),
+                              ngtcp2_strerror(rv));
+            terminal_error_ = KATHTTP3_ERR_NETWORK_LOST;
+            return false;
+        }
+        migration_in_progress_ = true;
+    }
+
+    sock_ = std::move(replacement);
+    std::memcpy(&local_addr_, &new_local, static_cast<size_t>(new_local_len));
+    std::memcpy(&remote_addr_, &new_remote, static_cast<size_t>(new_remote_len));
+    path_.local.addr = reinterpret_cast<ngtcp2_sockaddr*>(&local_addr_);
+    path_.local.addrlen = new_local_len;
+    path_.remote.addr = reinterpret_cast<ngtcp2_sockaddr*>(&remote_addr_);
+    path_.remote.addrlen = new_remote_len;
+    current_network_handle_ = network_handle;
+    socket_failed_ = false;
+    KATHTTP3_LOG_INFO("network migration started connection=%llu generation=%llu validation=%s\n",
+                      static_cast<unsigned long long>(connection_instance_id_),
+                      static_cast<unsigned long long>(generation),
+                      local_changed ? "pending" : "rebinding");
+    return true;
+}
+
 void QuicClient::begin_send_quantum() {
     bytes_sent_in_quantum_ = 0;
     sent_packet_in_quantum_ = false;
@@ -1552,7 +1720,11 @@ void QuicClient::write_pending() {
             return;
         }
         if (n == 0) break;
-        sock_.send({pkt, static_cast<size_t>(n), pi.ecn});
+        const ssize_t sent = sock_.send({pkt, static_cast<size_t>(n), pi.ecn});
+        if (sent != n) {
+            (void)record_socket_error(errno, "UDP QUIC send");
+            break;
+        }
         bytes_sent_in_quantum_ += static_cast<size_t>(n);
         sent_packet_in_quantum_ = true;
         if (send_quantum_exhausted()) break;
@@ -1792,6 +1964,22 @@ void QuicClient::on_goaway(int64_t stream_id) {
     }
     for (auto* job : rejected) notify_job_error(job, KATHTTP3_ERR_HTTP3);
     wakeup();
+}
+
+void QuicClient::on_path_validation(ngtcp2_path_validation_result result) {
+    if (!migration_in_progress_) return;
+    migration_in_progress_ = false;
+    if (result == NGTCP2_PATH_VALIDATION_RESULT_SUCCESS) {
+        KATHTTP3_LOG_INFO("network migration validated connection=%llu generation=%llu\n",
+                          static_cast<unsigned long long>(connection_instance_id_),
+                          static_cast<unsigned long long>(applied_network_generation_));
+        return;
+    }
+    terminal_error_ = KATHTTP3_ERR_NETWORK_LOST;
+    socket_failed_ = true;
+    KATHTTP3_LOG_WARN("network migration validation failed connection=%llu result=%d\n",
+                      static_cast<unsigned long long>(connection_instance_id_),
+                      static_cast<int>(result));
 }
 
 bool QuicClient::on_stream_reset(int64_t stream_id, uint64_t app_error_code) {

@@ -5,6 +5,9 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#if defined(__ANDROID__)
+#include <android/multinetwork.h>
+#endif
 #if defined(__linux__)
 #include <linux/udp.h>
 #endif
@@ -69,13 +72,23 @@ void UdpSocket::close() {
     }
 }
 
-bool UdpSocket::open(int family) {
+bool UdpSocket::open(int family, NetworkHandle network) {
     family_ = family;
     fd_ = ::socket(family, SOCK_DGRAM, IPPROTO_UDP);
     if (fd_ == -1) {
         KATHTTP3_LOG_ERR("socket() failed: %s\n", strerror(errno));
         return false;
     }
+#if defined(__ANDROID__)
+    if (network.value != 0 &&
+        android_setsocknetwork(static_cast<net_handle_t>(network.value), fd_) != 0) {
+        KATHTTP3_LOG_WARN("android_setsocknetwork failed: %s\n", strerror(errno));
+        close();
+        return false;
+    }
+#else
+    (void)network;
+#endif
     enable_ecn(fd_, family);
     return true;
 }
@@ -137,6 +150,16 @@ bool UdpSocket::connect(const ResolvedEndpoint& ep) {
     }
     connected_ = true;
     return true;
+}
+
+bool UdpSocket::local_address(sockaddr_storage& address, socklen_t& length) const {
+    length = sizeof(address);
+    return fd_ != -1 && getsockname(fd_, reinterpret_cast<sockaddr*>(&address), &length) == 0;
+}
+
+bool UdpSocket::remote_address(sockaddr_storage& address, socklen_t& length) const {
+    length = sizeof(address);
+    return fd_ != -1 && getpeername(fd_, reinterpret_cast<sockaddr*>(&address), &length) == 0;
 }
 
 ssize_t UdpSocket::send_now(const uint8_t* data, size_t len, unsigned int ecn) {

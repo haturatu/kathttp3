@@ -21,5 +21,5 @@ internal object NativeBridge {
     external fun consume(handle: Long, id: Long, bytes: Long): Boolean
     external fun appendRequestBody(handle: Long, id: Long, data: ByteArray?, finished: Boolean): Int
     external fun cancel(handle: Long, id: Long)
-    external fun networkChanged(handle: Long, generation: Long)
+    external fun networkChanged(handle: Long, generation: Long, networkHandle: Long)
 }

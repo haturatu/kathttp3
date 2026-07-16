@@ -15,10 +15,12 @@
 #include "handshake_race.h"
 #include "handshake_stream_buffer.h"
 #include "header_list.h"
+#include "network_change.h"
 #include "precommit_failover.h"
 #include "redirect.h"
 #include "request_body_offset.h"
 #include "time_util.h"
+#include "udp_error.h"
 #include "url.h"
 
 using namespace kathttp3;
@@ -119,7 +121,7 @@ int main() {
         auto waiter_cancelled = std::make_shared<std::atomic<bool>>(false);
         flight_cancellations.push_back(waiter_cancelled);
         return resolve_async(single_flight_resolver, "RR2.GoogleVideo.COM.", 443, waiter_cancelled,
-                             [&](std::vector<ResolvedEndpoint> result) {
+                             [&](const std::vector<ResolvedEndpoint>& result) {
                                  std::lock_guard<std::mutex> lock(flight_mutex);
                                  if (result.size() == 1 && result.front().ip == "192.0.2.10") {
                                      ++completed_waiters;
@@ -316,6 +318,18 @@ int main() {
     assert(!connection_state_accepts_new_jobs(ConnectionState::Draining, false));
     assert(!connection_state_accepts_new_jobs(ConnectionState::Closing, false));
     assert(!connection_state_accepts_new_jobs(ConnectionState::Active, true));
+    assert(network_change_action({1, NetworkHandle{42}}, 1, true) == NetworkChangeAction::None);
+    assert(network_change_action({2, NetworkHandle{0}}, 1, true) == NetworkChangeAction::Reconnect);
+    assert(network_change_action({2, NetworkHandle{42}}, 1, false) ==
+           NetworkChangeAction::Reconnect);
+    assert(network_change_action({2, NetworkHandle{42}}, 1, true) == NetworkChangeAction::Migrate);
+    assert(udp_error_is_temporary(EAGAIN));
+    assert(udp_error_is_temporary(ENOBUFS));
+    assert(udp_error_is_network_lost(ENETUNREACH));
+    assert(udp_error_is_network_lost(EHOSTUNREACH));
+    assert(udp_error_is_network_lost(ENETDOWN));
+    assert(udp_error_is_network_lost(ECONNRESET));
+    assert(!udp_error_is_network_lost(EINVAL));
 
     // Race selection is based on the recorded 1-RTT-ready transition, not
     // whichever candidate happens to be processed first by poll().

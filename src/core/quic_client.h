@@ -18,6 +18,7 @@
 
 #include "connection_state.h"
 #include "dns.h"
+#include "network_change.h"
 #include "request.h"
 #include "response.h"
 #include "tls.h"
@@ -100,7 +101,8 @@ class QuicClient {
     QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& origin,
                std::shared_ptr<Resolver> resolver, bool enable_0rtt, QuicTimeouts timeouts,
                uint32_t quic_version, std::string qlog_path_prefix,
-               kathttp3_qlog_sink_cb qlog_sink_cb, void* qlog_sink_userdata);
+               kathttp3_qlog_sink_cb qlog_sink_cb, void* qlog_sink_userdata,
+               uint64_t network_handle);
     ~QuicClient();
 
     QuicClient(const QuicClient&) = delete;
@@ -112,6 +114,7 @@ class QuicClient {
     /* Called from any thread. Marks the job cancelled; the loop stops
      * delivering its events and resets the stream if open. */
     void cancel_job(int64_t job_id);
+    void request_network_change(NetworkChangeRequest request);
 
     bool is_ready() const {
         return handshake_confirmed_.load();
@@ -146,11 +149,7 @@ class QuicClient {
     ngtcp2_path& path() {
         return path_;
     }
-    void send_packet(const uint8_t* data, size_t len) {
-        sock_.send({data, len, 0});
-        bytes_sent_in_quantum_ += len;
-        sent_packet_in_quantum_ = true;
-    }
+    void send_packet(const uint8_t* data, size_t len);
     void begin_send_quantum();
     bool send_quantum_exhausted() const;
     void finish_send_quantum(ngtcp2_tstamp ts);
@@ -183,6 +182,7 @@ class QuicClient {
     void generate_reset_token(uint8_t* token, const ngtcp2_cid* cid);
     void on_early_data_rejected();
     void on_goaway(int64_t stream_id);
+    void on_path_validation(ngtcp2_path_validation_result result);
     void try_submit_pending();
     void write_pending();
     void note_write_progress(int64_t stream_id);
@@ -213,6 +213,8 @@ class QuicClient {
     void drain_wakeup();
     void on_readable();
     void process_wakeup();
+    bool process_network_change();
+    bool record_socket_error(int error, const char* operation);
     void expire_requests(uint64_t now);
     void update_keep_alive();
     bool configure_early_data(ngtcp2_conn* conn, TlsClientContext::ResumptionState* resumption);
@@ -252,6 +254,12 @@ class QuicClient {
     std::atomic<bool> handshake_confirmed_{false};
     std::atomic<bool> stop_{false};
     std::atomic<ConnectionState> state_{ConnectionState::Connecting};
+    std::atomic<uint64_t> requested_network_generation_{0};
+    std::atomic<uint64_t> requested_network_handle_{0};
+    uint64_t applied_network_generation_ = 0;
+    uint64_t current_network_handle_ = 0;
+    bool migration_in_progress_ = false;
+    bool socket_failed_ = false;
 
     UdpSocket sock_;
     int wakeup_fd_ = -1;

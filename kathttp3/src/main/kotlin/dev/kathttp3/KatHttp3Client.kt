@@ -46,7 +46,13 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
             (config.qlogPathPrefix == null || config.qlogLogcatEnabled), config.caCertificateFile,
         config.qlogPathPrefix, config.resolver,
     ).also { check(it != 0L) }
-    private val networkMonitor = applicationContext?.let { AndroidNetworkMonitor(it) { generation -> synchronized(nativeLock) { if (!closed.get()) NativeBridge.networkChanged(handle, generation) } } }
+    private val networkMonitor = applicationContext?.let {
+        AndroidNetworkMonitor(it) { generation, networkHandle ->
+            synchronized(nativeLock) {
+                if (!closed.get()) NativeBridge.networkChanged(handle, generation, networkHandle)
+            }
+        }
+    }
 
     suspend fun execute(request: KatHttp3Request): KatHttp3Response {
         requestScheduler.acquire(request.url, request.priority).use {
@@ -334,6 +340,7 @@ private fun mapError(code: Int): KatHttp3Exception = when (code) {
     -20 -> KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Write)
     -21 -> KatHttp3Exception.Timeout(KatHttp3TimeoutPhase.Call)
     -22 -> KatHttp3Exception.ConsumerStallTimeout()
+    -23 -> KatHttp3Exception.NetworkLost()
     -13 -> KatHttp3Exception.Closed()
     else -> KatHttp3Exception.Native(code)
 }

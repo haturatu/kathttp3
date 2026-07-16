@@ -420,9 +420,10 @@ extern "C" JNIEXPORT void JNICALL Java_dev_kathttp3_internal_NativeBridge_cancel
     if (auto* p = checked(h)) kathttp3_client_cancel(p, id);
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_kathttp3_internal_NativeBridge_networkChanged(
-    JNIEnv*, jobject, jlong h, jlong generation) {
+    JNIEnv*, jobject, jlong h, jlong generation, jlong network_handle) {
     if (auto* p = checked(h); p && generation > 0)
-        kathttp3_client_network_changed(p, static_cast<uint64_t>(generation));
+        kathttp3_client_network_changed2(p, static_cast<uint64_t>(generation),
+                                         static_cast<uint64_t>(network_handle));
 }
 
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp3_internal_NativeBridge_execute(

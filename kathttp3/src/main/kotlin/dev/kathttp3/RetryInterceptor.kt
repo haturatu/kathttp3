@@ -21,7 +21,7 @@ data class KatHttp3RetryPolicy(
 }
 
 private fun isSafeConnectionRetry(error: Throwable): Boolean = when (error) {
-    is QuicTransportException, is KatHttp3Exception.Dns -> true
+    is QuicTransportException, is KatHttp3Exception.Dns, is KatHttp3Exception.NetworkLost -> true
     is KatHttp3Exception.Timeout -> error.phase in setOf(KatHttp3TimeoutPhase.Dns, KatHttp3TimeoutPhase.Connect, KatHttp3TimeoutPhase.Handshake)
     else -> false
 }

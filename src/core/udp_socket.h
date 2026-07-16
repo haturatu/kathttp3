@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "dns.h"
+#include "network_change.h"
 
 namespace kathttp3 {
 
@@ -39,7 +40,7 @@ class UdpSocket {
     UdpSocket& operator=(UdpSocket&& other) noexcept;
 
     /* Create a socket for the given address family (AF_INET/AF_INET6). */
-    bool open(int family);
+    bool open(int family, NetworkHandle network = {});
     void close();
 
     int fd() const {
@@ -48,6 +49,9 @@ class UdpSocket {
 
     /* Connect to a resolved endpoint (enables send/recv without peer addr). */
     bool connect(const ResolvedEndpoint& ep);
+
+    bool local_address(sockaddr_storage& address, socklen_t& length) const;
+    bool remote_address(sockaddr_storage& address, socklen_t& length) const;
 
     /* Bind to any local address of the socket's family. */
     bool bind_any();
