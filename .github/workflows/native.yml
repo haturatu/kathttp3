@@ -69,9 +69,13 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - name: Install HTTP/3 build prerequisites
-        run: >-
-          sudo apt-get update -qq && sudo apt-get install -y
-          cmake ninja-build pkg-config git openssl libev-dev libbrotli-dev
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            cmake ninja-build pkg-config git openssl libev-dev libbrotli-dev g++-14
       - name: Build ngtcp2 example HTTP/3 server
         run: |
           # v1.17.0 is an annotated tag; fetch its resolved commit and the
@@ -97,7 +101,7 @@ jobs:
           grep -q '^#define OPENSSL_IS_BORINGSSL' ../boringssl/include/openssl/base.h
           grep -q 'SSL_set_quic_early_data_context' ../boringssl/include/openssl/ssl.h
           git clone --depth 1 --branch v1.24.0 --recurse-submodules https://github.com/ngtcp2/ngtcp2.git ../ngtcp2
-          cmake -S ../ngtcp2 -B ../ngtcp2-build -G Ninja -DCMAKE_INSTALL_PREFIX="$PWD/../quic-prefix" -DENABLE_EXAMPLES=ON -DENABLE_OPENSSL=OFF -DENABLE_BORINGSSL=ON \
+          cmake -S ../ngtcp2 -B ../ngtcp2-build -G Ninja -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_INSTALL_PREFIX="$PWD/../quic-prefix" -DENABLE_EXAMPLES=ON -DENABLE_OPENSSL=OFF -DENABLE_BORINGSSL=ON \
             -DHAVE_BORINGSSL=1 -DHAVE_SSL_SET_QUIC_EARLY_DATA_CONTEXT=1 \
             -DBORINGSSL_INCLUDE_DIR="$PWD/../boringssl/include" \
             -DBORINGSSL_LIBRARIES="$PWD/../boringssl-build/libssl.a;$PWD/../boringssl-build/libcrypto.a" \
