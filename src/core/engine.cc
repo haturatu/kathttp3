@@ -36,6 +36,18 @@ bool parse_content_length(std::string_view s, uint64_t& out) {
     auto [parsed, error] = std::from_chars(begin, end, out);
     return error == std::errc{} && parsed == end;
 }
+
+void invoke_callback(kathttp3_event_callback callback, void* user_data,
+                     const kathttp3_event& event, const char* context) noexcept {
+    if (!callback) return;
+    try {
+        callback(user_data, &event);
+    } catch (const std::exception& error) {
+        KATHTTP3_LOG_WARN("request callback threw during %s: %s\n", context, error.what());
+    } catch (...) {
+        KATHTTP3_LOG_WARN("request callback threw during %s\n", context);
+    }
+}
 }  // namespace
 
 Engine::Engine(const kathttp3_client_options& opt)
@@ -141,13 +153,7 @@ void Engine::execute(kathttp3_request* req, int64_t request_id, kathttp3_event_c
         ev.type = KATHTTP3_EVENT_ERROR;
         ev.request_id = request_id;
         ev.error_code = KATHTTP3_ERR_CLOSED;
-        if (cb) {
-            try {
-                cb(user_data, &ev);
-            } catch (...) {
-                KATHTTP3_LOG_WARN("request callback threw while reporting closed client\n");
-            }
-        }
+        invoke_callback(cb, user_data, ev, "closed client");
         delete req;
         return;
     }
@@ -157,7 +163,7 @@ void Engine::execute(kathttp3_request* req, int64_t request_id, kathttp3_event_c
         ev.type = KATHTTP3_EVENT_ERROR;
         ev.request_id = request_id;
         ev.error_code = KATHTTP3_ERR_INVALID_ARG;
-        if (cb) cb(user_data, &ev);
+        invoke_callback(cb, user_data, ev, "invalid request");
         delete req;
         return;
     }
@@ -221,13 +227,13 @@ void Engine::cancel(int64_t request_id) {
         registry_.erase(it);
         if (c) c->cancel_job(request_id);
     }
-    if (cb) {
-        kathttp3_event ev{};
-        ev.type = KATHTTP3_EVENT_ERROR;
-        ev.request_id = request_id;
-        ev.error_code = KATHTTP3_ERR_CANCELLED;
-        cb(ud, &ev);
-    }
+    kathttp3_event ev{};
+    ev.type = KATHTTP3_EVENT_ERROR;
+    ev.request_id = request_id;
+    ev.error_code = KATHTTP3_ERR_CANCELLED;
+    /* This ends caller ownership immediately; the worker subsequently owns
+     * the asynchronous RESET_STREAM/STOP_SENDING cleanup. */
+    invoke_callback(cb, ud, ev, "cancellation");
 }
 
 void Engine::destroy() {
@@ -264,7 +270,7 @@ void Engine::destroy() {
         ev.type = KATHTTP3_EVENT_ERROR;
         ev.request_id = pending[i].first;
         ev.error_code = KATHTTP3_ERR_CLOSED;
-        pending[i].second(pending_ud[i], &ev);
+        invoke_callback(pending[i].second, pending_ud[i], ev, "client close");
     }
 }
 
@@ -442,7 +448,7 @@ void Engine::deliver(const kathttp3_event& ev) {
         cb = e.cb;
         ud = e.user_data;
     }
-    if (cb) cb(ud, &ev);
+    invoke_callback(cb, ud, ev, terminal ? "terminal delivery" : "event delivery");
     if (terminal) {
         std::lock_guard<std::mutex> lk(mtx_);
         registry_.erase(ev.request_id);
@@ -459,7 +465,7 @@ void Engine::add_cookie_header(kathttp3_request* req, const Url& url) {
             break;
         }
     }
-    if (!has) req->headers.add("Cookie", cookie);
+    if (!has) req->headers.add("cookie", cookie);
 }
 
 void Engine::store_cookies(const Url& url, const HeaderList& headers) {

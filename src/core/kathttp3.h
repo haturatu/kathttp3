@@ -162,6 +162,9 @@ typedef struct kathttp3_request kathttp3_request;
  *    to its own per-request state.
  *  - Exactly one terminal event (HEADERS+COMPLETE for success, or
  *    ERROR) is delivered per request_id. It is delivered at most once.
+ *  - A CANCELLED ERROR ends caller ownership immediately. The worker can
+ *    still asynchronously exchange RESET_STREAM/STOP_SENDING; it never
+ *    delivers another event for that request id.
  *
  * Threading (guaranteed by the engine):
  *  - All events for a client are serialized on the engine's native

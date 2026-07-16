@@ -83,6 +83,9 @@ class ModelsTest {
     }
     @Test fun requestRequiresHttps() { assertFailsWith<IllegalArgumentException> { KatHttp3Request("GET", "http://example.com") } }
     @Test fun headerRejectsInjection() { assertFailsWith<IllegalArgumentException> { KatHttp3Header("x", "ok\r\nbad") } }
+    @Test fun headerAcceptsConventionalMixedCaseName() {
+        assertEquals("Content-Type", KatHttp3Header("Content-Type", "application/json").name)
+    }
     @Test fun immutableValueBasics() { assertEquals("GET", KatHttp3Request("GET", "https://example.com").method) }
     @Test fun requestPriorityValidatesRfc9218Urgency() {
         assertFailsWith<IllegalArgumentException> { KatHttp3RequestPriority(urgency = -1) }

@@ -83,7 +83,12 @@ data class KatHttp3ClientConfig(
 enum class KatHttp3TimeoutPhase { Dns, Connect, Handshake, ResponseHeaders, Read, Write, Call }
 
 data class KatHttp3Header(val name: String, val value: String) {
-    init { require(name.isNotBlank() && name == name.lowercase() && name.none { it <= ' ' || it == ':' }); require(value.none { it == '\r' || it == '\n' }) }
+    init {
+        // HTTP field names are case-insensitive at the API boundary. Native
+        // code validates and normalizes them to the lowercase HTTP/3 form.
+        require(name.isNotBlank() && name.none { it <= ' ' || it == ':' })
+        require(value.none { it == '\r' || it == '\n' })
+    }
 }
 
 sealed interface KatHttp3RequestBody {
