@@ -3,7 +3,7 @@ plugins {
     id("com.android.application") version "9.2.1" apply false
     // AGP 9 supplies Kotlin support itself.  Keep only the Compose compiler
     // plugin, which is intentionally paired with its Kotlin 2.4 release.
-    id("org.jetbrains.kotlin.plugin.compose") version "2.4.0" apply false
+    id("org.jetbrains.kotlin.plugin.compose") version "2.4.10" apply false
 }
 
 val nativeDepsAbi = providers.gradleProperty("androidNativeDepsAbi")
