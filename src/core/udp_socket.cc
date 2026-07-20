@@ -19,6 +19,21 @@
 
 namespace kathttp3 {
 
+namespace {
+void decode_receive_metadata(int family, msghdr& msg, UdpReceiveDatagram& datagram) {
+    datagram.peer_length = msg.msg_namelen;
+    datagram.ecn = 0;
+    for (auto* cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+        if (family == AF_INET && cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_TOS) {
+            datagram.ecn = static_cast<uint8_t>(*reinterpret_cast<int*>(CMSG_DATA(cm)));
+        } else if (family == AF_INET6 && cm->cmsg_level == IPPROTO_IPV6 &&
+                   cm->cmsg_type == IPV6_TCLASS) {
+            datagram.ecn = static_cast<uint8_t>(*reinterpret_cast<int*>(CMSG_DATA(cm)));
+        }
+    }
+}
+}  // namespace
+
 static void enable_ecn(int fd, int family) {
     int on = 1;
     if (family == AF_INET) {
@@ -325,18 +340,73 @@ ssize_t UdpSocket::recv(UdpReceiveDatagram& datagram) {
     msg.msg_controllen = sizeof(ctrl);
 
     ssize_t n = ::recvmsg(fd_, &msg, 0);
+    datagram.size = 0;
     datagram.ecn = 0;
     if (n <= 0) return n;
-    datagram.peer_length = msg.msg_namelen;
-    for (auto* cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
-        if (family_ == AF_INET && cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_TOS) {
-            datagram.ecn = static_cast<uint8_t>(*reinterpret_cast<int*>(CMSG_DATA(cm)));
-        } else if (family_ == AF_INET6 && cm->cmsg_level == IPPROTO_IPV6 &&
-                   cm->cmsg_type == IPV6_TCLASS) {
-            datagram.ecn = static_cast<uint8_t>(*reinterpret_cast<int*>(CMSG_DATA(cm)));
-        }
+    if ((msg.msg_flags & MSG_TRUNC) != 0) {
+        errno = EMSGSIZE;
+        return -1;
     }
+    datagram.size = static_cast<size_t>(n);
+    decode_receive_metadata(family_, msg, datagram);
     return n;
+}
+
+ssize_t UdpSocket::recv_batch(UdpReceiveDatagram* datagrams, size_t count) {
+    if (fd_ == -1) return -1;
+    if (!datagrams || count == 0 || count > kMaxReceiveBatch) {
+        errno = EINVAL;
+        return -1;
+    }
+#if defined(__linux__) || defined(__ANDROID__)
+    std::array<mmsghdr, kMaxReceiveBatch> messages{};
+    std::array<iovec, kMaxReceiveBatch> iov{};
+    std::array<std::array<uint8_t, 256>, kMaxReceiveBatch> controls{};
+    for (size_t i = 0; i < count; ++i) {
+        auto& datagram = datagrams[i];
+        if (!datagram.data || datagram.capacity == 0) {
+            errno = EINVAL;
+            return -1;
+        }
+        datagram.size = 0;
+        datagram.ecn = 0;
+        datagram.peer_length = sizeof(datagram.peer);
+        iov[i].iov_base = datagram.data;
+        iov[i].iov_len = datagram.capacity;
+        messages[i].msg_hdr.msg_name = &datagram.peer;
+        messages[i].msg_hdr.msg_namelen = datagram.peer_length;
+        messages[i].msg_hdr.msg_iov = &iov[i];
+        messages[i].msg_hdr.msg_iovlen = 1;
+        messages[i].msg_hdr.msg_control = controls[i].data();
+        messages[i].msg_hdr.msg_controllen = controls[i].size();
+    }
+    const int received =
+        ::recvmmsg(fd_, messages.data(), static_cast<unsigned int>(count), MSG_DONTWAIT, nullptr);
+    if (received <= 0) return received;
+    for (int i = 0; i < received; ++i) {
+        auto& datagram = datagrams[static_cast<size_t>(i)];
+        auto& message = messages[static_cast<size_t>(i)];
+        if ((message.msg_hdr.msg_flags & MSG_TRUNC) != 0) {
+            datagram.size = 0;
+            continue;
+        }
+        datagram.size = message.msg_len;
+        decode_receive_metadata(family_, message.msg_hdr, datagram);
+    }
+    return received;
+#else
+    ssize_t received = 0;
+    while (static_cast<size_t>(received) < count) {
+        const ssize_t size = recv(datagrams[static_cast<size_t>(received)]);
+        if (size > 0) {
+            ++received;
+            continue;
+        }
+        if (received > 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return received;
+        return received > 0 ? received : size;
+    }
+    return received;
+#endif
 }
 
 } /* namespace kathttp3 */

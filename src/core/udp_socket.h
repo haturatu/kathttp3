@@ -3,6 +3,7 @@
 
 #include <sys/socket.h>
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <string>
@@ -22,6 +23,7 @@ struct UdpSendDatagram {
 struct UdpReceiveDatagram {
     uint8_t* data = nullptr;
     size_t capacity = 0;
+    size_t size = 0;
     sockaddr_storage peer{};
     socklen_t peer_length = sizeof(peer);
     uint8_t ecn = 0;
@@ -31,6 +33,7 @@ struct UdpReceiveDatagram {
  * to a single peer so send()/recv() can be used, with ECN support. */
 class UdpSocket {
    public:
+    static constexpr size_t kMaxReceiveBatch = 16;
     UdpSocket() = default;
     ~UdpSocket();
 
@@ -69,6 +72,11 @@ class UdpSocket {
     /* Receive one datagram into buf. Fills `from` (sockaddr storage),
      * `fromlen` and `ecn`. Returns bytes received or -1. */
     ssize_t recv(UdpReceiveDatagram& datagram);
+
+    /* Drain up to `count` immediately available datagrams with one recvmmsg()
+     * syscall on Linux/Android. Other platforms retain recvmsg() semantics.
+     * This never waits to fill the batch. */
+    ssize_t recv_batch(UdpReceiveDatagram* datagrams, size_t count);
 
    private:
     ssize_t send_now(const uint8_t* data, size_t len, unsigned int ecn);

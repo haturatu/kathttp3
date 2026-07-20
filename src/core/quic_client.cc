@@ -1226,16 +1226,23 @@ bool QuicClient::run_handshake_race() {
         for (size_t i = 0; i < polled.size(); ++i) {
             HandshakeCandidate& candidate = *polled[i];
             if (fds[i].revents & POLLIN) {
-                for (int packets = 0; packets < 16; ++packets) {
-                    uint8_t packet[NGTCP2_MAX_PKTLEN];
-                    UdpReceiveDatagram datagram{packet, sizeof(packet)};
-                    ssize_t n = candidate.sock.recv(datagram);
-                    if (n <= 0) break;
+                std::array<std::array<uint8_t, NGTCP2_MAX_PKTLEN>, UdpSocket::kMaxReceiveBatch>
+                    packets{};
+                std::array<UdpReceiveDatagram, UdpSocket::kMaxReceiveBatch> datagrams{};
+                for (size_t packet = 0; packet < datagrams.size(); ++packet) {
+                    datagrams[packet].data = packets[packet].data();
+                    datagrams[packet].capacity = packets[packet].size();
+                }
+                const ssize_t received =
+                    candidate.sock.recv_batch(datagrams.data(), datagrams.size());
+                for (ssize_t packet = 0; packet < received; ++packet) {
+                    auto& datagram = datagrams[static_cast<size_t>(packet)];
+                    if (datagram.size == 0) continue;
                     ngtcp2_pkt_info info{};
                     info.ecn = datagram.ecn;
                     if (ngtcp2_conn_read_pkt_versioned(
-                            candidate.conn, &candidate.path, NGTCP2_PKT_INFO_VERSION, &info, packet,
-                            static_cast<size_t>(n), progressed_at) != 0) {
+                            candidate.conn, &candidate.path, NGTCP2_PKT_INFO_VERSION, &info,
+                            datagram.data, datagram.size, progressed_at) != 0) {
                         candidate.failed = true;
                         break;
                     }
@@ -1372,7 +1379,12 @@ void QuicClient::run() {
 }
 
 int QuicClient::event_loop() {
-    uint8_t pkt[NGTCP2_MAX_PKTLEN];
+    std::array<std::array<uint8_t, NGTCP2_MAX_PKTLEN>, UdpSocket::kMaxReceiveBatch> packets{};
+    std::array<UdpReceiveDatagram, UdpSocket::kMaxReceiveBatch> datagrams{};
+    for (size_t packet = 0; packet < datagrams.size(); ++packet) {
+        datagrams[packet].data = packets[packet].data();
+        datagrams[packet].capacity = packets[packet].size();
+    }
     uint8_t h3pkt[NGTCP2_MAX_PKTLEN];
     (void)h3pkt;
     last_active_ = now_ns();
@@ -1409,22 +1421,22 @@ int QuicClient::event_loop() {
             return -1;
         }
         if (pfds[0].revents & POLLIN) {
-            for (int i = 0; i < 16; ++i) {
-                UdpReceiveDatagram datagram{pkt, sizeof(pkt)};
-                ssize_t n = sock_.recv(datagram);
-                if (n < 0) {
-                    const int error = errno;
-                    if (error == EINTR) continue;
-                    if (error == EAGAIN || error == EWOULDBLOCK) break;
-                    (void)record_socket_error(error, "UDP receive");
+            const ssize_t received = sock_.recv_batch(datagrams.data(), datagrams.size());
+            if (received < 0) {
+                const int error = errno;
+                if (error != EINTR && error != EAGAIN && error != EWOULDBLOCK) {
+                    (void)record_socket_error(error, "UDP receive batch");
                     return -1;
                 }
-                if (n == 0) break;
+            }
+            for (ssize_t packet = 0; packet < received; ++packet) {
+                auto& datagram = datagrams[static_cast<size_t>(packet)];
+                if (datagram.size == 0) continue;
                 ngtcp2_pkt_info pi{};
                 pi.ecn = datagram.ecn;
                 int rv = ngtcp2_conn_read_pkt_versioned(
                     conn_, const_cast<const ngtcp2_path*>(&path_), NGTCP2_PKT_INFO_VERSION, &pi,
-                    pkt, static_cast<size_t>(n), now);
+                    datagram.data, datagram.size, now);
                 if (rv != 0) {
                     KATHTTP3_LOG_ERR("ngtcp2_conn_read_pkt: %s\n", ngtcp2_strerror(rv));
                     return -1;

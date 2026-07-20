@@ -1,5 +1,8 @@
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -22,6 +25,7 @@
 #include "request_body_offset.h"
 #include "time_util.h"
 #include "udp_error.h"
+#include "udp_socket.h"
 #include "url.h"
 
 using namespace kathttp3;
@@ -396,6 +400,37 @@ int main() {
     assert(!receive_credit_blocked_by_consumer(0, 0));
     assert(receive_credit_blocked_by_consumer(kReceiveBufferPerStreamHighWatermark, 0));
     assert(receive_credit_blocked_by_consumer(0, kReceiveBufferPerConnectionLimit));
+
+    // Linux/Android drains all immediately available UDP packets with one
+    // non-blocking recvmmsg() call while preserving datagram boundaries.
+    UdpSocket receiver;
+    assert(receiver.open(AF_INET));
+    assert(receiver.bind_any());
+    receiver.set_nonblocking();
+    sockaddr_storage receiver_address{};
+    socklen_t receiver_address_length = sizeof(receiver_address);
+    assert(receiver.local_address(receiver_address, receiver_address_length));
+    const auto* receiver_v4 = reinterpret_cast<const sockaddr_in*>(&receiver_address);
+    UdpSocket sender;
+    assert(sender.open(AF_INET));
+    assert(sender.connect({"127.0.0.1", ntohs(receiver_v4->sin_port), static_cast<int>(AF_INET)}));
+    const std::array<uint8_t, 3> first{{1, 2, 3}};
+    const std::array<uint8_t, 2> second{{4, 5}};
+    const std::array<uint8_t, 1> third{{6}};
+    assert(sender.send({first.data(), first.size(), 0}) == static_cast<ssize_t>(first.size()));
+    assert(sender.send({second.data(), second.size(), 0}) == static_cast<ssize_t>(second.size()));
+    assert(sender.send({third.data(), third.size(), 0}) == static_cast<ssize_t>(third.size()));
+    std::array<std::array<uint8_t, 16>, 3> receive_storage{};
+    std::array<UdpReceiveDatagram, 3> received_datagrams{};
+    for (size_t i = 0; i < received_datagrams.size(); ++i) {
+        received_datagrams[i].data = receive_storage[i].data();
+        received_datagrams[i].capacity = receive_storage[i].size();
+    }
+    assert(receiver.recv_batch(received_datagrams.data(), received_datagrams.size()) == 3);
+    assert(received_datagrams[0].size == first.size());
+    assert(received_datagrams[1].size == second.size());
+    assert(received_datagrams[2].size == third.size());
+    assert(receive_storage[0][0] == 1 && receive_storage[1][0] == 4 && receive_storage[2][0] == 6);
 
     DnsCache cache({.max_entries = 1, .positive_ttl_ms = 1000, .negative_ttl_ms = 1000});
     cache.put_success("ONE.TEST.", 443, 1, endpoints);

@@ -351,6 +351,10 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   contains adjacent equal-sized packets, Linux/Android uses `UDP_SEGMENT` GSO
   to flush up to 16 in one syscall. Unsupported kernels permanently fall back
   to FIFO single-datagram sends; the non-GSO path remains the portable default.
+  On receive, Linux/Android drains up to 16 immediately available datagrams
+  with non-blocking `recvmmsg()`; other platforms retain the `recvmsg()` loop.
+  UDP GRO is not enabled because KatHttp3 currently sizes each receive slot to
+  one QUIC packet and must never pass a truncated coalesced datagram to ngtcp2.
 - qlog is disabled by default. `KatHttp3ClientConfig(qlogEnabled = true)` enables the Android-only,
   bounded buffered Logcat destination. Set `qlogPathPrefix = "..."` to instead produce one
   mode-0600 ngtcp2 `.qlog` file per connection at an app-private writable prefix; set
