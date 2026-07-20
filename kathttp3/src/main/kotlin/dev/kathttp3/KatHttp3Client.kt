@@ -3,6 +3,7 @@ package dev.kathttp3
 import dev.kathttp3.internal.NativeBridge
 import dev.kathttp3.internal.NativeCallback
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -18,7 +19,6 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.launch
@@ -83,13 +83,12 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
     fun executeStreaming(request: KatHttp3Request): KatHttp3Call {
         check(!closed.get()) { "Client is closed" }
         val id = ids.getAndIncrement()
-        val permit = AtomicReference<OriginRequestScheduler.Permit?>(null)
-        fun releasePermit() { permit.getAndSet(null)?.close() }
+        val permit = CloseOnceSlot<OriginRequestScheduler.Permit>()
+        fun releasePermit() = permit.close()
         val responseQueue = StreamingResponseQueue(
             config.maxStreamingBufferedBytesPerStream,
             streamingBufferBudget,
         )
-        lateinit var startJob: Job
         val terminal = AtomicBoolean(false)
         val callback = object : NativeCallback {
             override fun onHeaders(status: Int, names: Array<String>, values: Array<String>) {
@@ -139,32 +138,46 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
                 return true
             }
         }
-        val call = KatHttp3Call(responseQueue.events) {
-            startJob.cancel()
-            if (callback.cancelByCaller()) {
-                synchronized(nativeLock) {
-                    if (!closed.get()) NativeBridge.cancel(handle, id)
-                }
-            }
-        }
         val requestBody = request.streamingBody
         val bytes = (requestBody as? KatHttp3RequestBody.Bytes)?.value ?: request.body
         val wireHeaders = request.headersWithHttpPriority()
         val streamingLength = when (requestBody) { is KatHttp3RequestBody.FileBody -> requestBody.file.length(); is KatHttp3RequestBody.Stream -> requestBody.contentLength ?: -1L; else -> -1L }
-        startJob = schedulerScope.launch {
+        val startJob = schedulerScope.launch(start = CoroutineStart.LAZY) {
             try {
-                permit.set(requestScheduler.acquire(request.url, request.priority))
-                if (closed.get()) {
+                if (!permit.publish(requestScheduler.acquire(request.url, request.priority))) {
+                    return@launch
+                }
+                if (closed.get() || terminal.get()) {
                     callback.fail(KatHttp3Exception.Closed())
                     return@launch
                 }
-                active += id
-                if (!synchronized(nativeLock) { if (closed.get()) false else NativeBridge.execute(handle,id,request.method,request.url,wireHeaders.map{it.name}.toTypedArray(),wireHeaders.map{it.value}.toTypedArray(),bytes,config.followRedirects,true,requestBody != null && requestBody !is KatHttp3RequestBody.Bytes,streamingLength,callback) }) callback.onError(-7)
-                else if (requestBody != null && requestBody !is KatHttp3RequestBody.Bytes) startBodyProducer(id, requestBody) { callback.onError(-14) }
+                val submitted = synchronized(nativeLock) {
+                    if (closed.get() || terminal.get()) {
+                        false
+                    } else {
+                        active += id
+                        NativeBridge.execute(handle,id,request.method,request.url,wireHeaders.map{it.name}.toTypedArray(),wireHeaders.map{it.value}.toTypedArray(),bytes,config.followRedirects,true,requestBody != null && requestBody !is KatHttp3RequestBody.Bytes,streamingLength,callback)
+                    }
+                }
+                if (!submitted) {
+                    if (!terminal.get()) callback.onError(-7)
+                }
+                else if (!terminal.get() && requestBody != null && requestBody !is KatHttp3RequestBody.Bytes) startBodyProducer(id, requestBody) { callback.onError(-14) }
             } catch (t: Throwable) {
                 callback.fail(t)
             }
         }
+        val call = KatHttp3Call(responseQueue.events) {
+            if (callback.cancelByCaller()) {
+                startJob.cancel()
+                synchronized(nativeLock) {
+                    if (!closed.get()) NativeBridge.cancel(handle, id)
+                }
+            } else {
+                startJob.cancel()
+            }
+        }
+        startJob.start()
         return call
     }
 

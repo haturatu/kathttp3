@@ -6,10 +6,30 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
-import kotlin.test.assertFailsWith
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class ModelsTest {
+    @Test fun closeOnceSlotClosesLatePublishedPermit() {
+        var closeCount = 0
+        val slot = CloseOnceSlot<AutoCloseable>()
+        slot.close()
+        assertFalse(slot.publish(AutoCloseable { closeCount += 1 }))
+        slot.close()
+        assertEquals(1, closeCount)
+    }
+
+    @Test fun closeOnceSlotClosesPublishedPermitExactlyOnce() {
+        var closeCount = 0
+        val slot = CloseOnceSlot<AutoCloseable>()
+        assertTrue(slot.publish(AutoCloseable { closeCount += 1 }))
+        slot.close()
+        slot.close()
+        assertEquals(1, closeCount)
+    }
+
     @Test fun configValidation() { assertFailsWith<IllegalArgumentException> { KatHttp3ClientConfig(maxBufferedBodyBytes = 0) } }
     @Test fun connectionWorkerPolicyHasSafeBoundedDefault() {
         assertEquals(32, KatHttp3ClientConfig().maxConnectionWorkers)
