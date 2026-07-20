@@ -28,6 +28,7 @@
 #include "udp_error.h"
 #include "udp_socket.h"
 #include "url.h"
+#include "wakeup_coalescer.h"
 
 using namespace kathttp3;
 int main() {
@@ -449,6 +450,13 @@ int main() {
     assert(jni_batch.append(full_jni_batch.data(), full_jni_batch.size(), 200) ==
            full_jni_batch.size());
     assert(jni_batch.should_flush(200));
+
+    WakeupCoalescer credit_wakeup;
+    assert(credit_wakeup.request());
+    assert(!credit_wakeup.request());
+    assert(credit_wakeup.pending());
+    credit_wakeup.reset();
+    assert(credit_wakeup.request());
 
     DnsCache cache({.max_entries = 1, .positive_ttl_ms = 1000, .negative_ttl_ms = 1000});
     cache.put_success("ONE.TEST.", 443, 1, endpoints);

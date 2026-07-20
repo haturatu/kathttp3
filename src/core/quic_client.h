@@ -24,6 +24,7 @@
 #include "tls.h"
 #include "udp_socket.h"
 #include "url.h"
+#include "wakeup_coalescer.h"
 
 struct kathttp3_request;
 
@@ -233,6 +234,7 @@ class QuicClient {
      * drained on the worker thread. Pair = (stream_id, bytes). */
     std::mutex consume_mutex_;
     std::vector<std::pair<int64_t, size_t>> pending_consumes_;
+    WakeupCoalescer credit_wakeup_;
 
     // nghttp3 is owned exclusively by the QUIC worker. Producers append
     // request-body chunks from arbitrary threads and queue stream resumes

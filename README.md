@@ -218,6 +218,9 @@ data for one request up to 64 KiB and flushes on completion or after the
 one-millisecond latency threshold is observed by a subsequent body callback.
 The resulting byte array is copied into the byte-bounded Kotlin queue before
 receive-window credit is returned, so batching cannot bypass the memory budget.
+The first pending credit operation wakes the QUIC worker immediately; further
+consume operations arriving before that wake is processed share the same
+eventfd notification and are combined per stream and connection.
 
 `KatHttp3ClientConfig` has independent monotonic deadlines for DNS, connect,
 handshake, response headers, read-idle, write-idle, and the complete call.

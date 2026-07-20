@@ -1786,12 +1786,21 @@ void QuicClient::process_wakeup() {
     {
         std::lock_guard<std::mutex> lk(consume_mutex_);
         pending.swap(pending_consumes_);
+        // Reset while holding the queue mutex. A concurrent producer either
+        // contributed to the batch above or observes false after unlocking
+        // and writes the eventfd for the next batch.
+        credit_wakeup_.reset();
     }
     if (conn_ && !pending.empty()) {
-        for (auto& kv : pending) {
-            ngtcp2_conn_extend_max_stream_offset(conn_, kv.first, kv.second);
-            ngtcp2_conn_extend_max_offset(conn_, kv.second);
+        std::unordered_map<int64_t, size_t> stream_credit;
+        size_t connection_credit = 0;
+        for (const auto& [stream_id, bytes] : pending) {
+            stream_credit[stream_id] += bytes;
+            connection_credit += bytes;
         }
+        for (const auto& [stream_id, bytes] : stream_credit)
+            ngtcp2_conn_extend_max_stream_offset(conn_, stream_id, bytes);
+        ngtcp2_conn_extend_max_offset(conn_, connection_credit);
     }
 
     // A request-body producer may run on a Kotlin/Java worker thread. nghttp3
@@ -1828,11 +1837,13 @@ int QuicClient::consume(int64_t request_id, size_t bytes) {
         }
     }
     if (stream_id < 0) return KATHTTP3_ERR_CLOSED;
+    bool should_wake = false;
     {
         std::lock_guard<std::mutex> lk(consume_mutex_);
         pending_consumes_.emplace_back(stream_id, bytes);
+        should_wake = credit_wakeup_.request();
     }
-    wakeup();
+    if (should_wake) wakeup();
     return KATHTTP3_OK;
 }
 
