@@ -240,8 +240,9 @@ created in native code. `maxActiveStreamsPerOrigin` defaults to 8,
 This is a client resource limit, not QUIC's peer-advertised `MAX_STREAMS`.
 Queued calls are selected by `KatHttp3Request.priority.urgency` using RFC 9218's
 0 (most urgent) through 7 (background) ordering, with FIFO ordering inside one
-urgency. Priority affects local admission only; applications that want to
-signal the server must also provide the HTTP `priority` header.
+urgency. KatHttp3 also generates the RFC 9218 `priority` request field from
+`urgency` and `incremental`; an explicitly supplied `priority` header takes
+precedence. Dynamic `PRIORITY_UPDATE` after request submission is not exposed.
 Queue waiting does not consume response-header, read-idle, or write-idle time;
 it ends with `KatHttp3Exception.RequestQueueTimeout` or
 `KatHttp3Exception.RequestQueueFull` before native stream creation.
