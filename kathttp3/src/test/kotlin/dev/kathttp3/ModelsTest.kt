@@ -96,6 +96,16 @@ class ModelsTest {
         assertFailsWith<IllegalArgumentException> { KatHttp3RequestPriority(urgency = -1) }
         assertFailsWith<IllegalArgumentException> { KatHttp3RequestPriority(urgency = 8) }
     }
+    @Test fun requestPriorityIsAddedToWireHeaders() {
+        val request = KatHttp3Request(
+            method = "GET",
+            url = "https://example.com/",
+            priority = KatHttp3RequestPriority(urgency = 1, incremental = true),
+        )
+        assertEquals("u=1, i", request.headersWithHttpPriority().single().value)
+        val explicit = request.copy(headers = listOf(KatHttp3Header("Priority", "u=7")))
+        assertEquals("u=7", explicit.headersWithHttpPriority().single().value)
+    }
     @Test fun networkIdentityTrackerSuppressesStaleAndPostCloseCallbacks() {
         val changes = mutableListOf<Pair<Long, Long>>()
         val tracker = NetworkIdentityTracker { generation, handle -> changes += generation to handle }

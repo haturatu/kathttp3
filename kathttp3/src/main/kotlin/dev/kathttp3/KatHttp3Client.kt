@@ -73,8 +73,9 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
         continuation.invokeOnCancellation { synchronized(nativeLock) { if (!closed.get()) NativeBridge.cancel(handle, id) }; active.remove(id) }
         val requestBody = request.streamingBody
         val bytes = (requestBody as? KatHttp3RequestBody.Bytes)?.value ?: request.body
+        val wireHeaders = request.headersWithHttpPriority()
         val streamingLength = when (requestBody) { is KatHttp3RequestBody.FileBody -> requestBody.file.length(); is KatHttp3RequestBody.Stream -> requestBody.contentLength ?: -1L; else -> -1L }
-        val ok = synchronized(nativeLock) { if (closed.get()) false else NativeBridge.execute(handle, id, request.method, request.url, request.headers.map { it.name }.toTypedArray(), request.headers.map { it.value }.toTypedArray(), bytes, config.followRedirects, false, requestBody != null && requestBody !is KatHttp3RequestBody.Bytes, streamingLength, callback) }
+        val ok = synchronized(nativeLock) { if (closed.get()) false else NativeBridge.execute(handle, id, request.method, request.url, wireHeaders.map { it.name }.toTypedArray(), wireHeaders.map { it.value }.toTypedArray(), bytes, config.followRedirects, false, requestBody != null && requestBody !is KatHttp3RequestBody.Bytes, streamingLength, callback) }
         if (!ok) callback.fail(KatHttp3Exception.Native(-7))
         else if (requestBody != null && requestBody !is KatHttp3RequestBody.Bytes) startBodyProducer(id, requestBody, callback::fail)
     }
@@ -148,6 +149,7 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
         }
         val requestBody = request.streamingBody
         val bytes = (requestBody as? KatHttp3RequestBody.Bytes)?.value ?: request.body
+        val wireHeaders = request.headersWithHttpPriority()
         val streamingLength = when (requestBody) { is KatHttp3RequestBody.FileBody -> requestBody.file.length(); is KatHttp3RequestBody.Stream -> requestBody.contentLength ?: -1L; else -> -1L }
         startJob = schedulerScope.launch {
             try {
@@ -157,7 +159,7 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
                     return@launch
                 }
                 active += id
-                if (!synchronized(nativeLock) { if (closed.get()) false else NativeBridge.execute(handle,id,request.method,request.url,request.headers.map{it.name}.toTypedArray(),request.headers.map{it.value}.toTypedArray(),bytes,config.followRedirects,true,requestBody != null && requestBody !is KatHttp3RequestBody.Bytes,streamingLength,callback) }) callback.onError(-7)
+                if (!synchronized(nativeLock) { if (closed.get()) false else NativeBridge.execute(handle,id,request.method,request.url,wireHeaders.map{it.name}.toTypedArray(),wireHeaders.map{it.value}.toTypedArray(),bytes,config.followRedirects,true,requestBody != null && requestBody !is KatHttp3RequestBody.Bytes,streamingLength,callback) }) callback.onError(-7)
                 else if (requestBody != null && requestBody !is KatHttp3RequestBody.Bytes) startBodyProducer(id, requestBody) { callback.onError(-14) }
             } catch (t: Throwable) {
                 callback.fail(t)
