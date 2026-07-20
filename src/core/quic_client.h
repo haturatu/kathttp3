@@ -19,6 +19,7 @@
 #include "connection_state.h"
 #include "dns.h"
 #include "dns_wait.h"
+#include "lazy_worker_start.h"
 #include "network_change.h"
 #include "request.h"
 #include "response.h"
@@ -262,6 +263,10 @@ class QuicClient {
     bool http3_ready_ = false;
     bool early_data_enabled_ = false;
 
+    /* Started lazily by the first submit_job(), after that job is visible in
+     * pending_jobs_. Starting in the constructor lets run() observe an empty
+     * queue, exit, and strand the first request on a dead worker. */
+    LazyWorkerStart worker_start_;
     std::thread thread_;
     std::atomic<bool> closed_{false};
     std::atomic<bool> handshake_confirmed_{false};

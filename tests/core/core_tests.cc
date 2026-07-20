@@ -21,6 +21,7 @@
 #include "header_list.h"
 #include "jni_body_batch.h"
 #include "kathttp3.h"
+#include "lazy_worker_start.h"
 #include "network_change.h"
 #include "precommit_failover.h"
 #include "redirect.h"
@@ -33,6 +34,14 @@
 
 using namespace kathttp3;
 int main() {
+    // The QUIC worker is elected only after the first Job is visible. This
+    // prevents an empty worker from exiting before the initial submission.
+    LazyWorkerStart worker_start;
+    assert(!worker_start.started());
+    assert(worker_start.claim_after_enqueue());
+    assert(worker_start.started());
+    assert(!worker_start.claim_after_enqueue());
+
     Url u;
     assert(parse_url("https://example.com/a?q=1#ignored", u));
     assert(u.host == "example.com" && u.request_target() == "/a?q=1");

@@ -584,7 +584,6 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
     conn_ref_.get_conn = get_conn_cb;
     conn_ref_.user_data = this;
     wakeup_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    thread_ = std::thread([this] { run(); });
 }
 
 QuicClient::~QuicClient() {
@@ -671,6 +670,10 @@ void QuicClient::submit_job(std::unique_ptr<Job> job) {
     {
         std::lock_guard<std::mutex> lk(job_mutex_);
         pending_jobs_.push_back(std::move(job));
+    }
+    if (worker_start_.claim_after_enqueue()) {
+        thread_ = std::thread([this] { run(); });
+        return;
     }
     wakeup();
 }
