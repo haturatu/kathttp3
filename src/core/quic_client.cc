@@ -1311,6 +1311,11 @@ void QuicClient::run() {
     if (!prepare_endpoints()) {
         KATHTTP3_LOG_ERR("run: prepare_endpoints failed -> DNS err\n");
         fail_all_pending(terminal_error_ == KATHTTP3_ERR_QUIC ? KATHTTP3_ERR_DNS : terminal_error_);
+        /* The worker is about to exit permanently. Publish the terminal state
+         * before returning so Engine::get_or_create_client() cannot reuse this
+         * dead connection for a later request to the same origin. */
+        closed_.store(true, std::memory_order_release);
+        state_.store(ConnectionState::Closed, std::memory_order_release);
         return;
     }
 
