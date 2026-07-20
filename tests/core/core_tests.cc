@@ -407,29 +407,41 @@ int main() {
     // Linux/Android drains all immediately available UDP packets with one
     // non-blocking recvmmsg() call while preserving datagram boundaries.
     UdpSocket receiver;
-    assert(receiver.open(AF_INET));
-    assert(receiver.bind_any());
+    const bool receiver_opened = receiver.open(AF_INET);
+    assert(receiver_opened);
+    const bool receiver_bound = receiver.bind_any();
+    assert(receiver_bound);
     receiver.set_nonblocking();
     sockaddr_storage receiver_address{};
     socklen_t receiver_address_length = sizeof(receiver_address);
-    assert(receiver.local_address(receiver_address, receiver_address_length));
+    const bool receiver_address_available =
+        receiver.local_address(receiver_address, receiver_address_length);
+    assert(receiver_address_available);
     const auto* receiver_v4 = reinterpret_cast<const sockaddr_in*>(&receiver_address);
     UdpSocket sender;
-    assert(sender.open(AF_INET));
-    assert(sender.connect({"127.0.0.1", ntohs(receiver_v4->sin_port), static_cast<int>(AF_INET)}));
+    const bool sender_opened = sender.open(AF_INET);
+    assert(sender_opened);
+    const bool sender_connected =
+        sender.connect({"127.0.0.1", ntohs(receiver_v4->sin_port), static_cast<int>(AF_INET)});
+    assert(sender_connected);
     const std::array<uint8_t, 3> first{{1, 2, 3}};
     const std::array<uint8_t, 2> second{{4, 5}};
     const std::array<uint8_t, 1> third{{6}};
-    assert(sender.send({first.data(), first.size(), 0}) == static_cast<ssize_t>(first.size()));
-    assert(sender.send({second.data(), second.size(), 0}) == static_cast<ssize_t>(second.size()));
-    assert(sender.send({third.data(), third.size(), 0}) == static_cast<ssize_t>(third.size()));
+    const ssize_t first_sent = sender.send({first.data(), first.size(), 0});
+    const ssize_t second_sent = sender.send({second.data(), second.size(), 0});
+    const ssize_t third_sent = sender.send({third.data(), third.size(), 0});
+    assert(first_sent == static_cast<ssize_t>(first.size()));
+    assert(second_sent == static_cast<ssize_t>(second.size()));
+    assert(third_sent == static_cast<ssize_t>(third.size()));
     std::array<std::array<uint8_t, 16>, 3> receive_storage{};
     std::array<UdpReceiveDatagram, 3> received_datagrams{};
     for (size_t i = 0; i < received_datagrams.size(); ++i) {
         received_datagrams[i].data = receive_storage[i].data();
         received_datagrams[i].capacity = receive_storage[i].size();
     }
-    assert(receiver.recv_batch(received_datagrams.data(), received_datagrams.size()) == 3);
+    const ssize_t received_count =
+        receiver.recv_batch(received_datagrams.data(), received_datagrams.size());
+    assert(received_count == 3);
     assert(received_datagrams[0].size == first.size());
     assert(received_datagrams[1].size == second.size());
     assert(received_datagrams[2].size == third.size());
@@ -437,27 +449,34 @@ int main() {
 
     JniBodyBatch jni_batch;
     const std::array<uint8_t, 4> jni_chunk{{1, 2, 3, 4}};
-    assert(jni_batch.append(jni_chunk.data(), jni_chunk.size(), 100) == jni_chunk.size());
+    const size_t first_jni_append = jni_batch.append(jni_chunk.data(), jni_chunk.size(), 100);
+    assert(first_jni_append == jni_chunk.size());
     assert(!jni_batch.should_flush(100));
-    assert(jni_batch.append(jni_chunk.data(), jni_chunk.size(),
-                            100 + JniBodyBatch::kFlushDelayNs - 1) == jni_chunk.size());
+    const size_t second_jni_append =
+        jni_batch.append(jni_chunk.data(), jni_chunk.size(), 100 + JniBodyBatch::kFlushDelayNs - 1);
+    assert(second_jni_append == jni_chunk.size());
     assert(!jni_batch.should_flush(100 + JniBodyBatch::kFlushDelayNs - 1));
-    assert(jni_batch.append(jni_chunk.data(), jni_chunk.size(),
-                            100 + JniBodyBatch::kFlushDelayNs) == jni_chunk.size());
+    const size_t third_jni_append =
+        jni_batch.append(jni_chunk.data(), jni_chunk.size(), 100 + JniBodyBatch::kFlushDelayNs);
+    assert(third_jni_append == jni_chunk.size());
     assert(jni_batch.should_flush(100 + JniBodyBatch::kFlushDelayNs));
     assert(jni_batch.size() == jni_chunk.size() * 3);
     jni_batch.clear();
     std::vector<uint8_t> full_jni_batch(JniBodyBatch::kFlushBytes);
-    assert(jni_batch.append(full_jni_batch.data(), full_jni_batch.size(), 200) ==
-           full_jni_batch.size());
+    const size_t full_jni_append =
+        jni_batch.append(full_jni_batch.data(), full_jni_batch.size(), 200);
+    assert(full_jni_append == full_jni_batch.size());
     assert(jni_batch.should_flush(200));
 
     WakeupCoalescer credit_wakeup;
-    assert(credit_wakeup.request());
-    assert(!credit_wakeup.request());
+    const bool first_credit_wakeup = credit_wakeup.request();
+    const bool duplicate_credit_wakeup = credit_wakeup.request();
+    assert(first_credit_wakeup);
+    assert(!duplicate_credit_wakeup);
     assert(credit_wakeup.pending());
     credit_wakeup.reset();
-    assert(credit_wakeup.request());
+    const bool reset_credit_wakeup = credit_wakeup.request();
+    assert(reset_credit_wakeup);
 
     DnsWaitState dns_wait;
     bool dns_wait_observed = false;
