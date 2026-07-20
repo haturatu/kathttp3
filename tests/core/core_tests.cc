@@ -14,6 +14,7 @@
 #include "connection_state.h"
 #include "cookie_jar.h"
 #include "dns.h"
+#include "dns_wait.h"
 #include "flow_control.h"
 #include "handshake_race.h"
 #include "handshake_stream_buffer.h"
@@ -457,6 +458,21 @@ int main() {
     assert(credit_wakeup.pending());
     credit_wakeup.reset();
     assert(credit_wakeup.request());
+
+    DnsWaitState dns_wait;
+    bool dns_wait_observed = false;
+    std::thread dns_wait_thread([&] {
+        std::unique_lock<std::mutex> lock(dns_wait.mutex);
+        dns_wait.changed.wait(lock, [&] { return dns_wait.complete; });
+        dns_wait_observed = true;
+    });
+    {
+        std::lock_guard<std::mutex> lock(dns_wait.mutex);
+        dns_wait.complete = true;
+    }
+    dns_wait.changed.notify_all();
+    dns_wait_thread.join();
+    assert(dns_wait_observed);
 
     DnsCache cache({.max_entries = 1, .positive_ttl_ms = 1000, .negative_ttl_ms = 1000});
     cache.put_success("ONE.TEST.", 443, 1, endpoints);

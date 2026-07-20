@@ -589,6 +589,7 @@ QuicClient::QuicClient(Engine* engine, TlsClientContext& tls_ctx, const Url& ori
 
 QuicClient::~QuicClient() {
     stop_.store(true);
+    notify_dns_waiter();
     wakeup();
     if (thread_.joinable()) thread_.join();
     if (conn_) ngtcp2_conn_del(conn_);
@@ -655,6 +656,15 @@ void QuicClient::wakeup() {
     }
 }
 
+void QuicClient::notify_dns_waiter() {
+    std::shared_ptr<DnsWaitState> waiter;
+    {
+        std::lock_guard<std::mutex> lock(dns_wait_state_mutex_);
+        waiter = dns_wait_state_.lock();
+    }
+    if (waiter) waiter->changed.notify_all();
+}
+
 void QuicClient::submit_job(std::unique_ptr<Job> job) {
     job->submitted_at = now_ns();
     job->last_write_progress_at = job->submitted_at;
@@ -671,6 +681,7 @@ void QuicClient::request_network_change(NetworkChangeRequest request) {
     // new generation paired with the previous network.
     requested_network_handle_.store(request.network.value, std::memory_order_relaxed);
     requested_network_generation_.store(request.generation, std::memory_order_release);
+    notify_dns_waiter();
     wakeup();
 }
 
@@ -691,30 +702,33 @@ void QuicClient::update_keep_alive() {
 }
 
 void QuicClient::cancel_job(int64_t job_id) {
-    std::lock_guard<std::mutex> lk(job_mutex_);
-    for (auto& j : pending_jobs_) {
-        if (j->id == job_id) {
-            j->cancelled = true;
-            return;
+    bool cancelled = false;
+    {
+        std::lock_guard<std::mutex> lk(job_mutex_);
+        for (auto& j : pending_jobs_) {
+            if (j->id == job_id) {
+                j->cancelled = true;
+                cancelled = true;
+                break;
+            }
+        }
+        if (!cancelled) {
+            for (auto& j : active_jobs_) {
+                if (j->id == job_id) {
+                    j->cancelled = true;
+                    cancelled = true;
+                    break;
+                }
+            }
         }
     }
-    for (auto& j : active_jobs_) {
-        if (j->id == job_id) {
-            j->cancelled = true;
-            wakeup();
-            return;
-        }
+    if (cancelled) {
+        notify_dns_waiter();
+        wakeup();
     }
 }
 
 bool QuicClient::prepare_endpoints() {
-    struct ResolutionResult {
-        std::mutex mutex;
-        std::condition_variable ready;
-        bool complete = false;
-        std::vector<ResolvedEndpoint> endpoints;
-    };
-
     std::vector<std::pair<std::string, uint16_t>> supplied_addresses;
     {
         std::lock_guard<std::mutex> jobs_lock(job_mutex_);
@@ -733,7 +747,11 @@ bool QuicClient::prepare_endpoints() {
             endpoints_.push_back({a.first, a.second, family});
         }
     } else {
-        auto result = std::make_shared<ResolutionResult>();
+        auto result = std::make_shared<DnsWaitState>();
+        {
+            std::lock_guard<std::mutex> state_lock(dns_wait_state_mutex_);
+            dns_wait_state_ = result;
+        }
         auto cancelled = std::make_shared<std::atomic<bool>>(false);
         if (!resolve_async(resolver_, origin_.host,
                            origin_.port ? origin_.port : default_port(origin_.scheme), cancelled,
@@ -741,17 +759,23 @@ bool QuicClient::prepare_endpoints() {
                                std::lock_guard<std::mutex> lock(result->mutex);
                                result->endpoints = std::move(endpoints);
                                result->complete = true;
-                               result->ready.notify_one();
+                               result->changed.notify_all();
                            })) {
+            {
+                std::lock_guard<std::mutex> state_lock(dns_wait_state_mutex_);
+                dns_wait_state_.reset();
+            }
             terminal_error_ = KATHTTP3_ERR_DNS;
             return false;
         }
 
         // This connection worker waits only for its asynchronous resolver;
         // getaddrinfo itself is always executed by the bounded DNS pool.
-        // Wake at short intervals so cancellation, close and DNS deadlines
-        // do not depend on a resolver implementation cooperating promptly.
+        // Resolver completion, cancellation, network change and shutdown all
+        // notify this wait directly; the monotonic deadline is the only timer.
         std::unique_lock<std::mutex> lock(result->mutex);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeouts_.dns_ms);
         while (!result->complete) {
             if (requested_network_generation_.load(std::memory_order_acquire) >
                 applied_network_generation_) {
@@ -768,9 +792,19 @@ bool QuicClient::prepare_endpoints() {
                 terminal_error_ = KATHTTP3_ERR_DNS_TIMEOUT;
                 return false;
             }
-            result->ready.wait_for(lock, std::chrono::milliseconds(10));
+            if (result->changed.wait_until(lock, deadline) == std::cv_status::timeout &&
+                !result->complete) {
+                cancel_resolve(cancelled);
+                terminal_error_ = KATHTTP3_ERR_DNS_TIMEOUT;
+                return false;
+            }
         }
         endpoints_ = std::move(result->endpoints);
+        lock.unlock();
+        {
+            std::lock_guard<std::mutex> state_lock(dns_wait_state_mutex_);
+            dns_wait_state_.reset();
+        }
     }
     if (deadline_elapsed_ns(now_ns(), started, timeouts_.dns_ms * NGTCP2_MILLISECONDS)) {
         endpoints_.clear();

@@ -18,6 +18,7 @@
 
 #include "connection_state.h"
 #include "dns.h"
+#include "dns_wait.h"
 #include "network_change.h"
 #include "request.h"
 #include "response.h"
@@ -244,6 +245,7 @@ class QuicClient {
 
     void fail_all_pending(int err);
     void wakeup();
+    void notify_dns_waiter();
 
     Engine* engine_;
     TlsClientContext& tls_ctx_;
@@ -273,6 +275,8 @@ class QuicClient {
     bool migration_in_progress_ = false;
     bool socket_failed_ = false;
     std::atomic<bool> random_failed_{false};
+    std::mutex dns_wait_state_mutex_;
+    std::weak_ptr<DnsWaitState> dns_wait_state_;
 
     UdpSocket sock_;
     int wakeup_fd_ = -1;

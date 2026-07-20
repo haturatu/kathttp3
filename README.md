@@ -379,6 +379,8 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   additional unique hosts wait in a bounded host queue; duplicate hosts still
   attach to their existing flight. Cancellation and DNS deadline expiry remove
   their waiter immediately, and work with no remaining waiters is skipped.
+  Resolver completion, cancellation, network changes and shutdown notify the
+  waiting connection directly; DNS setup has no fixed 10ms polling interval.
   Platform DNS caching remains owned by Android/libc because `InetAddress` and
   `getaddrinfo` do not expose authoritative TTLs; a five-second native success
   cache only absorbs immediate request bursts and never caches failures. The bundled DoH resolver
