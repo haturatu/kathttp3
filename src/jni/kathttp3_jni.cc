@@ -2,6 +2,7 @@
 #include <sys/socket.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -15,6 +16,7 @@
 #include "android_qlog_sink.h"
 #endif
 #include "cert_verifier.h"
+#include "jni_body_batch.h"
 #include "kathttp3.h"
 #include "log.h"
 
@@ -133,6 +135,8 @@ thread_local ThreadEnv g_thread_env;
 struct CallbackState {
     jobject callback = nullptr;
     std::atomic<bool> terminal{false};
+    std::atomic<bool> failure_reported{false};
+    kathttp3::JniBodyBatch body_batch;
 };
 
 kathttp3_client* checked(jlong value) {
@@ -145,6 +149,39 @@ void release_state(JNIEnv* env, CallbackState* state) {
     if (!state) return;
     if (state->callback) env->DeleteGlobalRef(state->callback);
     delete state;
+}
+
+uint64_t monotonic_now_ns() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
+}
+
+bool flush_body_batch(JNIEnv* env, CallbackState* state) {
+    if (state->body_batch.empty()) return true;
+    const auto data_len = static_cast<jsize>(state->body_batch.size());
+    jbyteArray data = env->NewByteArray(data_len);
+    if (!data || env->ExceptionCheck()) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (data) env->DeleteLocalRef(data);
+        return false;
+    }
+    env->SetByteArrayRegion(data, 0, data_len,
+                            reinterpret_cast<const jbyte*>(state->body_batch.data()));
+    if (!env->ExceptionCheck()) env->CallVoidMethod(state->callback, g_jni.callback_body, data);
+    env->DeleteLocalRef(data);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return false;
+    }
+    state->body_batch.clear();
+    return true;
+}
+
+void report_jni_body_failure(JNIEnv* env, CallbackState* state) {
+    if (state->failure_reported.exchange(true, std::memory_order_acq_rel)) return;
+    env->CallVoidMethod(state->callback, g_jni.callback_error, KATHTTP3_ERR_NOMEM);
+    if (env->ExceptionCheck()) env->ExceptionClear();
 }
 
 /* C-ABI callback handed to kathttp3; adapts the Kotlin DnsResolver into the
@@ -224,22 +261,36 @@ void event_cb(void* opaque, const kathttp3_event* event) noexcept {
         env->DeleteLocalRef(names);
         env->DeleteLocalRef(values);
     } else if (event->type == KATHTTP3_EVENT_BODY) {
-        if (event->data_len > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
-            KATHTTP3_LOG_ERR("JNI body chunk exceeds jsize\n");
-            return;
+        if (state->failure_reported.load(std::memory_order_acquire)) return;
+        size_t offset = 0;
+        const uint64_t now = monotonic_now_ns();
+        while (offset < event->data_len) {
+            const size_t copied =
+                state->body_batch.append(event->data + offset, event->data_len - offset, now);
+            if (copied == 0) {
+                if (!flush_body_batch(env, state)) {
+                    report_jni_body_failure(env, state);
+                    break;
+                }
+                continue;
+            }
+            offset += copied;
+            if (state->body_batch.should_flush(now) && !flush_body_batch(env, state)) {
+                report_jni_body_failure(env, state);
+                break;
+            }
         }
-        const auto data_len = static_cast<jsize>(event->data_len);
-        jbyteArray data = env->NewByteArray(data_len);
-        if (data)
-            env->SetByteArrayRegion(data, 0, data_len, reinterpret_cast<const jbyte*>(event->data));
-        if (data) env->CallVoidMethod(state->callback, g_jni.callback_body, data);
-        if (data) env->DeleteLocalRef(data);
     } else {
         if (!state->terminal.exchange(true, std::memory_order_acq_rel)) {
-            if (event->type == KATHTTP3_EVENT_COMPLETE)
-                env->CallVoidMethod(state->callback, g_jni.callback_complete);
-            else
-                env->CallVoidMethod(state->callback, g_jni.callback_error, event->error_code);
+            if (!state->failure_reported.load(std::memory_order_acquire)) {
+                if (!flush_body_batch(env, state)) {
+                    report_jni_body_failure(env, state);
+                } else if (event->type == KATHTTP3_EVENT_COMPLETE) {
+                    env->CallVoidMethod(state->callback, g_jni.callback_complete);
+                } else {
+                    env->CallVoidMethod(state->callback, g_jni.callback_error, event->error_code);
+                }
+            }
             if (env->ExceptionCheck()) env->ExceptionClear();
             release_state(env, state);
             return;

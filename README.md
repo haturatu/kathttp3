@@ -213,9 +213,11 @@ job.cancel() // propagated to RESET_STREAM / STOP_SENDING
 
 `execute` buffers at most `maxBufferedBodyBytes` (16 MiB by default).
 `executeStreaming` exposes a bounded `Flow<KatHttp3StreamEvent>`; close/cancel
-its `KatHttp3Call` when abandoning collection. Native receive-window credit is
-queued from the Kotlin `Flow` delivery hook, rather than being returned directly
-from the JNI body callback.
+its `KatHttp3Call` when abandoning collection. JNI coalesces consecutive body
+data for one request up to 64 KiB and flushes on completion or after the
+one-millisecond latency threshold is observed by a subsequent body callback.
+The resulting byte array is copied into the byte-bounded Kotlin queue before
+receive-window credit is returned, so batching cannot bypass the memory budget.
 
 `KatHttp3ClientConfig` has independent monotonic deadlines for DNS, connect,
 handshake, response headers, read-idle, write-idle, and the complete call.

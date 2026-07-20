@@ -180,7 +180,7 @@ if(KATHTTP3_BUILD_TESTS AND NOT ANDROID)
     src/core/url.cc src/core/header_list.cc src/core/redirect.cc
     src/core/cookie_jar.cc src/core/dns.cc src/core/request.cc
     src/core/udp_socket.cc)
-  target_include_directories(kathttp3_core_tests PRIVATE src/core)
+  target_include_directories(kathttp3_core_tests PRIVATE src/core src/jni)
   target_compile_options(kathttp3_core_tests PRIVATE -Wall -Wextra -Wpedantic)
   target_link_libraries(kathttp3_core_tests PRIVATE pthread)
   if(KATHTTP3_SANITIZE)

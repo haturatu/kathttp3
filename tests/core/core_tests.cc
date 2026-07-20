@@ -18,6 +18,7 @@
 #include "handshake_race.h"
 #include "handshake_stream_buffer.h"
 #include "header_list.h"
+#include "jni_body_batch.h"
 #include "kathttp3.h"
 #include "network_change.h"
 #include "precommit_failover.h"
@@ -431,6 +432,23 @@ int main() {
     assert(received_datagrams[1].size == second.size());
     assert(received_datagrams[2].size == third.size());
     assert(receive_storage[0][0] == 1 && receive_storage[1][0] == 4 && receive_storage[2][0] == 6);
+
+    JniBodyBatch jni_batch;
+    const std::array<uint8_t, 4> jni_chunk{{1, 2, 3, 4}};
+    assert(jni_batch.append(jni_chunk.data(), jni_chunk.size(), 100) == jni_chunk.size());
+    assert(!jni_batch.should_flush(100));
+    assert(jni_batch.append(jni_chunk.data(), jni_chunk.size(),
+                            100 + JniBodyBatch::kFlushDelayNs - 1) == jni_chunk.size());
+    assert(!jni_batch.should_flush(100 + JniBodyBatch::kFlushDelayNs - 1));
+    assert(jni_batch.append(jni_chunk.data(), jni_chunk.size(),
+                            100 + JniBodyBatch::kFlushDelayNs) == jni_chunk.size());
+    assert(jni_batch.should_flush(100 + JniBodyBatch::kFlushDelayNs));
+    assert(jni_batch.size() == jni_chunk.size() * 3);
+    jni_batch.clear();
+    std::vector<uint8_t> full_jni_batch(JniBodyBatch::kFlushBytes);
+    assert(jni_batch.append(full_jni_batch.data(), full_jni_batch.size(), 200) ==
+           full_jni_batch.size());
+    assert(jni_batch.should_flush(200));
 
     DnsCache cache({.max_entries = 1, .positive_ttl_ms = 1000, .negative_ttl_ms = 1000});
     cache.put_success("ONE.TEST.", 443, 1, endpoints);
