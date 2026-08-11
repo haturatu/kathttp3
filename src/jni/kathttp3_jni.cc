@@ -740,9 +740,9 @@ extern "C" JNIEXPORT jint JNICALL Java_dev_kathttp3_internal_NativeBridge_append
     const jsize len = data ? env->GetArrayLength(data) : 0;
     jbyte* bytes = data && len ? env->GetByteArrayElements(data, nullptr) : nullptr;
     if (data && len && !bytes) return KATHTTP3_ERR_NOMEM;
-    const auto result = kathttp3_client_request_body_append(
-        client.get(), id, reinterpret_cast<const uint8_t*>(bytes), static_cast<size_t>(len),
-        finished);
+    const auto result = kathttp3_client_request_body_append(client.get(), id,
+                                                            reinterpret_cast<const uint8_t*>(bytes),
+                                                            static_cast<size_t>(len), finished);
     if (bytes) env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
     return result;
 }
