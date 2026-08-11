@@ -49,6 +49,12 @@ int main() {
     assert(u.port == 0 && u.authority() == "example.com");
     assert(parse_url("https://example.com:8443/a", u));
     assert(u.authority() == "example.com:8443");
+    assert(parse_url("https://example.com/a?", u));
+    assert(u.request_target() == "/a?");
+    assert(u.to_string() == "https://example.com/a?");
+    assert(parse_url("https://example.com?", u));
+    assert(u.request_target() == "/?");
+    assert(u.to_string() == "https://example.com/?");
     assert(parse_url("HTTPS://example.com/a", u) && u.scheme == "https");
     assert(!parse_url(std::string("h\x80ttps://example.com/", 21), u));
     assert(!parse_url("http://example.com", u));
@@ -71,13 +77,50 @@ int main() {
     assert(request != nullptr);
     assert(kathttp3_request_add_header(request, "TE", " Trailers\t") == KATHTTP3_OK);
     assert(kathttp3_request_add_header(request, "Connection", "close") == KATHTTP3_ERR_INVALID_ARG);
-    const std::array<uint8_t, 3> request_body{{1, 2, 3}};
-    assert(kathttp3_request_set_body(request, request_body.data(), request_body.size()) ==
-           KATHTTP3_OK);
+    assert(kathttp3_request_add_header(request, "Keep-Alive", "timeout=5") ==
+           KATHTTP3_ERR_INVALID_ARG);
+    assert(kathttp3_request_add_header(request, "TE", "gzip") == KATHTTP3_ERR_INVALID_ARG);
+    assert(kathttp3_request_add_header(request, "bad(name", "value") == KATHTTP3_ERR_INVALID_ARG);
+    assert(kathttp3_request_add_header(request, "x-control", "bad\x01value") ==
+           KATHTTP3_ERR_INVALID_ARG);
+    const std::array<uint8_t, 3> initial_request_body{{1, 2, 3}};
+    assert(kathttp3_request_set_body(request, initial_request_body.data(),
+                                     initial_request_body.size()) == KATHTTP3_OK);
     assert(kathttp3_request_set_body(request, nullptr, 1) == KATHTTP3_ERR_INVALID_ARG);
-    assert(request->body == std::vector<uint8_t>(request_body.begin(), request_body.end()));
+    assert(request->body ==
+           std::vector<uint8_t>(initial_request_body.begin(), initial_request_body.end()));
     assert(kathttp3_request_set_body(request, nullptr, 0) == KATHTTP3_OK);
     assert(request->body.empty());
+    kathttp3_request_destroy(request);
+    assert(kathttp3_request_create("", "https://example.com/") == nullptr);
+    assert(kathttp3_request_create("BAD METHOD", "https://example.com/") == nullptr);
+    request = kathttp3_request_create("POST", "https://example.com/");
+    const std::array<uint8_t, 3> request_body{'a', 'b', 'c'};
+    assert(kathttp3_request_set_body(request, request_body.data(), request_body.size()) ==
+           KATHTTP3_OK);
+    assert(kathttp3_request_add_header(request, "Content-Length", "3") == KATHTTP3_OK);
+    assert(kathttp3_request_add_header(request, "Content-Length", "3") == KATHTTP3_OK);
+    assert(validate_request_body_framing(*request));
+    kathttp3_request_destroy(request);
+    request = kathttp3_request_create("POST", "https://example.com/");
+    assert(kathttp3_request_set_body(request, request_body.data(), request_body.size()) ==
+           KATHTTP3_OK);
+    assert(kathttp3_request_add_header(request, "Content-Length", "2") == KATHTTP3_OK);
+    assert(!validate_request_body_framing(*request));
+    kathttp3_request_destroy(request);
+    request = kathttp3_request_create("POST", "https://example.com/");
+    assert(kathttp3_request_add_header(request, "Content-Length", "invalid") == KATHTTP3_OK);
+    assert(!validate_request_body_framing(*request));
+    kathttp3_request_destroy(request);
+    request = kathttp3_request_create("POST", "https://example.com/");
+    assert(kathttp3_request_set_streaming_body(request, -1) == KATHTTP3_OK);
+    assert(kathttp3_request_add_header(request, "Content-Length", "7") == KATHTTP3_OK);
+    assert(validate_request_body_framing(*request));
+    assert(request->streaming_body_length == 7);
+    assert(kathttp3_request_set_body(request, request_body.data(), request_body.size()) ==
+           KATHTTP3_OK);
+    assert(!request->streaming_body && request->streaming_body_length == -1);
+    assert(!validate_request_body_framing(*request));
     kathttp3_request_destroy(request);
     Response response;
     response.status_code = 303;
@@ -86,12 +129,47 @@ int main() {
     assert(parse_url("https://example.com/a/b", from));
     RedirectPolicy redirects;
     auto d = redirects.evaluate("POST", from, response, true, 3);
-    assert(d.follow && d.new_method == "GET" && d.new_url == "https://example.com/next");
+    assert(d.follow && d.drop_body && d.new_method == "GET" &&
+           d.new_url == "https://example.com/next");
+    d = redirects.evaluate("PUT", from, response, true, 3);
+    assert(d.follow && d.drop_body && d.new_method == "GET");
+    d = redirects.evaluate("HEAD", from, response, true, 3);
+    assert(d.follow && d.drop_body && d.new_method == "HEAD");
+    response.status_code = 301;
+    d = redirects.evaluate("POST", from, response, true, 3);
+    assert(d.follow && d.drop_body && d.new_method == "GET");
+    d = redirects.evaluate("PUT", from, response, true, 3);
+    assert(d.follow && !d.drop_body && d.new_method == "PUT");
+    response.status_code = 302;
+    d = redirects.evaluate("POST", from, response, true, 3);
+    assert(d.follow && d.drop_body && d.new_method == "GET");
+    d = redirects.evaluate("PATCH", from, response, true, 3);
+    assert(d.follow && !d.drop_body && d.new_method == "PATCH");
+    response.status_code = 303;
+    assert(parse_url("https://example.com/a/b/c?old=1", from));
+    response.headers.clear();
+    response.headers.add("location", "?new=2");
+    d = redirects.evaluate("GET", from, response, true, 3);
+    assert(d.follow && d.new_url == "https://example.com/a/b/c?new=2");
+    response.headers.clear();
+    response.headers.add("location", "../next");
+    d = redirects.evaluate("GET", from, response, true, 3);
+    assert(d.follow && d.new_url == "https://example.com/a/next");
+    response.headers.clear();
+    response.headers.add("location", "/a/./b/../c");
+    d = redirects.evaluate("GET", from, response, true, 3);
+    assert(d.follow && d.new_url == "https://example.com/a/c");
+    response.headers.clear();
+    response.headers.add("location", "#fragment");
+    d = redirects.evaluate("GET", from, response, true, 3);
+    assert(d.follow && d.new_url == "https://example.com/a/b/c?old=1");
     response.status_code = 307;
     response.headers.clear();
-    response.headers.add("location", "https://other.example/next");
+    response.headers.add("location", "//other.example/next");
     d = redirects.evaluate("POST", from, response, true, 3);
-    assert(d.follow && d.cross_origin && d.new_method == "POST");
+    assert(d.follow && d.cross_origin && !d.drop_body && d.new_method == "POST");
+    d = redirects.evaluate("GET", from, response, true, 3);
+    assert(d.follow && !d.drop_body && d.new_method == "GET");
     response.status_code = 302;
     response.headers.clear();
     response.headers.add("location", "http://example.com/plaintext");
