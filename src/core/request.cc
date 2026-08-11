@@ -142,8 +142,8 @@ int kathttp3_request_add_header(kathttp3_request* request, const char* name, con
 }
 
 int kathttp3_request_set_body(kathttp3_request* request, const uint8_t* data, size_t len) {
-    if (!request) return KATHTTP3_ERR_INVALID_ARG;
-    if (data && len) {
+    if (!request || (!data && len != 0)) return KATHTTP3_ERR_INVALID_ARG;
+    if (len != 0) {
         try {
             request->body.assign(data, data + len);
         } catch (...) {

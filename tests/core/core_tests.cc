@@ -49,6 +49,8 @@ int main() {
     assert(u.port == 0 && u.authority() == "example.com");
     assert(parse_url("https://example.com:8443/a", u));
     assert(u.authority() == "example.com:8443");
+    assert(parse_url("HTTPS://example.com/a", u) && u.scheme == "https");
+    assert(!parse_url(std::string("h\x80ttps://example.com/", 21), u));
     assert(!parse_url("http://example.com", u));
     assert(!parse_url("https://example.com:99999/", u));
     assert(parse_url("https://[::1]:443/", u));
@@ -67,6 +69,14 @@ int main() {
     assert(kathttp3_request_add_header(request, "bad(name", "value") == KATHTTP3_ERR_INVALID_ARG);
     assert(kathttp3_request_add_header(request, "x-control", "bad\x01value") ==
            KATHTTP3_ERR_INVALID_ARG);
+    const std::array<uint8_t, 3> initial_request_body{{1, 2, 3}};
+    assert(kathttp3_request_set_body(request, initial_request_body.data(),
+                                     initial_request_body.size()) == KATHTTP3_OK);
+    assert(kathttp3_request_set_body(request, nullptr, 1) == KATHTTP3_ERR_INVALID_ARG);
+    assert(request->body ==
+           std::vector<uint8_t>(initial_request_body.begin(), initial_request_body.end()));
+    assert(kathttp3_request_set_body(request, nullptr, 0) == KATHTTP3_OK);
+    assert(request->body.empty());
     kathttp3_request_destroy(request);
     assert(kathttp3_request_create("", "https://example.com/") == nullptr);
     assert(kathttp3_request_create("BAD METHOD", "https://example.com/") == nullptr);
@@ -131,6 +141,16 @@ int main() {
     jar.store(from, "scoped=gone; Domain=example.com; Path=/a; Max-Age=0");
     const auto expired_cookie = jar.cookie_header(from);
     assert(expired_cookie.find("scoped=") == std::string::npos);
+    CookieJar ordered_jar;
+    ordered_jar.store(from, "id=root; Path=/; Secure");
+    ordered_jar.store(from, "id=deep; Path=/a; Secure");
+    Url nested;
+    assert(parse_url("https://example.com/a/b?ignored=1", nested));
+    const auto ordered_cookie = ordered_jar.cookie_header(nested);
+    assert(ordered_cookie == "id=deep; id=root");
+    ordered_jar.store(from, "query-path=bad; Path=/a/b?ignored=1; Secure");
+    const auto query_path_cookie = ordered_jar.cookie_header(nested);
+    assert(query_path_cookie.find("query-path=") == std::string::npos);
 
     // Resolver work is deliberately dispatched off the QUIC worker.  The
     // callback receives owned values, and cancellation suppresses delivery.
@@ -157,6 +177,38 @@ int main() {
         assert(dns_ready.wait_for(lock, std::chrono::seconds(1), [&] { return dns_done; }));
     }
     assert(endpoints.size() == 2 && endpoints.front().family == AF_INET6);
+
+    // The C resolver callback is untrusted across the ABI boundary: a count
+    // larger than the supplied capacity must not index past the fixed buffer.
+    auto oversized_c_resolver = [](const char*, uint16_t, void*, kathttp3_resolved_address*,
+                                   size_t* count) {
+        *count = 65;
+        return 0;
+    };
+    assert(resolve_with_c_callback(oversized_c_resolver, nullptr, "example.test", 443).empty());
+
+    auto unterminated_c_resolver = [](const char*, uint16_t, void*,
+                                      kathttp3_resolved_address* output, size_t* count) {
+        std::fill(std::begin(output[0].ip), std::end(output[0].ip), '1');
+        output[0].port = 443;
+        output[0].family = AF_INET;
+        *count = 1;
+        return 0;
+    };
+    assert(resolve_with_c_callback(unterminated_c_resolver, nullptr, "example.test", 443).empty());
+
+    auto valid_c_resolver = [](const char*, uint16_t port, void*, kathttp3_resolved_address* output,
+                               size_t* count) {
+        std::strcpy(output[0].ip, "192.0.2.44");
+        output[0].port = port;
+        output[0].family = AF_INET;
+        *count = 1;
+        return 0;
+    };
+    const auto c_endpoints =
+        resolve_with_c_callback(valid_c_resolver, nullptr, "example.test", 443);
+    assert(c_endpoints.size() == 1 && c_endpoints[0].ip == "192.0.2.44" &&
+           c_endpoints[0].port == 443 && c_endpoints[0].family == AF_INET);
 
     // Concurrent callers for one resolver/host/port share one upstream query.
     // Waiters remain asynchronous and receive independent owned result values.

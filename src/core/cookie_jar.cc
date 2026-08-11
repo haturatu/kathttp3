@@ -144,7 +144,7 @@ void CookieJar::store(const Url& url, std::string_view set_cookie) {
 std::string CookieJar::cookie_header(const Url& url) {
     std::lock_guard<std::mutex> lk(mu_);
     uint64_t now = static_cast<uint64_t>(std::time(nullptr));
-    std::vector<std::string> pairs;
+    std::vector<const Cookie*> selected;
     for (auto it = cookies_.begin(); it != cookies_.end();) {
         if (it->persistent && it->expiry && now >= it->expiry) {
             it = cookies_.erase(it);
@@ -152,16 +152,23 @@ std::string CookieJar::cookie_header(const Url& url) {
             ++it;
         }
     }
+    std::string_view request_path = "/";
+    if (!url.path.empty()) request_path = url.path;
     for (const auto& c : cookies_) {
         if (c.secure && url.scheme != "https") continue;
         if (!domain_matches(c.domain, c.host_only, url.host)) continue;
-        if (!path_matches(c.path, url.request_target())) continue;
-        pairs.push_back(c.name + "=" + c.value);
+        if (!path_matches(c.path, request_path)) continue;
+        selected.push_back(&c);
     }
+    std::stable_sort(selected.begin(), selected.end(), [](const Cookie* lhs, const Cookie* rhs) {
+        return lhs->path.size() > rhs->path.size();
+    });
     std::string out;
-    for (size_t i = 0; i < pairs.size(); ++i) {
+    for (size_t i = 0; i < selected.size(); ++i) {
         if (i) out += "; ";
-        out += pairs[i];
+        out += selected[i]->name;
+        out += '=';
+        out += selected[i]->value;
     }
     return out;
 }
