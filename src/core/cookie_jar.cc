@@ -115,8 +115,7 @@ static bool parse_cookie_expiry(std::string_view value, uint64_t& expiry) {
         while (pos < value.size() && cookie_date_delimiter(static_cast<unsigned char>(value[pos])))
             ++pos;
         const size_t begin = pos;
-        while (pos < value.size() &&
-               !cookie_date_delimiter(static_cast<unsigned char>(value[pos])))
+        while (pos < value.size() && !cookie_date_delimiter(static_cast<unsigned char>(value[pos])))
             ++pos;
         if (begin != pos) tokens.push_back(value.substr(begin, pos - begin));
     }
@@ -151,8 +150,8 @@ static bool parse_cookie_expiry(std::string_view value, uint64_t& expiry) {
         year += 1900;
     else if (year <= 69)
         year += 2000;
-    if (year < 1601 || day < 1 || day > days_in_month(year, month) || hour > 23 ||
-        minute > 59 || second > 59) {
+    if (year < 1601 || day < 1 || day > days_in_month(year, month) || hour > 23 || minute > 59 ||
+        second > 59) {
         return false;
     }
 
@@ -229,11 +228,10 @@ void CookieJar::store(const Url& url, std::string_view set_cookie) {
                 max_age_seen = true;
                 const uint64_t now = static_cast<uint64_t>(std::time(nullptr));
                 const uint64_t delta = secs > 0 ? static_cast<uint64_t>(secs) : 0;
-                c.expiry = secs <= 0
-                               ? 1
-                               : (delta > std::numeric_limits<uint64_t>::max() - now
-                                      ? std::numeric_limits<uint64_t>::max()
-                                      : now + delta);
+                c.expiry = secs <= 0 ? 1
+                                     : (delta > std::numeric_limits<uint64_t>::max() - now
+                                            ? std::numeric_limits<uint64_t>::max()
+                                            : now + delta);
             }
         } else if (anl == "expires") {
             uint64_t expiry = 0;
