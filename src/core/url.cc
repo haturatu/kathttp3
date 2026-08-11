@@ -50,7 +50,9 @@ bool parse_url(std::string_view raw, Url& out) {
     auto colon = raw.find(':');
     if (colon == std::string_view::npos) return false;
     out.scheme = std::string(raw.substr(0, colon));
-    std::transform(out.scheme.begin(), out.scheme.end(), out.scheme.begin(), ::tolower);
+    for (char& ch : out.scheme) {
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
+    }
     pos = colon + 1;
     if (out.scheme != "https") return false;
     if (raw.substr(pos, 2) != "//") return false;
