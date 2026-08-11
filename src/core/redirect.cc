@@ -47,8 +47,7 @@ std::string remove_dot_segments(std::string input) {
         } else if (input == "." || input == "..") {
             input.clear();
         } else {
-            const size_t segment_end =
-                input.front() == '/' ? input.find('/', 1) : input.find('/');
+            const size_t segment_end = input.front() == '/' ? input.find('/', 1) : input.find('/');
             if (segment_end == std::string::npos) {
                 output += input;
                 input.clear();

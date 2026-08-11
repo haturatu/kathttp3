@@ -325,8 +325,7 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
                     const bool body_header = case_eq(header.name, "content-length") ||
                                              case_eq(header.name, "content-type") ||
                                              case_eq(header.name, "content-encoding");
-                    if ((dec.cross_origin && sensitive) || (dec.drop_body && body_header))
-                        continue;
+                    if ((dec.cross_origin && sensitive) || (dec.drop_body && body_header)) continue;
                     nr->headers.add(header.name, header.value);
                 }
                 if (dec.drop_body) {
