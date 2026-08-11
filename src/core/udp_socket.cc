@@ -20,6 +20,10 @@
 namespace kathttp3 {
 
 namespace {
+struct alignas(cmsghdr) ReceiveControlBuffer {
+    std::array<uint8_t, 256> bytes{};
+};
+
 void decode_receive_metadata(int family, msghdr& msg, UdpReceiveDatagram& datagram) {
     datagram.peer_length = msg.msg_namelen;
     datagram.ecn = 0;
@@ -186,7 +190,7 @@ ssize_t UdpSocket::send_now(const uint8_t* data, size_t len, unsigned int ecn) {
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
 
-    uint8_t ctrl[CMSG_SPACE(sizeof(int))]{};
+    alignas(cmsghdr) uint8_t ctrl[CMSG_SPACE(sizeof(int))]{};
     msg.msg_control = ctrl;
     msg.msg_controllen = sizeof(ctrl);
     auto* cm = CMSG_FIRSTHDR(&msg);
@@ -194,12 +198,14 @@ ssize_t UdpSocket::send_now(const uint8_t* data, size_t len, unsigned int ecn) {
         cm->cmsg_level = IPPROTO_IP;
         cm->cmsg_type = IP_TOS;
         cm->cmsg_len = CMSG_LEN(sizeof(int));
-        *reinterpret_cast<int*>(CMSG_DATA(cm)) = static_cast<int>(ecn);
+        const int ecn_value = static_cast<int>(ecn);
+        std::memcpy(CMSG_DATA(cm), &ecn_value, sizeof(ecn_value));
     } else {
         cm->cmsg_level = IPPROTO_IPV6;
         cm->cmsg_type = IPV6_TCLASS;
         cm->cmsg_len = CMSG_LEN(sizeof(int));
-        *reinterpret_cast<int*>(CMSG_DATA(cm)) = static_cast<int>(ecn);
+        const int ecn_value = static_cast<int>(ecn);
+        std::memcpy(CMSG_DATA(cm), &ecn_value, sizeof(ecn_value));
     }
 
     return ::sendmsg(fd_, &msg, 0);
@@ -223,7 +229,8 @@ ssize_t UdpSocket::send_now_gso(const uint8_t* data, size_t len, uint16_t segmen
     ecn_cm->cmsg_level = family_ == AF_INET ? IPPROTO_IP : IPPROTO_IPV6;
     ecn_cm->cmsg_type = family_ == AF_INET ? IP_TOS : IPV6_TCLASS;
     ecn_cm->cmsg_len = CMSG_LEN(sizeof(int));
-    *reinterpret_cast<int*>(CMSG_DATA(ecn_cm)) = static_cast<int>(ecn);
+    const int ecn_value = static_cast<int>(ecn);
+    std::memcpy(CMSG_DATA(ecn_cm), &ecn_value, sizeof(ecn_value));
     auto* gso_cm = CMSG_NXTHDR(&msg, ecn_cm);
     if (!gso_cm) {
         errno = EINVAL;
@@ -234,7 +241,7 @@ ssize_t UdpSocket::send_now_gso(const uint8_t* data, size_t len, uint16_t segmen
     gso_cm->cmsg_level = IPPROTO_UDP;
     gso_cm->cmsg_type = UDP_SEGMENT;
     gso_cm->cmsg_len = CMSG_LEN(sizeof(uint16_t));
-    *reinterpret_cast<uint16_t*>(CMSG_DATA(gso_cm)) = segment_size;
+    std::memcpy(CMSG_DATA(gso_cm), &segment_size, sizeof(segment_size));
     return ::sendmsg(fd_, &msg, 0);
 #else
     (void)data;
@@ -335,7 +342,7 @@ ssize_t UdpSocket::recv(UdpReceiveDatagram& datagram) {
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
 
-    uint8_t ctrl[256]{};
+    alignas(cmsghdr) uint8_t ctrl[256]{};
     msg.msg_control = ctrl;
     msg.msg_controllen = sizeof(ctrl);
 
@@ -361,7 +368,7 @@ ssize_t UdpSocket::recv_batch(UdpReceiveDatagram* datagrams, size_t count) {
 #if defined(__linux__) || defined(__ANDROID__)
     std::array<mmsghdr, kMaxReceiveBatch> messages{};
     std::array<iovec, kMaxReceiveBatch> iov{};
-    std::array<std::array<uint8_t, 256>, kMaxReceiveBatch> controls{};
+    std::array<ReceiveControlBuffer, kMaxReceiveBatch> controls{};
     for (size_t i = 0; i < count; ++i) {
         auto& datagram = datagrams[i];
         if (!datagram.data || datagram.capacity == 0) {
@@ -377,8 +384,8 @@ ssize_t UdpSocket::recv_batch(UdpReceiveDatagram* datagrams, size_t count) {
         messages[i].msg_hdr.msg_namelen = datagram.peer_length;
         messages[i].msg_hdr.msg_iov = &iov[i];
         messages[i].msg_hdr.msg_iovlen = 1;
-        messages[i].msg_hdr.msg_control = controls[i].data();
-        messages[i].msg_hdr.msg_controllen = controls[i].size();
+        messages[i].msg_hdr.msg_control = controls[i].bytes.data();
+        messages[i].msg_hdr.msg_controllen = controls[i].bytes.size();
     }
     const int received =
         ::recvmmsg(fd_, messages.data(), static_cast<unsigned int>(count), MSG_DONTWAIT, nullptr);
