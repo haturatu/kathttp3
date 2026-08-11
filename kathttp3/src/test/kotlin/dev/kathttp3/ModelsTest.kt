@@ -111,6 +111,23 @@ class ModelsTest {
     @Test fun headerAcceptsConventionalMixedCaseName() {
         assertEquals("Content-Type", KatHttp3Header("Content-Type", "application/json").name)
     }
+    @Test fun multipartEscapesDispositionParameters() {
+        val multipart = MultipartBody.Builder()
+            .addFormField("quoted\"\\name", "value")
+            .addFile("upload", "あ.txt", "text/plain", byteArrayOf(1))
+            .build()
+        val encoded = multipart.bytes.toString(Charsets.UTF_8)
+        assertTrue(encoded.contains("name=\"quoted\\\"\\\\name\""))
+        assertTrue(encoded.contains("filename=\"%E3%81%82.txt\""))
+    }
+    @Test fun multipartRejectsPartHeaderInjection() {
+        assertFailsWith<IllegalArgumentException> {
+            MultipartBody.Builder().addFormField("safe\r\nX-Injected: yes", "value")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            MultipartBody.Builder().addFile("upload", "file.txt", "text/plain\r\nX: yes", byteArrayOf())
+        }
+    }
     @Test fun immutableValueBasics() { assertEquals("GET", KatHttp3Request("GET", "https://example.com").method) }
     @Test fun requestPriorityValidatesRfc9218Urgency() {
         assertFailsWith<IllegalArgumentException> { KatHttp3RequestPriority(urgency = -1) }
