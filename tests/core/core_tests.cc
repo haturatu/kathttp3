@@ -99,9 +99,11 @@ int main() {
     ordered_jar.store(from, "id=deep; Path=/a; Secure");
     Url nested;
     assert(parse_url("https://example.com/a/b?ignored=1", nested));
-    assert(ordered_jar.cookie_header(nested) == "id=deep; id=root");
+    const auto ordered_cookie = ordered_jar.cookie_header(nested);
+    assert(ordered_cookie == "id=deep; id=root");
     ordered_jar.store(from, "query-path=bad; Path=/a/b?ignored=1; Secure");
-    assert(ordered_jar.cookie_header(nested).find("query-path=") == std::string::npos);
+    const auto query_path_cookie = ordered_jar.cookie_header(nested);
+    assert(query_path_cookie.find("query-path=") == std::string::npos);
 
     // Resolver work is deliberately dispatched off the QUIC worker.  The
     // callback receives owned values, and cancellation suppresses delivery.
