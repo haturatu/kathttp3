@@ -306,7 +306,8 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
         RedirectPolicy policy;
         RedirectDecision dec = policy.evaluate(job->request->method, job->url, tmp, true,
                                                kDefaultMaxRedirects - job->redirect_count);
-        if (dec.follow && !dec.new_url.empty()) {
+        const bool can_replay_body = !job->request->streaming_body || dec.drop_body;
+        if (dec.follow && can_replay_body && !dec.new_url.empty()) {
             Url new_url;
             if (parse_url(dec.new_url, new_url) && new_url.valid()) {
                 if (opt_.enable_cookies) store_cookies(job->url, headers);
@@ -324,12 +325,11 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
                     const bool body_header = case_eq(header.name, "content-length") ||
                                              case_eq(header.name, "content-type") ||
                                              case_eq(header.name, "content-encoding");
-                    if ((dec.cross_origin && sensitive) ||
-                        ((nr->method == "GET" || nr->method == "HEAD") && body_header))
+                    if ((dec.cross_origin && sensitive) || (dec.drop_body && body_header))
                         continue;
                     nr->headers.add(header.name, header.value);
                 }
-                if (nr->method == "GET" || nr->method == "HEAD") {
+                if (dec.drop_body) {
                     nr->body.clear();
                 } else {
                     nr->body = job->request->body;
