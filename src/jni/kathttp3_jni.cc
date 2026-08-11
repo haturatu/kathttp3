@@ -132,6 +132,32 @@ class ThreadEnv {
 };
 thread_local ThreadEnv g_thread_env;
 
+class UtfChars {
+   public:
+    UtfChars(JNIEnv* env, jstring string)
+        : env_(env),
+          string_(string),
+          chars_(string ? env->GetStringUTFChars(string, nullptr) : nullptr) {}
+    ~UtfChars() {
+        if (chars_) env_->ReleaseStringUTFChars(string_, chars_);
+    }
+
+    UtfChars(const UtfChars&) = delete;
+    UtfChars& operator=(const UtfChars&) = delete;
+
+    explicit operator bool() const {
+        return chars_ != nullptr;
+    }
+    const char* get() const {
+        return chars_;
+    }
+
+   private:
+    JNIEnv* env_;
+    jstring string_;
+    const char* chars_;
+};
+
 struct CallbackState {
     jobject callback = nullptr;
     std::atomic<bool> terminal{false};
@@ -488,11 +514,11 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp3_internal_NativeBridge_ex
     jboolean streaming_request_body, jlong streaming_content_length, jobject callback) {
     auto* client = checked(h);
     if (!client || !method || !url || !callback) return JNI_FALSE;
-    const char* m = env->GetStringUTFChars(method, nullptr);
-    const char* u = env->GetStringUTFChars(url, nullptr);
-    kathttp3_request* req = kathttp3_request_create(m, u);
-    env->ReleaseStringUTFChars(method, m);
-    env->ReleaseStringUTFChars(url, u);
+    UtfChars m(env, method);
+    if (!m) return JNI_FALSE;
+    UtfChars u(env, url);
+    if (!u) return JNI_FALSE;
+    kathttp3_request* req = kathttp3_request_create(m.get(), u.get());
     if (!req) return JNI_FALSE;
     jsize count = names ? env->GetArrayLength(names) : 0;
     if (!values || env->GetArrayLength(values) != count) {
@@ -500,13 +526,22 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp3_internal_NativeBridge_ex
         return JNI_FALSE;
     }
     for (jsize i = 0; i < count; i++) {
-        auto n = (jstring)env->GetObjectArrayElement(names, i);
-        auto v = (jstring)env->GetObjectArrayElement(values, i);
-        const char* cn = env->GetStringUTFChars(n, nullptr);
-        const char* cv = env->GetStringUTFChars(v, nullptr);
-        int rc = kathttp3_request_add_header(req, cn, cv);
-        env->ReleaseStringUTFChars(n, cn);
-        env->ReleaseStringUTFChars(v, cv);
+        auto n = reinterpret_cast<jstring>(env->GetObjectArrayElement(names, i));
+        auto v = reinterpret_cast<jstring>(env->GetObjectArrayElement(values, i));
+        if (env->ExceptionCheck() || !n || !v) {
+            if (n) env->DeleteLocalRef(n);
+            if (v) env->DeleteLocalRef(v);
+            kathttp3_request_destroy(req);
+            return JNI_FALSE;
+        }
+        int rc = KATHTTP3_ERR_NOMEM;
+        {
+            UtfChars cn(env, n);
+            if (cn) {
+                UtfChars cv(env, v);
+                if (cv) rc = kathttp3_request_add_header(req, cn.get(), cv.get());
+            }
+        }
         env->DeleteLocalRef(n);
         env->DeleteLocalRef(v);
         if (rc != 0) {
@@ -515,11 +550,15 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp3_internal_NativeBridge_ex
         }
     }
     if (body) {
-        jsize len = env->GetArrayLength(body);
-        jbyte* data = env->GetByteArrayElements(body, nullptr);
-        int rc = kathttp3_request_set_body(req, reinterpret_cast<uint8_t*>(data),
-                                           static_cast<size_t>(len));
-        env->ReleaseByteArrayElements(body, data, JNI_ABORT);
+        const jsize len = env->GetArrayLength(body);
+        jbyte* data = len == 0 ? nullptr : env->GetByteArrayElements(body, nullptr);
+        if (len != 0 && !data) {
+            kathttp3_request_destroy(req);
+            return JNI_FALSE;
+        }
+        const int rc = kathttp3_request_set_body(req, reinterpret_cast<uint8_t*>(data),
+                                                 static_cast<size_t>(len));
+        if (data) env->ReleaseByteArrayElements(body, data, JNI_ABORT);
         if (rc != 0) {
             kathttp3_request_destroy(req);
             return JNI_FALSE;
@@ -563,6 +602,7 @@ extern "C" JNIEXPORT jint JNICALL Java_dev_kathttp3_internal_NativeBridge_append
     if (!client) return KATHTTP3_ERR_CLOSED;
     const jsize len = data ? env->GetArrayLength(data) : 0;
     jbyte* bytes = data && len ? env->GetByteArrayElements(data, nullptr) : nullptr;
+    if (data && len && !bytes) return KATHTTP3_ERR_NOMEM;
     const auto result = kathttp3_client_request_body_append(
         client, id, reinterpret_cast<const uint8_t*>(bytes), static_cast<size_t>(len), finished);
     if (bytes) env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
