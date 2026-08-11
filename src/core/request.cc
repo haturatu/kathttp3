@@ -1,8 +1,10 @@
 #include "request.h"
 
 #include <cctype>
+#include <charconv>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <new>
 
 #include "kathttp3.h"
@@ -70,6 +72,41 @@ void log_request_exception(const char* operation) noexcept {
 }
 }  // namespace
 
+namespace kathttp3 {
+
+bool validate_request_body_framing(kathttp3_request& request) {
+    bool saw_content_length = false;
+    uint64_t content_length = 0;
+    for (const auto& header : request.headers.list()) {
+        if (header.name != "content-length") continue;
+        uint64_t value = 0;
+        const char* begin = header.value.data();
+        const char* end = begin + header.value.size();
+        const auto [parsed, error] = std::from_chars(begin, end, value);
+        if (begin == end || error != std::errc{} || parsed != end ||
+            value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+            (saw_content_length && value != content_length)) {
+            return false;
+        }
+        saw_content_length = true;
+        content_length = value;
+    }
+
+    if (request.streaming_body) {
+        if (!saw_content_length) return true;
+        if (request.streaming_body_length >= 0 &&
+            static_cast<uint64_t>(request.streaming_body_length) != content_length) {
+            return false;
+        }
+        request.streaming_body_length = static_cast<int64_t>(content_length);
+        return true;
+    }
+
+    return !saw_content_length || static_cast<uint64_t>(request.body.size()) == content_length;
+}
+
+} /* namespace kathttp3 */
+
 extern "C" {
 
 kathttp3_request* kathttp3_request_create(const char* method, const char* url) {
@@ -117,6 +154,8 @@ int kathttp3_request_set_body(kathttp3_request* request, const uint8_t* data, si
     } else {
         request->body.clear();
     }
+    request->streaming_body = false;
+    request->streaming_body_length = -1;
     return KATHTTP3_OK;
 }
 

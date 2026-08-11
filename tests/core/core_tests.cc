@@ -25,6 +25,7 @@
 #include "network_change.h"
 #include "precommit_failover.h"
 #include "redirect.h"
+#include "request.h"
 #include "request_body_offset.h"
 #include "time_util.h"
 #include "udp_error.h"
@@ -70,6 +71,34 @@ int main() {
     kathttp3_request_destroy(request);
     assert(kathttp3_request_create("", "https://example.com/") == nullptr);
     assert(kathttp3_request_create("BAD METHOD", "https://example.com/") == nullptr);
+    request = kathttp3_request_create("POST", "https://example.com/");
+    const std::array<uint8_t, 3> request_body{'a', 'b', 'c'};
+    assert(kathttp3_request_set_body(request, request_body.data(), request_body.size()) ==
+           KATHTTP3_OK);
+    assert(kathttp3_request_add_header(request, "Content-Length", "3") == KATHTTP3_OK);
+    assert(kathttp3_request_add_header(request, "Content-Length", "3") == KATHTTP3_OK);
+    assert(validate_request_body_framing(*request));
+    kathttp3_request_destroy(request);
+    request = kathttp3_request_create("POST", "https://example.com/");
+    assert(kathttp3_request_set_body(request, request_body.data(), request_body.size()) ==
+           KATHTTP3_OK);
+    assert(kathttp3_request_add_header(request, "Content-Length", "2") == KATHTTP3_OK);
+    assert(!validate_request_body_framing(*request));
+    kathttp3_request_destroy(request);
+    request = kathttp3_request_create("POST", "https://example.com/");
+    assert(kathttp3_request_add_header(request, "Content-Length", "invalid") == KATHTTP3_OK);
+    assert(!validate_request_body_framing(*request));
+    kathttp3_request_destroy(request);
+    request = kathttp3_request_create("POST", "https://example.com/");
+    assert(kathttp3_request_set_streaming_body(request, -1) == KATHTTP3_OK);
+    assert(kathttp3_request_add_header(request, "Content-Length", "7") == KATHTTP3_OK);
+    assert(validate_request_body_framing(*request));
+    assert(request->streaming_body_length == 7);
+    assert(kathttp3_request_set_body(request, request_body.data(), request_body.size()) ==
+           KATHTTP3_OK);
+    assert(!request->streaming_body && request->streaming_body_length == -1);
+    assert(!validate_request_body_framing(*request));
+    kathttp3_request_destroy(request);
     Response response;
     response.status_code = 303;
     response.headers.add("location", "/next");
