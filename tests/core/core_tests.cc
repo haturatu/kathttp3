@@ -94,6 +94,15 @@ int main() {
     jar.store(from, "scoped=gone; Domain=example.com; Path=/a; Max-Age=0");
     const auto expired_cookie = jar.cookie_header(from);
     assert(expired_cookie.find("scoped=") == std::string::npos);
+    jar.store(from, "dated=present; Path=/a; Secure");
+    jar.store(from, "dated=gone; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/a; Secure");
+    assert(jar.cookie_header(from).find("dated=") == std::string::npos);
+    jar.store(from, "future=present; Expires=Wed, 09 Jun 2038 10:18:14 GMT; Path=/a; Secure");
+    assert(jar.cookie_header(from).find("future=present") != std::string::npos);
+    jar.store(from,
+              "precedence=gone; Max-Age=0; Expires=Wed, 09 Jun 2038 10:18:14 GMT; Path=/a; "
+              "Secure");
+    assert(jar.cookie_header(from).find("precedence=") == std::string::npos);
 
     // Resolver work is deliberately dispatched off the QUIC worker.  The
     // callback receives owned values, and cancellation suppresses delivery.
