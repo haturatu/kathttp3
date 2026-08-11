@@ -112,7 +112,15 @@ class DohResolver(
     }
 
     private fun query(host: String, port: Int, type: String): QueryResult? {
-        val url = URL("$endpoint?name=${host.encode()}&type=$type")
+        val separator = when {
+            endpoint.endsWith('?') || endpoint.endsWith('&') -> ""
+            '?' in endpoint -> "&"
+            else -> "?"
+        }
+        val url = URL(
+            "$endpoint${separator}name=${encodeUriQueryComponent(host)}" +
+                "&type=${encodeUriQueryComponent(type)}",
+        )
         val conn = url.openConnection() as HttpURLConnection
         return try {
             conn.requestMethod = "GET"
@@ -174,13 +182,6 @@ class DohResolver(
         return if (seconds > Long.MAX_VALUE / 1000) Long.MAX_VALUE else seconds * 1000
     }
 
-    private fun String.encode(): String = buildString {
-        for (c in this@encode) {
-            if (c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '-' || c == '_' || c == '.' || c == '~') append(c)
-            else append("%%%02X".format(c.code))
-        }
-    }
-
     private companion object {
         const val TYPE_A = 1
         const val TYPE_SOA = 6
@@ -192,3 +193,21 @@ class DohResolver(
         const val NANOS_PER_MILLI = 1_000_000L
     }
 }
+
+internal fun encodeUriQueryComponent(value: String): String = buildString {
+    for (byte in value.toByteArray(Charsets.UTF_8)) {
+        val octet = byte.toInt() and 0xff
+        if (octet in 'a'.code..'z'.code || octet in 'A'.code..'Z'.code ||
+            octet in '0'.code..'9'.code || octet == '-'.code || octet == '_'.code ||
+            octet == '.'.code || octet == '~'.code
+        ) {
+            append(octet.toChar())
+        } else {
+            append('%')
+            append(HEX_DIGITS[octet ushr 4])
+            append(HEX_DIGITS[octet and 0x0f])
+        }
+    }
+}
+
+private const val HEX_DIGITS = "0123456789ABCDEF"

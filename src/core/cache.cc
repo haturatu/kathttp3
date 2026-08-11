@@ -1,6 +1,7 @@
 #include "cache.h"
 
 #include <algorithm>
+#include <cctype>
 #include <ctime>
 
 #include "time_util.h"
@@ -13,7 +14,8 @@ bool ResponseCache::cacheable(std::string_view method, const Response& resp) con
     if (cc.empty()) return false;
     std::string lower;
     lower.reserve(cc.size());
-    for (char c : cc) lower.push_back(static_cast<char>(std::tolower(c)));
+    for (char c : cc)
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
     if (lower.find("no-store") != std::string_view::npos) return false;
     if (lower.find("private") != std::string_view::npos) return false;
     if (lower.find("max-age") == std::string_view::npos) return false;
