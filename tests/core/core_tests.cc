@@ -49,6 +49,8 @@ int main() {
     assert(u.port == 0 && u.authority() == "example.com");
     assert(parse_url("https://example.com:8443/a", u));
     assert(u.authority() == "example.com:8443");
+    assert(parse_url("HTTPS://example.com/a", u) && u.scheme == "https");
+    assert(!parse_url(std::string("h\x80ttps://example.com/", 21), u));
     assert(!parse_url("http://example.com", u));
     assert(!parse_url("https://example.com:99999/", u));
     assert(parse_url("https://[::1]:443/", u));
