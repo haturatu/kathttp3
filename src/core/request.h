@@ -26,4 +26,13 @@ struct kathttp3_request {
     std::vector<std::pair<std::string, uint16_t>> addresses;
 };
 
+namespace kathttp3 {
+
+/* Validates caller-supplied Content-Length fields against the selected body
+ * mode. For an unknown-length streaming body, an explicit Content-Length
+ * becomes the enforced streaming length. */
+bool validate_request_body_framing(kathttp3_request& request);
+
+} /* namespace kathttp3 */
+
 #endif /* KATHTTP3_REQUEST_H */
