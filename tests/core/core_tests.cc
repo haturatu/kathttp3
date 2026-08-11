@@ -104,6 +104,16 @@ int main() {
     jar.store(from, "scoped=gone; Domain=example.com; Path=/a; Max-Age=0");
     const auto expired_cookie = jar.cookie_header(from);
     assert(expired_cookie.find("scoped=") == std::string::npos);
+    CookieJar ordered_jar;
+    ordered_jar.store(from, "id=root; Path=/; Secure");
+    ordered_jar.store(from, "id=deep; Path=/a; Secure");
+    Url nested;
+    assert(parse_url("https://example.com/a/b?ignored=1", nested));
+    const auto ordered_cookie = ordered_jar.cookie_header(nested);
+    assert(ordered_cookie == "id=deep; id=root");
+    ordered_jar.store(from, "query-path=bad; Path=/a/b?ignored=1; Secure");
+    const auto query_path_cookie = ordered_jar.cookie_header(nested);
+    assert(query_path_cookie.find("query-path=") == std::string::npos);
 
     // Resolver work is deliberately dispatched off the QUIC worker.  The
     // callback receives owned values, and cancellation suppresses delivery.
