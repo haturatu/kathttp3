@@ -160,6 +160,11 @@ class ModelsTest {
         assertEquals("https://example.com:443", OriginRequestScheduler.originOf("https://EXAMPLE.com/path"))
         assertEquals("https://example.com:8443", OriginRequestScheduler.originOf("https://example.com:8443/path"))
     }
+    @Test fun dohQueryComponentsUseUtf8PercentEncoding() {
+        assertEquals("example.com", encodeUriQueryComponent("example.com"))
+        assertEquals("%E3%81%82.example", encodeUriQueryComponent("あ.example"))
+        assertEquals("A%26AAAA%20query", encodeUriQueryComponent("A&AAAA query"))
+    }
     @Test fun requestSchedulerBoundsQueuedCalls() = runBlocking { supervisorScope {
         val scheduler = OriginRequestScheduler(1, 0, 1_000)
         val permit = scheduler.acquire("https://example.com")
