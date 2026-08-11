@@ -60,6 +60,14 @@ int main() {
     assert(!parse_url("http://example.com", u));
     assert(!parse_url("https://example.com:99999/", u));
     assert(parse_url("https://[::1]:443/", u));
+    assert(u.authority() == "[::1]");
+    assert(u.to_string() == "https://[::1]/");
+    assert(parse_url("https://[2001:db8::1]:8443/a", u));
+    assert(u.authority() == "[2001:db8::1]:8443");
+    assert(u.to_string() == "https://[2001:db8::1]:8443/a");
+    assert(!parse_url("https://::1/", u));
+    assert(!parse_url("https://[::1]suffix/", u));
+    assert(!parse_url("https://[not-ipv6]/", u));
     HeaderList h;
     h.add("Content-Type", "text/plain");
     assert(h.get("content-type") == "text/plain");

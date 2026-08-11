@@ -1,5 +1,9 @@
 #include "url.h"
 
+#include <arpa/inet.h>
+
+#include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cstdlib>
 
@@ -12,7 +16,7 @@ uint16_t default_port(std::string_view scheme) {
 }
 
 std::string Url::authority() const {
-    std::string a = host;
+    std::string a = host.find(':') == std::string::npos ? host : "[" + host + "]";
     uint16_t p = port ? port : default_port(scheme);
     // Omit the port when it is the scheme default.
     if (p != default_port(scheme)) {
@@ -64,14 +68,15 @@ bool parse_url(std::string_view raw, Url& out) {
     size_t at = auth.find('@');
     if (at != std::string_view::npos) return false;
 
-    bool ipv6 = false;
     if (auth.size() >= 2 && auth.front() == '[') {
         auto close = auth.find(']');
         if (close == std::string_view::npos) return false;
         out.host = std::string(auth.substr(1, close - 1));
-        ipv6 = true;
+        in6_addr address{};
+        if (inet_pton(AF_INET6, out.host.c_str(), &address) != 1) return false;
         size_t p = close + 1;
-        if (p < auth.size() && auth[p] == ':') {
+        if (p < auth.size()) {
+            if (auth[p] != ':') return false;
             unsigned value = 0;
             auto ps = auth.substr(p + 1);
             auto rc = std::from_chars(ps.data(), ps.data() + ps.size(), value);
@@ -84,6 +89,7 @@ bool parse_url(std::string_view raw, Url& out) {
         auto pcolon = auth.rfind(':');
         if (pcolon != std::string_view::npos) {
             out.host = std::string(auth.substr(0, pcolon));
+            if (out.host.find(':') != std::string::npos) return false;
             unsigned value = 0;
             auto ps = auth.substr(pcolon + 1);
             auto rc = std::from_chars(ps.data(), ps.data() + ps.size(), value);
@@ -95,8 +101,6 @@ bool parse_url(std::string_view raw, Url& out) {
             out.host = std::string(auth);
         }
     }
-    (void)ipv6;
-
     if (out.host.empty()) return false;
 
     // path / query
