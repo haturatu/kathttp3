@@ -9,7 +9,6 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "android_cert_verifier.h"
@@ -24,12 +23,7 @@
 namespace {
 JavaVM* g_vm = nullptr;
 std::mutex g_handles_mutex;
-std::unordered_set<kathttp3_client*> g_handles;
-std::unordered_map<kathttp3_client*, void*> g_resolvers;
-#ifdef __ANDROID__
-std::unordered_map<kathttp3_client*, std::unique_ptr<kathttp3::AndroidQlogLogcatSink>>
-    g_qlog_logcat_sinks;
-#endif
+std::atomic<uint64_t> g_next_handle{1};
 
 struct JniCache {
     jclass string_class = nullptr;
@@ -102,6 +96,19 @@ struct ResolverCtx {
     jobject resolver = nullptr; /* global ref */
 };
 
+struct HandleEntry {
+    kathttp3_client* client = nullptr;
+    ResolverCtx* resolver = nullptr;
+    size_t active_calls = 0;
+    bool destroy_requested = false;
+    bool destroy_started = false;
+#ifdef __ANDROID__
+    std::unique_ptr<kathttp3::AndroidQlogLogcatSink> qlog_logcat_sink;
+#endif
+};
+
+std::unordered_map<jlong, std::shared_ptr<HandleEntry>> g_handles;
+
 class ThreadEnv {
    public:
     JNIEnv* get() {
@@ -166,10 +173,61 @@ struct CallbackState {
     kathttp3::JniBodyBatch body_batch;
 };
 
-kathttp3_client* checked(jlong value) {
-    auto* p = reinterpret_cast<kathttp3_client*>(static_cast<uintptr_t>(value));
+void finalize_handle(std::shared_ptr<HandleEntry> entry) noexcept;
+
+class ClientLease {
+   public:
+    ClientLease() = default;
+    explicit ClientLease(std::shared_ptr<HandleEntry> entry) : entry_(std::move(entry)) {}
+    ~ClientLease() {
+        release();
+    }
+
+    ClientLease(const ClientLease&) = delete;
+    ClientLease& operator=(const ClientLease&) = delete;
+    ClientLease(ClientLease&& other) noexcept : entry_(std::move(other.entry_)) {}
+    ClientLease& operator=(ClientLease&& other) noexcept {
+        if (this != &other) {
+            release();
+            entry_ = std::move(other.entry_);
+        }
+        return *this;
+    }
+
+    explicit operator bool() const {
+        return entry_ != nullptr;
+    }
+    kathttp3_client* get() const {
+        return entry_ ? entry_->client : nullptr;
+    }
+
+   private:
+    void release() noexcept {
+        if (!entry_) return;
+        std::shared_ptr<HandleEntry> finalize;
+        {
+            std::lock_guard<std::mutex> lock(g_handles_mutex);
+            if (entry_->active_calls > 0) --entry_->active_calls;
+            if (entry_->active_calls == 0 && entry_->destroy_requested &&
+                !entry_->destroy_started) {
+                entry_->destroy_started = true;
+                finalize = entry_;
+            }
+        }
+        entry_.reset();
+        if (finalize) finalize_handle(std::move(finalize));
+    }
+
+    std::shared_ptr<HandleEntry> entry_;
+};
+
+ClientLease acquire_client(jlong value) {
+    if (value == 0) return {};
     std::lock_guard<std::mutex> lock(g_handles_mutex);
-    return g_handles.count(p) ? p : nullptr;
+    const auto it = g_handles.find(value);
+    if (it == g_handles.end() || it->second->destroy_requested) return {};
+    ++it->second->active_calls;
+    return ClientLease(it->second);
 }
 
 void release_state(JNIEnv* env, CallbackState* state) {
@@ -299,6 +357,25 @@ void free_resolver_ctx(JNIEnv* env, ResolverCtx* ctx) {
     if (!ctx) return;
     if (ctx->resolver) env->DeleteGlobalRef(ctx->resolver);
     delete ctx;
+}
+
+void finalize_handle(std::shared_ptr<HandleEntry> entry) noexcept {
+    if (!entry) return;
+    kathttp3_client_destroy(entry->client);
+    // Native destruction joins resolver workers before their global reference
+    // is released. A lease is always finalized on a JVM-attached JNI caller.
+    if (entry->resolver) {
+        if (JNIEnv* env = g_thread_env.get()) {
+            free_resolver_ctx(env, entry->resolver);
+        } else {
+            KATHTTP3_LOG_ERR("could not release JNI resolver for destroyed client\n");
+            delete entry->resolver;
+        }
+        entry->resolver = nullptr;
+    }
+#ifdef __ANDROID__
+    entry->qlog_logcat_sink.reset();
+#endif
 }
 
 void event_cb(void* opaque, const kathttp3_event* event) noexcept {
@@ -497,90 +574,74 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp3_internal_NativeBridge_creat
     if (ca) env->ReleaseStringUTFChars(caFile, ca);
     if (qlog) env->ReleaseStringUTFChars(qlogPath, qlog);
     if (p) {
-        try {
-            std::lock_guard<std::mutex> lock(g_handles_mutex);
-            g_handles.insert(p);
-            if (rctx) g_resolvers[p] = rctx;
-#ifdef __ANDROID__
-            if (qlog_logcat_sink) g_qlog_logcat_sinks.emplace(p, std::move(qlog_logcat_sink));
-#endif
-        } catch (...) {
-            KATHTTP3_LOG_ERR("NativeBridge.createClient failed while registering native handle\n");
-            ResolverCtx* registered_resolver = nullptr;
-#ifdef __ANDROID__
-            std::unique_ptr<kathttp3::AndroidQlogLogcatSink> registered_qlog_sink;
-#endif
-            {
-                std::lock_guard<std::mutex> lock(g_handles_mutex);
-                g_handles.erase(p);
-                auto resolver_it = g_resolvers.find(p);
-                if (resolver_it != g_resolvers.end()) {
-                    registered_resolver = static_cast<ResolverCtx*>(resolver_it->second);
-                    g_resolvers.erase(resolver_it);
-                }
-#ifdef __ANDROID__
-                auto qlog_it = g_qlog_logcat_sinks.find(p);
-                if (qlog_it != g_qlog_logcat_sinks.end()) {
-                    registered_qlog_sink = std::move(qlog_it->second);
-                    g_qlog_logcat_sinks.erase(qlog_it);
-                }
-#endif
-            }
+        const uint64_t next_handle = g_next_handle.fetch_add(1, std::memory_order_relaxed);
+        if (next_handle == 0 ||
+            next_handle > static_cast<uint64_t>(std::numeric_limits<jlong>::max())) {
             kathttp3_client_destroy(p);
-            if (registered_resolver)
-                free_resolver_ctx(env, registered_resolver);
-            else if (rctx)
-                free_resolver_ctx(env, rctx);
+            if (rctx) free_resolver_ctx(env, rctx);
             return 0;
         }
+        const auto handle = static_cast<jlong>(next_handle);
+        std::shared_ptr<HandleEntry> entry;
+        try {
+            entry = std::make_shared<HandleEntry>();
+            entry->client = p;
+            entry->resolver = rctx;
+#ifdef __ANDROID__
+            entry->qlog_logcat_sink = std::move(qlog_logcat_sink);
+#endif
+            std::lock_guard<std::mutex> lock(g_handles_mutex);
+            g_handles.emplace(handle, entry);
+        } catch (...) {
+            KATHTTP3_LOG_ERR("NativeBridge.createClient failed while registering native handle\n");
+            kathttp3_client_destroy(p);
+            ResolverCtx* owned_resolver = entry ? entry->resolver : rctx;
+            if (owned_resolver) free_resolver_ctx(env, owned_resolver);
+            if (entry) entry->resolver = nullptr;
+            return 0;
+        }
+        return handle;
     } else if (rctx) {
         free_resolver_ctx(env, rctx);
     }
-    return static_cast<jlong>(reinterpret_cast<uintptr_t>(p));
+    return 0;
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_kathttp3_internal_NativeBridge_closeClient(JNIEnv*,
                                                                                       jobject,
                                                                                       jlong h) {
-    if (auto* p = checked(h)) kathttp3_client_close(p);
+    auto client = acquire_client(h);
+    if (client) kathttp3_client_close(client.get());
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_kathttp3_internal_NativeBridge_destroyClient(JNIEnv* env,
                                                                                         jobject,
                                                                                         jlong h) {
-    auto* p = reinterpret_cast<kathttp3_client*>(static_cast<uintptr_t>(h));
-    ResolverCtx* rctx = nullptr;
-#ifdef __ANDROID__
-    std::unique_ptr<kathttp3::AndroidQlogLogcatSink> qlog_logcat_sink;
-#endif
+    std::shared_ptr<HandleEntry> finalize;
     {
         std::lock_guard<std::mutex> lock(g_handles_mutex);
-        if (!g_handles.erase(p)) return;
-        auto it = g_resolvers.find(p);
-        if (it != g_resolvers.end()) {
-            rctx = reinterpret_cast<ResolverCtx*>(it->second);
-            g_resolvers.erase(it);
+        const auto it = g_handles.find(h);
+        if (it == g_handles.end()) return;
+        auto entry = it->second;
+        g_handles.erase(it);
+        entry->destroy_requested = true;
+        if (entry->active_calls == 0 && !entry->destroy_started) {
+            entry->destroy_started = true;
+            finalize = std::move(entry);
         }
-#ifdef __ANDROID__
-        auto qlog_it = g_qlog_logcat_sinks.find(p);
-        if (qlog_it != g_qlog_logcat_sinks.end()) {
-            qlog_logcat_sink = std::move(qlog_it->second);
-            g_qlog_logcat_sinks.erase(qlog_it);
-        }
-#endif
     }
-    kathttp3_client_destroy(p);
-    // destroy joins all native workers before releasing resolver global refs;
-    // a resolver callback can otherwise observe freed JNI state.
-    if (rctx) free_resolver_ctx(env, rctx);
+    (void)env;
+    if (finalize) finalize_handle(std::move(finalize));
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_kathttp3_internal_NativeBridge_cancel(JNIEnv*, jobject,
                                                                                  jlong h,
                                                                                  jlong id) {
-    if (auto* p = checked(h)) kathttp3_client_cancel(p, id);
+    auto client = acquire_client(h);
+    if (client) kathttp3_client_cancel(client.get(), id);
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_kathttp3_internal_NativeBridge_networkChanged(
     JNIEnv*, jobject, jlong h, jlong generation, jlong network_handle) {
-    if (auto* p = checked(h); p && generation > 0)
-        kathttp3_client_network_changed2(p, static_cast<uint64_t>(generation),
+    auto client = acquire_client(h);
+    if (client && generation > 0)
+        kathttp3_client_network_changed2(client.get(), static_cast<uint64_t>(generation),
                                          static_cast<uint64_t>(network_handle));
 }
 
@@ -588,7 +649,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp3_internal_NativeBridge_ex
     JNIEnv* env, jobject, jlong h, jlong id, jstring method, jstring url, jobjectArray names,
     jobjectArray values, jbyteArray body, jboolean redirects, jboolean streaming,
     jboolean streaming_request_body, jlong streaming_content_length, jobject callback) {
-    auto* client = checked(h);
+    auto client = acquire_client(h);
     if (!client || !method || !url || !callback) return JNI_FALSE;
     UtfChars m(env, method);
     if (!m) return JNI_FALSE;
@@ -659,28 +720,29 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp3_internal_NativeBridge_ex
         kathttp3_request_destroy(req);
         return JNI_FALSE;
     }
-    kathttp3_client_execute(client, req, id, event_cb, state);
+    kathttp3_client_execute(client.get(), req, id, event_cb, state);
     return JNI_TRUE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_dev_kathttp3_internal_NativeBridge_consume(JNIEnv*, jobject, jlong h, jlong id, jlong bytes) {
-    auto* client = checked(h);
+    auto client = acquire_client(h);
     if (!client || bytes < 0) return JNI_FALSE;
-    return kathttp3_client_consume_body(client, id, static_cast<size_t>(bytes)) == KATHTTP3_OK
+    return kathttp3_client_consume_body(client.get(), id, static_cast<size_t>(bytes)) == KATHTTP3_OK
                ? JNI_TRUE
                : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jint JNICALL Java_dev_kathttp3_internal_NativeBridge_appendRequestBody(
     JNIEnv* env, jobject, jlong h, jlong id, jbyteArray data, jboolean finished) {
-    auto* client = checked(h);
+    auto client = acquire_client(h);
     if (!client) return KATHTTP3_ERR_CLOSED;
     const jsize len = data ? env->GetArrayLength(data) : 0;
     jbyte* bytes = data && len ? env->GetByteArrayElements(data, nullptr) : nullptr;
     if (data && len && !bytes) return KATHTTP3_ERR_NOMEM;
-    const auto result = kathttp3_client_request_body_append(
-        client, id, reinterpret_cast<const uint8_t*>(bytes), static_cast<size_t>(len), finished);
+    const auto result = kathttp3_client_request_body_append(client.get(), id,
+                                                            reinterpret_cast<const uint8_t*>(bytes),
+                                                            static_cast<size_t>(len), finished);
     if (bytes) env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
     return result;
 }
