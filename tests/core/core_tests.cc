@@ -190,6 +190,18 @@ int main() {
     jar.store(from, "scoped=gone; Domain=example.com; Path=/a; Max-Age=0");
     const auto expired_cookie = jar.cookie_header(from);
     assert(expired_cookie.find("scoped=") == std::string::npos);
+    jar.store(from, "dated=present; Path=/a; Secure");
+    jar.store(from, "dated=gone; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/a; Secure");
+    const auto dated_cookie = jar.cookie_header(from);
+    assert(dated_cookie.find("dated=") == std::string::npos);
+    jar.store(from, "future=present; Expires=Wed, 09 Jun 2038 10:18:14 GMT; Path=/a; Secure");
+    const auto future_cookie = jar.cookie_header(from);
+    assert(future_cookie.find("future=present") != std::string::npos);
+    jar.store(from,
+              "precedence=gone; Max-Age=0; Expires=Wed, 09 Jun 2038 10:18:14 GMT; Path=/a; "
+              "Secure");
+    const auto precedence_cookie = jar.cookie_header(from);
+    assert(precedence_cookie.find("precedence=") == std::string::npos);
     CookieJar ordered_jar;
     ordered_jar.store(from, "id=root; Path=/; Secure");
     ordered_jar.store(from, "id=deep; Path=/a; Secure");
