@@ -60,7 +60,16 @@ int main() {
     assert(request != nullptr);
     assert(kathttp3_request_add_header(request, "TE", " Trailers\t") == KATHTTP3_OK);
     assert(kathttp3_request_add_header(request, "Connection", "close") == KATHTTP3_ERR_INVALID_ARG);
+    assert(kathttp3_request_add_header(request, "Keep-Alive", "timeout=5") ==
+           KATHTTP3_ERR_INVALID_ARG);
+    assert(kathttp3_request_add_header(request, "TE", "gzip") == KATHTTP3_ERR_INVALID_ARG);
+    assert(kathttp3_request_add_header(request, "bad(name", "value") ==
+           KATHTTP3_ERR_INVALID_ARG);
+    assert(kathttp3_request_add_header(request, "x-control", "bad\x01value") ==
+           KATHTTP3_ERR_INVALID_ARG);
     kathttp3_request_destroy(request);
+    assert(kathttp3_request_create("", "https://example.com/") == nullptr);
+    assert(kathttp3_request_create("BAD METHOD", "https://example.com/") == nullptr);
     Response response;
     response.status_code = 303;
     response.headers.add("location", "/next");
