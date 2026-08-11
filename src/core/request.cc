@@ -1,21 +1,35 @@
 #include "request.h"
 
 #include <cctype>
+#include <charconv>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <new>
 
 #include "kathttp3.h"
 #include "log.h"
 
 namespace {
-bool valid_header(const char* name, const char* value) {
-    if (!*name) return false;
-    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(name); *p; ++p) {
-        if (*p <= 32 || *p >= 127 || *p == ':') return false;
+bool token_char(unsigned char c) {
+    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '!' ||
+           c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' || c == '+' ||
+           c == '-' || c == '.' || c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
+}
+
+bool valid_token(const char* value) {
+    if (!*value) return false;
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(value); *p; ++p) {
+        if (!token_char(*p)) return false;
     }
-    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(value); *p; ++p)
-        if (*p == '\r' || *p == '\n' || *p == 0) return false;
+    return true;
+}
+
+bool valid_header(const char* name, const char* value) {
+    if (!valid_token(name)) return false;
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(value); *p; ++p) {
+        if (*p != '\t' && (*p < 0x20 || *p == 0x7f)) return false;
+    }
     return true;
 }
 
@@ -28,7 +42,22 @@ std::string lower_header_name(const char* name) {
 
 bool forbidden_http3_header(const std::string& name) {
     return name == "connection" || name == "proxy-connection" || name == "transfer-encoding" ||
-           name == "upgrade" || name == "host";
+           name == "keep-alive" || name == "upgrade" || name == "host";
+}
+
+bool valid_te_value(std::string_view value) {
+    const auto begin = value.find_first_not_of(" \t");
+    if (begin == std::string_view::npos) return false;
+    const auto end = value.find_last_not_of(" \t");
+    value = value.substr(begin, end - begin + 1);
+    constexpr std::string_view trailers = "trailers";
+    if (value.size() != trailers.size()) return false;
+    for (size_t i = 0; i < value.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(value[i]);
+        if (c >= 'A' && c <= 'Z') c = static_cast<unsigned char>(c + ('a' - 'A'));
+        if (c != static_cast<unsigned char>(trailers[i])) return false;
+    }
+    return true;
 }
 
 void log_request_exception(const char* operation) noexcept {
@@ -42,10 +71,45 @@ void log_request_exception(const char* operation) noexcept {
 }
 }  // namespace
 
+namespace kathttp3 {
+
+bool validate_request_body_framing(kathttp3_request& request) {
+    bool saw_content_length = false;
+    uint64_t content_length = 0;
+    for (const auto& header : request.headers.list()) {
+        if (header.name != "content-length") continue;
+        uint64_t value = 0;
+        const char* begin = header.value.data();
+        const char* end = begin + header.value.size();
+        const auto [parsed, error] = std::from_chars(begin, end, value);
+        if (begin == end || error != std::errc{} || parsed != end ||
+            value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+            (saw_content_length && value != content_length)) {
+            return false;
+        }
+        saw_content_length = true;
+        content_length = value;
+    }
+
+    if (request.streaming_body) {
+        if (!saw_content_length) return true;
+        if (request.streaming_body_length >= 0 &&
+            static_cast<uint64_t>(request.streaming_body_length) != content_length) {
+            return false;
+        }
+        request.streaming_body_length = static_cast<int64_t>(content_length);
+        return true;
+    }
+
+    return !saw_content_length || static_cast<uint64_t>(request.body.size()) == content_length;
+}
+
+} /* namespace kathttp3 */
+
 extern "C" {
 
 kathttp3_request* kathttp3_request_create(const char* method, const char* url) {
-    if (!method || !url) return nullptr;
+    if (!method || !url || !valid_token(method)) return nullptr;
     auto* r = new (std::nothrow) kathttp3_request();
     if (!r) return nullptr;
     try {
@@ -68,6 +132,7 @@ int kathttp3_request_add_header(kathttp3_request* request, const char* name, con
     try {
         std::string normalized_name = lower_header_name(name);
         if (forbidden_http3_header(normalized_name)) return KATHTTP3_ERR_INVALID_ARG;
+        if (normalized_name == "te" && !valid_te_value(value)) return KATHTTP3_ERR_INVALID_ARG;
         request->headers.add(std::move(normalized_name), value);
         return KATHTTP3_OK;
     } catch (...) {
@@ -88,6 +153,8 @@ int kathttp3_request_set_body(kathttp3_request* request, const uint8_t* data, si
     } else {
         request->body.clear();
     }
+    request->streaming_body = false;
+    request->streaming_body_length = -1;
     return KATHTTP3_OK;
 }
 

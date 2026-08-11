@@ -163,6 +163,15 @@ void Engine::execute(kathttp3_request* req, int64_t request_id, kathttp3_event_c
         delete req;
         return;
     }
+    if (!validate_request_body_framing(*req)) {
+        kathttp3_event ev{};
+        ev.type = KATHTTP3_EVENT_ERROR;
+        ev.request_id = request_id;
+        ev.error_code = KATHTTP3_ERR_INVALID_ARG;
+        invoke_callback(cb, user_data, ev, "invalid request body framing");
+        delete req;
+        return;
+    }
     Url url;
     if (!parse_url(req->url, url)) {
         kathttp3_event ev{};
