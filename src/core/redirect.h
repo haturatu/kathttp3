@@ -13,7 +13,7 @@ struct RedirectDecision {
     bool follow = false;
     bool cross_origin = false;
     std::string new_url;
-    std::string new_method; /* 303 downgrades to GET; 307/308 keep method */
+    std::string new_method;
 };
 
 /* Decides whether (and how) to follow a redirect. Honors:
@@ -21,7 +21,8 @@ struct RedirectDecision {
  *  - the Location header (absolute or relative)
  *  - the remaining redirect budget
  *  - auto-redirect setting on the request
- * 303 always switches to GET; 307/308 preserve the method. */
+ * 301/302 may rewrite POST to GET, 303 switches non-HEAD methods to GET, and
+ * 307/308 preserve the method. */
 class RedirectPolicy {
    public:
     RedirectDecision evaluate(const std::string& method, const Url& from, const Response& resp,
