@@ -13,10 +13,19 @@ class MultipartBody private constructor(val bytes: ByteArray, val contentType: S
         private val boundary = "kathttp3-${UUID.randomUUID()}"
 
         fun addFormField(name: String, value: String): Builder = apply {
+            validateParameter(name, "field name")
             parts += Part(name, null, "text/plain; charset=utf-8", value.toByteArray(Charsets.UTF_8))
         }
 
         fun addFile(name: String, filename: String, contentType: String, data: ByteArray): Builder = apply {
+            validateParameter(name, "field name")
+            validateParameter(filename, "filename")
+            require(
+                contentType.isNotBlank() &&
+                    contentType.none { invalidHeaderCharacter(it) || it.code > 0x7e },
+            ) {
+                "content type contains an invalid header character"
+            }
             parts += Part(name, filename, contentType, data)
         }
 
@@ -27,18 +36,62 @@ class MultipartBody private constructor(val bytes: ByteArray, val contentType: S
             for (p in parts) {
                 out.write(dash); out.write(boundary.toByteArray(Charsets.US_ASCII)); out.write(crlf)
                 val cd = buildString {
-                    append("""Content-Disposition: form-data; name="${p.name}"""")
-                    if (p.filename != null) append("""; filename="${p.filename}"""")
+                    append("Content-Disposition: form-data; name=\"")
+                    append(quotedParameter(p.name, percentEncodeNonAscii = false))
+                    append('"')
+                    if (p.filename != null) {
+                        append("; filename=\"")
+                        append(quotedParameter(p.filename, percentEncodeNonAscii = true))
+                        append('"')
+                    }
                 }
-                out.write(cd.toByteArray(Charsets.US_ASCII)); out.write(crlf)
+                out.write(cd.toByteArray(Charsets.UTF_8)); out.write(crlf)
                 out.write("""Content-Type: ${p.contentType}""".toByteArray(Charsets.US_ASCII)); out.write(crlf)
                 out.write(crlf); out.write(p.data); out.write(crlf)
             }
             out.write(dash); out.write(boundary.toByteArray(Charsets.US_ASCII)); out.write(dash); out.write(crlf)
             return MultipartBody(out.toByteArray(), "multipart/form-data; boundary=$boundary")
         }
+
+        private fun validateParameter(value: String, label: String) {
+            require(value.isNotEmpty() && value.none(::invalidHeaderCharacter)) {
+                "$label contains an invalid header character"
+            }
+        }
+
+        private fun quotedParameter(value: String, percentEncodeNonAscii: Boolean): String =
+            buildString {
+                if (!percentEncodeNonAscii) {
+                    for (character in value) {
+                        if (character == '"' || character == '\\') append('\\')
+                        append(character)
+                    }
+                    return@buildString
+                }
+                for (byte in value.toByteArray(Charsets.UTF_8)) {
+                    val octet = byte.toInt() and 0xff
+                    when {
+                        octet == '"'.code || octet == '\\'.code -> {
+                            append('\\')
+                            append(octet.toChar())
+                        }
+                        octet > 0x7f -> {
+                            append('%')
+                            append(HEX_DIGITS[octet ushr 4])
+                            append(HEX_DIGITS[octet and 0x0f])
+                        }
+                        else -> append(octet.toChar())
+                    }
+                }
+            }
     }
 }
+
+private fun invalidHeaderCharacter(character: Char): Boolean =
+    character == '\r' || character == '\n' || character == '\u0000' ||
+        character.code < 0x20 || character.code == 0x7f
+
+private const val HEX_DIGITS = "0123456789ABCDEF"
 
 fun multipartRequest(
     url: String,
