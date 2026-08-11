@@ -9,9 +9,11 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <condition_variable>
+#include <cstring>
 #include <deque>
 #include <iterator>
 #include <mutex>
@@ -180,6 +182,37 @@ std::string dns_flight_key(const Resolver* resolver, const std::string& host, ui
            ":" + std::to_string(port) + "@" + std::to_string(generation);
 }
 }  // namespace
+
+std::vector<ResolvedEndpoint> resolve_with_c_callback(kathttp3_resolve_cb callback, void* user_data,
+                                                      const std::string& host, uint16_t port) {
+    if (!callback) return {};
+
+    std::array<kathttp3_resolved_address, 64> buffer{};
+    size_t count = buffer.size();
+    if (callback(host.c_str(), port, user_data, buffer.data(), &count) != 0 ||
+        count > buffer.size()) {
+        return {};
+    }
+
+    std::vector<ResolvedEndpoint> endpoints;
+    endpoints.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        const auto& candidate = buffer[i];
+        const void* terminator = std::memchr(candidate.ip, '\0', sizeof(candidate.ip));
+        if (!terminator || candidate.port == 0 ||
+            (candidate.family != AF_INET && candidate.family != AF_INET6)) {
+            continue;
+        }
+
+        std::array<uint8_t, sizeof(in6_addr)> parsed{};
+        if (inet_pton(candidate.family, candidate.ip, parsed.data()) != 1) continue;
+
+        const auto length = static_cast<const char*>(terminator) - candidate.ip;
+        endpoints.push_back({std::string(candidate.ip, static_cast<size_t>(length)), candidate.port,
+                             candidate.family});
+    }
+    return endpoints;
+}
 
 HappyEyeballsPlan make_happy_eyeballs_plan(const std::vector<ResolvedEndpoint>& endpoints) {
     HappyEyeballsPlan plan;

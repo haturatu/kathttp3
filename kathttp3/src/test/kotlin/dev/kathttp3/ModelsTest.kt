@@ -111,6 +111,23 @@ class ModelsTest {
     @Test fun headerAcceptsConventionalMixedCaseName() {
         assertEquals("Content-Type", KatHttp3Header("Content-Type", "application/json").name)
     }
+    @Test fun multipartEscapesDispositionParameters() {
+        val multipart = MultipartBody.Builder()
+            .addFormField("quoted\"\\name", "value")
+            .addFile("upload", "あ.txt", "text/plain", byteArrayOf(1))
+            .build()
+        val encoded = multipart.bytes.toString(Charsets.UTF_8)
+        assertTrue(encoded.contains("name=\"quoted\\\"\\\\name\""))
+        assertTrue(encoded.contains("filename=\"%E3%81%82.txt\""))
+    }
+    @Test fun multipartRejectsPartHeaderInjection() {
+        assertFailsWith<IllegalArgumentException> {
+            MultipartBody.Builder().addFormField("safe\r\nX-Injected: yes", "value")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            MultipartBody.Builder().addFile("upload", "file.txt", "text/plain\r\nX: yes", byteArrayOf())
+        }
+    }
     @Test fun immutableValueBasics() { assertEquals("GET", KatHttp3Request("GET", "https://example.com").method) }
     @Test fun requestPriorityValidatesRfc9218Urgency() {
         assertFailsWith<IllegalArgumentException> { KatHttp3RequestPriority(urgency = -1) }
@@ -159,6 +176,11 @@ class ModelsTest {
     @Test fun requestSchedulerUsesEffectiveOrigin() {
         assertEquals("https://example.com:443", OriginRequestScheduler.originOf("https://EXAMPLE.com/path"))
         assertEquals("https://example.com:8443", OriginRequestScheduler.originOf("https://example.com:8443/path"))
+    }
+    @Test fun dohQueryComponentsUseUtf8PercentEncoding() {
+        assertEquals("example.com", encodeUriQueryComponent("example.com"))
+        assertEquals("%E3%81%82.example", encodeUriQueryComponent("あ.example"))
+        assertEquals("A%26AAAA%20query", encodeUriQueryComponent("A&AAAA query"))
     }
     @Test fun requestSchedulerBoundsQueuedCalls() = runBlocking { supervisorScope {
         val scheduler = OriginRequestScheduler(1, 0, 1_000)
