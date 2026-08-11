@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "kathttp3.h"
+
 namespace kathttp3 {
 
 struct ResolvedEndpoint {
@@ -139,6 +141,11 @@ class CallbackResolver : public Resolver {
    private:
     Fn fn_;
 };
+
+/* Invokes the public C resolver hook through a bounded, validated adapter.
+ * Malformed callback output is rejected before it becomes owned C++ state. */
+std::vector<ResolvedEndpoint> resolve_with_c_callback(kathttp3_resolve_cb callback, void* user_data,
+                                                      const std::string& host, uint16_t port);
 
 /* Submit resolution to KatHttp3's bounded DNS worker pool.  The callback runs
  * on a DNS worker, therefore it must not touch a QuicClient directly.  The
