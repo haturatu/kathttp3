@@ -9,6 +9,61 @@
 
 namespace kathttp3 {
 
+namespace {
+
+bool ascii_alpha(unsigned char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+bool ascii_digit(unsigned char c) {
+    return c >= '0' && c <= '9';
+}
+
+bool hex_digit(unsigned char c) {
+    return ascii_digit(c) || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
+}
+
+bool unreserved(unsigned char c) {
+    return ascii_alpha(c) || ascii_digit(c) || c == '-' || c == '.' || c == '_' || c == '~';
+}
+
+bool sub_delimiter(unsigned char c) {
+    return c == '!' || c == '$' || c == '&' || c == '\'' || c == '(' || c == ')' || c == '*' ||
+           c == '+' || c == ',' || c == ';' || c == '=';
+}
+
+bool valid_uri_component(std::string_view value, std::string_view extra) {
+    for (size_t i = 0; i < value.size(); ++i) {
+        const auto c = static_cast<unsigned char>(value[i]);
+        if (c == '%') {
+            if (i + 2 >= value.size() || !hex_digit(static_cast<unsigned char>(value[i + 1])) ||
+                !hex_digit(static_cast<unsigned char>(value[i + 2]))) {
+                return false;
+            }
+            i += 2;
+            continue;
+        }
+        if (!unreserved(c) && !sub_delimiter(c) &&
+            extra.find(static_cast<char>(c)) == std::string_view::npos) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool https_scheme(std::string_view scheme) {
+    constexpr std::string_view expected = "https";
+    if (scheme.size() != expected.size()) return false;
+    for (size_t i = 0; i < scheme.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(scheme[i]);
+        if (c >= 'A' && c <= 'Z') c = static_cast<unsigned char>(c + ('a' - 'A'));
+        if (c != static_cast<unsigned char>(expected[i])) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
 uint16_t default_port(std::string_view scheme) {
     if (scheme == "https") return 443;
     if (scheme == "http") return 80;
@@ -51,12 +106,9 @@ bool parse_url(std::string_view raw, Url& out) {
     // scheme
     auto colon = raw.find(':');
     if (colon == std::string_view::npos) return false;
-    out.scheme = std::string(raw.substr(0, colon));
-    for (char& ch : out.scheme) {
-        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
-    }
+    if (!https_scheme(raw.substr(0, colon))) return false;
+    out.scheme = "https";
     pos = colon + 1;
-    if (out.scheme != "https") return false;
     if (raw.substr(pos, 2) != "//") return false;
     pos += 2;
 
@@ -68,7 +120,8 @@ bool parse_url(std::string_view raw, Url& out) {
     size_t at = auth.find('@');
     if (at != std::string_view::npos) return false;
 
-    if (auth.size() >= 2 && auth.front() == '[') {
+    const bool bracketed_ipv6 = auth.size() >= 2 && auth.front() == '[';
+    if (bracketed_ipv6) {
         auto close = auth.find(']');
         if (close == std::string_view::npos) return false;
         out.host = std::string(auth.substr(1, close - 1));
@@ -102,15 +155,24 @@ bool parse_url(std::string_view raw, Url& out) {
         }
     }
     if (out.host.empty()) return false;
+    if (!bracketed_ipv6 && !valid_uri_component(out.host, "")) return false;
 
     // path / query
     std::string_view rest = auth_end == std::string_view::npos ? "" : raw.substr(auth_end);
     auto fragment = rest.find('#');
-    if (fragment != std::string_view::npos) rest = rest.substr(0, fragment);
+    if (fragment != std::string_view::npos) {
+        if (!valid_uri_component(rest.substr(fragment + 1), ":@/?")) return false;
+        rest = rest.substr(0, fragment);
+    }
     auto q = rest.find('?');
     if (q == std::string_view::npos) {
+        if (!valid_uri_component(rest, ":@/")) return false;
         out.path = std::string(rest);
     } else {
+        if (!valid_uri_component(rest.substr(0, q), ":@/") ||
+            !valid_uri_component(rest.substr(q + 1), ":@/?")) {
+            return false;
+        }
         out.path = std::string(rest.substr(0, q));
         out.query = std::string(rest.substr(q + 1));
         out.query_present = true;

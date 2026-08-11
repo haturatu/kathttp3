@@ -68,6 +68,15 @@ int main() {
     assert(!parse_url("https://::1/", u));
     assert(!parse_url("https://[::1]suffix/", u));
     assert(!parse_url("https://[not-ipv6]/", u));
+    assert(parse_url("HTTPS://example.com/a%20b;v?q=x/y?z#fragment", u));
+    assert(u.path == "/a%20b;v" && u.query == "q=x/y?z");
+    assert(!parse_url("https://exa mple.com/", u));
+    assert(!parse_url("https://example.com/a path", u));
+    assert(!parse_url("https://example.com/a\\path", u));
+    assert(!parse_url("https://example.com/%", u));
+    assert(!parse_url("https://example.com/%GG", u));
+    assert(!parse_url("https://example.com/path#bad%", u));
+    assert(!parse_url("https://example.com/[raw-bracket]", u));
     HeaderList h;
     h.add("Content-Type", "text/plain");
     assert(h.get("content-type") == "text/plain");
