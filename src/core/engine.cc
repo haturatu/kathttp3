@@ -66,15 +66,7 @@ Engine::Engine(const kathttp3_client_options& opt)
         void* ud = opt.resolve_cb_userdata;
         resolver_ = std::make_shared<CallbackResolver>(
             [cb, ud](const std::string& host, uint16_t port, const std::atomic<bool>*) {
-                std::vector<ResolvedEndpoint> out;
-                std::vector<kathttp3_resolved_address> buf(64);
-                size_t n = buf.size();
-                int rc = cb(host.c_str(), port, ud, buf.data(), &n);
-                if (rc != 0) return out;
-                out.reserve(n);
-                for (size_t i = 0; i < n; ++i)
-                    out.push_back({std::string(buf[i].ip), buf[i].port, buf[i].family});
-                return out;
+                return resolve_with_c_callback(cb, ud, host, port);
             });
     } else {
         resolver_ = std::make_shared<GetAddrInfoResolver>(android_network_handle_);

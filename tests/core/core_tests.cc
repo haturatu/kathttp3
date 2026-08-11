@@ -129,6 +129,38 @@ int main() {
     }
     assert(endpoints.size() == 2 && endpoints.front().family == AF_INET6);
 
+    // The C resolver callback is untrusted across the ABI boundary: a count
+    // larger than the supplied capacity must not index past the fixed buffer.
+    auto oversized_c_resolver = [](const char*, uint16_t, void*, kathttp3_resolved_address*,
+                                   size_t* count) {
+        *count = 65;
+        return 0;
+    };
+    assert(resolve_with_c_callback(oversized_c_resolver, nullptr, "example.test", 443).empty());
+
+    auto unterminated_c_resolver = [](const char*, uint16_t, void*,
+                                      kathttp3_resolved_address* output, size_t* count) {
+        std::fill(std::begin(output[0].ip), std::end(output[0].ip), '1');
+        output[0].port = 443;
+        output[0].family = AF_INET;
+        *count = 1;
+        return 0;
+    };
+    assert(resolve_with_c_callback(unterminated_c_resolver, nullptr, "example.test", 443).empty());
+
+    auto valid_c_resolver = [](const char*, uint16_t port, void*, kathttp3_resolved_address* output,
+                               size_t* count) {
+        std::strcpy(output[0].ip, "192.0.2.44");
+        output[0].port = port;
+        output[0].family = AF_INET;
+        *count = 1;
+        return 0;
+    };
+    const auto c_endpoints =
+        resolve_with_c_callback(valid_c_resolver, nullptr, "example.test", 443);
+    assert(c_endpoints.size() == 1 && c_endpoints[0].ip == "192.0.2.44" &&
+           c_endpoints[0].port == 443 && c_endpoints[0].family == AF_INET);
+
     // Concurrent callers for one resolver/host/port share one upstream query.
     // Waiters remain asynchronous and receive independent owned result values.
     std::mutex flight_mutex;
