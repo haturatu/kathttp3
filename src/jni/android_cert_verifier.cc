@@ -120,9 +120,9 @@ VerifyResult AndroidCertificateVerifier::verify(std::string_view hostname,
     LocalRef<jclass> stream_class(env, env->FindClass("java/io/ByteArrayInputStream"));
     if (clear_jni_failure(env) || !x509_class || !factory_class || !stream_class) return result;
 
-    const jmethodID get_factory = env->GetStaticMethodID(
-        factory_class.get(), "getInstance",
-        "(Ljava/lang/String;)Ljava/security/cert/CertificateFactory;");
+    const jmethodID get_factory =
+        env->GetStaticMethodID(factory_class.get(), "getInstance",
+                               "(Ljava/lang/String;)Ljava/security/cert/CertificateFactory;");
     const jmethodID stream_constructor = env->GetMethodID(stream_class.get(), "<init>", "([B)V");
     const jmethodID generate_certificate =
         env->GetMethodID(factory_class.get(), "generateCertificate",
@@ -164,9 +164,10 @@ VerifyResult AndroidCertificateVerifier::verify(std::string_view hostname,
     LocalRef<jclass> extensions_class(
         env, env->FindClass("android/net/http/X509TrustManagerExtensions"));
     if (clear_jni_failure(env) || !extensions_class) return result;
-    const jmethodID check_server_trusted = env->GetMethodID(
-        extensions_class.get(), "checkServerTrusted",
-        "([Ljava/security/cert/X509Certificate;Ljava/lang/String;Ljava/lang/String;)Ljava/util/List;");
+    const jmethodID check_server_trusted =
+        env->GetMethodID(extensions_class.get(), "checkServerTrusted",
+                         "([Ljava/security/cert/X509Certificate;Ljava/lang/String;Ljava/lang/"
+                         "String;)Ljava/util/List;");
     if (clear_jni_failure(env) || !check_server_trusted) return result;
 
     const std::string auth_string(auth_type);
@@ -193,21 +194,20 @@ CertificateVerifier* create_android_platform_verifier(JavaVM* vm) {
     if (clear_jni_failure(env) || !factory_class) return nullptr;
     const jmethodID get_default_algorithm =
         env->GetStaticMethodID(factory_class.get(), "getDefaultAlgorithm", "()Ljava/lang/String;");
-    const jmethodID get_instance = env->GetStaticMethodID(
-        factory_class.get(), "getInstance",
-        "(Ljava/lang/String;)Ljavax/net/ssl/TrustManagerFactory;");
+    const jmethodID get_instance =
+        env->GetStaticMethodID(factory_class.get(), "getInstance",
+                               "(Ljava/lang/String;)Ljavax/net/ssl/TrustManagerFactory;");
     const jmethodID initialize =
         env->GetMethodID(factory_class.get(), "init", "(Ljava/security/KeyStore;)V");
-    const jmethodID get_trust_managers = env->GetMethodID(
-        factory_class.get(), "getTrustManagers", "()[Ljavax/net/ssl/TrustManager;");
+    const jmethodID get_trust_managers = env->GetMethodID(factory_class.get(), "getTrustManagers",
+                                                          "()[Ljavax/net/ssl/TrustManager;");
     if (clear_jni_failure(env) || !get_default_algorithm || !get_instance || !initialize ||
         !get_trust_managers) {
         return nullptr;
     }
 
-    LocalRef<jstring> algorithm(
-        env, static_cast<jstring>(
-                 env->CallStaticObjectMethod(factory_class.get(), get_default_algorithm)));
+    LocalRef<jstring> algorithm(env, static_cast<jstring>(env->CallStaticObjectMethod(
+                                         factory_class.get(), get_default_algorithm)));
     if (clear_jni_failure(env) || !algorithm) return nullptr;
     LocalRef<jobject> factory(
         env, env->CallStaticObjectMethod(factory_class.get(), get_instance, algorithm.get()));
@@ -215,8 +215,7 @@ CertificateVerifier* create_android_platform_verifier(JavaVM* vm) {
     env->CallVoidMethod(factory.get(), initialize, nullptr);
     if (clear_jni_failure(env)) return nullptr;
     LocalRef<jobjectArray> managers(
-        env, static_cast<jobjectArray>(
-                 env->CallObjectMethod(factory.get(), get_trust_managers)));
+        env, static_cast<jobjectArray>(env->CallObjectMethod(factory.get(), get_trust_managers)));
     if (clear_jni_failure(env) || !managers) return nullptr;
 
     LocalRef<jclass> x509_manager_class(env, env->FindClass("javax/net/ssl/X509TrustManager"));
@@ -241,8 +240,8 @@ CertificateVerifier* create_android_platform_verifier(JavaVM* vm) {
     LocalRef<jclass> extensions_class(
         env, env->FindClass("android/net/http/X509TrustManagerExtensions"));
     if (clear_jni_failure(env) || !extensions_class) return nullptr;
-    const jmethodID extensions_constructor = env->GetMethodID(
-        extensions_class.get(), "<init>", "(Ljavax/net/ssl/X509TrustManager;)V");
+    const jmethodID extensions_constructor =
+        env->GetMethodID(extensions_class.get(), "<init>", "(Ljavax/net/ssl/X509TrustManager;)V");
     if (clear_jni_failure(env) || !extensions_constructor) return nullptr;
     LocalRef<jobject> extensions(
         env, env->NewObject(extensions_class.get(), extensions_constructor, trust_manager.get()));
