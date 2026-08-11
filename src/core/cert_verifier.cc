@@ -9,6 +9,7 @@
 #include <openssl/x509_vfy.h>
 #include <openssl/x509v3.h>
 
+#include <climits>
 #include <memory>
 
 #include "ca_bundle.h"
@@ -19,15 +20,16 @@ namespace kathttp3 {
 namespace {
 
 X509* der_to_x509(const DerCertificate& d) {
-    if (d.data.empty()) return nullptr;
+    if (d.data.empty() || d.data.size() > static_cast<size_t>(LONG_MAX)) return nullptr;
     const uint8_t* p = d.data.data();
-    int n = static_cast<int>(d.data.size());
+    const long n = static_cast<long>(d.data.size());
     return d2i_X509(nullptr, &p, n);
 }
 
 /* Builds an X509_STORE from a PEM buffer (one or more CERTIFICATE
  * blocks). Returns nullptr on failure. */
 X509_STORE* store_from_pem(const char* pem, size_t len) {
+    if (!pem || len == 0 || len > static_cast<size_t>(INT_MAX)) return nullptr;
     BIO* bio = BIO_new_mem_buf(pem, static_cast<int>(len));
     if (!bio) return nullptr;
     X509_STORE* store = X509_STORE_new();
@@ -82,14 +84,26 @@ VerifyResult verify_with_store(const std::vector<DerCertificate>& chain, X509_ST
     certs.reserve(chain.size());
     for (const auto& d : chain) {
         X509* x = der_to_x509(d);
-        if (x) certs.push_back(x);
-    }
-    if (certs.empty()) {
-        return {false, KATHTTP3_ERR_CERTIFICATE_VERIFY, "failed to parse peer certificate chain"};
+        if (!x) {
+            for (X509* parsed : certs) X509_free(parsed);
+            return {false, KATHTTP3_ERR_CERTIFICATE_VERIFY,
+                    "failed to parse peer certificate chain"};
+        }
+        certs.push_back(x);
     }
 
     STACK_OF(X509)* untrusted = sk_X509_new_null();
-    for (X509* x : certs) sk_X509_push(untrusted, x);
+    if (!untrusted) {
+        for (X509* x : certs) X509_free(x);
+        return {false, KATHTTP3_ERR_NOMEM, "failed to allocate certificate chain"};
+    }
+    for (size_t i = 1; i < certs.size(); ++i) {
+        if (sk_X509_push(untrusted, certs[i]) == 0) {
+            sk_X509_free(untrusted);
+            for (X509* x : certs) X509_free(x);
+            return {false, KATHTTP3_ERR_NOMEM, "failed to allocate certificate chain"};
+        }
+    }
 
     X509_STORE_CTX* ctx = X509_STORE_CTX_new();
     VerifyResult result{false, KATHTTP3_ERR_CERTIFICATE_VERIFY, "certificate verification failed"};
@@ -140,9 +154,9 @@ class StoreCertificateVerifier : public CertificateVerifier {
 }  // namespace
 
 std::string auth_type_from_der(const std::vector<uint8_t>& der) {
-    if (der.empty()) return "UNKNOWN";
+    if (der.empty() || der.size() > static_cast<size_t>(LONG_MAX)) return "UNKNOWN";
     const uint8_t* p = der.data();
-    int n = static_cast<int>(der.size());
+    const long n = static_cast<long>(der.size());
     X509* leaf = d2i_X509(nullptr, &p, n);
     if (!leaf) return "UNKNOWN";
     std::string result = "UNKNOWN";
