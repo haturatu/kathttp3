@@ -28,24 +28,23 @@ bool unreserved(unsigned char c) {
 }
 
 bool sub_delimiter(unsigned char c) {
-    return c == '!' || c == '$' || c == '&' || c == '\'' || c == '(' || c == ')' ||
-           c == '*' || c == '+' || c == ',' || c == ';' || c == '=';
+    return c == '!' || c == '$' || c == '&' || c == '\'' || c == '(' || c == ')' || c == '*' ||
+           c == '+' || c == ',' || c == ';' || c == '=';
 }
 
 bool valid_uri_component(std::string_view value, std::string_view extra) {
     for (size_t i = 0; i < value.size(); ++i) {
         const auto c = static_cast<unsigned char>(value[i]);
         if (c == '%') {
-            if (i + 2 >= value.size() ||
-                !hex_digit(static_cast<unsigned char>(value[i + 1])) ||
+            if (i + 2 >= value.size() || !hex_digit(static_cast<unsigned char>(value[i + 1])) ||
                 !hex_digit(static_cast<unsigned char>(value[i + 2]))) {
                 return false;
             }
             i += 2;
             continue;
         }
-        if (!unreserved(c) && !sub_delimiter(c) && extra.find(static_cast<char>(c)) ==
-                                                         std::string_view::npos) {
+        if (!unreserved(c) && !sub_delimiter(c) &&
+            extra.find(static_cast<char>(c)) == std::string_view::npos) {
             return false;
         }
     }
