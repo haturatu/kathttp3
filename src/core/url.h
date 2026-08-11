@@ -12,8 +12,9 @@ struct Url {
     std::string scheme;
     std::string host;
     uint16_t port = 0;
-    std::string path;  /* includes the leading '/' and the query string */
+    std::string path;  /* includes the leading '/' */
     std::string query; /* without the leading '?' */
+    bool query_present = false;
 
     bool valid() const {
         return !scheme.empty() && !host.empty();
