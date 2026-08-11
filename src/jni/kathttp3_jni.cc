@@ -1,3 +1,4 @@
+#include <arpa/inet.h>
 #include <jni.h>
 #include <sys/socket.h>
 
@@ -132,6 +133,32 @@ class ThreadEnv {
 };
 thread_local ThreadEnv g_thread_env;
 
+class UtfChars {
+   public:
+    UtfChars(JNIEnv* env, jstring string)
+        : env_(env),
+          string_(string),
+          chars_(string ? env->GetStringUTFChars(string, nullptr) : nullptr) {}
+    ~UtfChars() {
+        if (chars_) env_->ReleaseStringUTFChars(string_, chars_);
+    }
+
+    UtfChars(const UtfChars&) = delete;
+    UtfChars& operator=(const UtfChars&) = delete;
+
+    explicit operator bool() const {
+        return chars_ != nullptr;
+    }
+    const char* get() const {
+        return chars_;
+    }
+
+   private:
+    JNIEnv* env_;
+    jstring string_;
+    const char* chars_;
+};
+
 struct CallbackState {
     jobject callback = nullptr;
     std::atomic<bool> terminal{false};
@@ -189,11 +216,16 @@ void report_jni_body_failure(JNIEnv* env, CallbackState* state) {
 int jni_resolve_cb(const char* host, uint16_t port, void* userdata, kathttp3_resolved_address* out,
                    size_t* out_count) {
     auto* ctx = static_cast<ResolverCtx*>(userdata);
-    if (!ctx || !ctx->resolver || !out || !out_count) return -1;
+    if (!host || !ctx || !ctx->resolver || !out || !out_count) return -1;
     JNIEnv* env = g_thread_env.get();
     if (!env) return -1;
 
     jstring jhost = env->NewStringUTF(host);
+    if (!jhost || env->ExceptionCheck()) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (jhost) env->DeleteLocalRef(jhost);
+        return -1;
+    }
     jobject list = env->CallObjectMethod(ctx->resolver, g_jni.resolver_resolve, jhost,
                                          static_cast<jint>(port));
     env->DeleteLocalRef(jhost);
@@ -203,29 +235,64 @@ int jni_resolve_cb(const char* host, uint16_t port, void* userdata, kathttp3_res
     }
 
     jint count = env->CallIntMethod(list, g_jni.list_size);
+    if (count < 0 || env->ExceptionCheck()) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(list);
+        return -1;
+    }
     size_t cap = *out_count;
     size_t written = 0;
+    bool failed = false;
     for (jint i = 0; i < count && written < cap; ++i) {
         jobject elem = env->CallObjectMethod(list, g_jni.list_get, i);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            failed = true;
+            break;
+        }
         if (!elem) continue;
         jstring jip = reinterpret_cast<jstring>(env->CallObjectMethod(elem, g_jni.address_ip));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            env->DeleteLocalRef(elem);
+            failed = true;
+            break;
+        }
         jint aport = env->CallIntMethod(elem, g_jni.address_port);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            if (jip) env->DeleteLocalRef(jip);
+            env->DeleteLocalRef(elem);
+            failed = true;
+            break;
+        }
         const char* ip = jip ? env->GetStringUTFChars(jip, nullptr) : nullptr;
-        if (ip && *ip) {
-            int family = (std::strchr(ip, ':') != nullptr) ? AF_INET6 : AF_INET;
+        if (jip && !ip) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            env->DeleteLocalRef(jip);
+            env->DeleteLocalRef(elem);
+            failed = true;
+            break;
+        }
+        in_addr ipv4{};
+        in6_addr ipv6{};
+        const int family = ip && inet_pton(AF_INET, ip, &ipv4) == 1    ? AF_INET
+                           : ip && inet_pton(AF_INET6, ip, &ipv6) == 1 ? AF_INET6
+                                                                       : 0;
+        if (family != 0 && aport > 0 && aport <= UINT16_MAX) {
             std::strncpy(out[written].ip, ip, sizeof(out[written].ip) - 1);
             out[written].ip[sizeof(out[written].ip) - 1] = '\0';
             out[written].port = static_cast<uint16_t>(aport);
             out[written].family = family;
             ++written;
-            env->ReleaseStringUTFChars(jip, ip);
         }
+        if (ip) env->ReleaseStringUTFChars(jip, ip);
         if (jip) env->DeleteLocalRef(jip);
         env->DeleteLocalRef(elem);
     }
-    *out_count = written;
+    *out_count = failed ? 0 : written;
     env->DeleteLocalRef(list);
-    return 0;
+    return failed ? -1 : 0;
 }
 
 void free_resolver_ctx(JNIEnv* env, ResolverCtx* ctx) {
@@ -240,28 +307,63 @@ void event_cb(void* opaque, const kathttp3_event* event) noexcept {
     JNIEnv* env = g_thread_env.get();
     if (!env) return;
     if (event->type == KATHTTP3_EVENT_HEADERS) {
-        if (event->header_count > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
-            KATHTTP3_LOG_ERR("JNI header count exceeds jsize\n");
+        if (event->header_count > static_cast<size_t>(std::numeric_limits<jsize>::max()) ||
+            (event->header_count != 0 && (!event->names || !event->values))) {
+            KATHTTP3_LOG_ERR("JNI received an invalid header array\n");
+            report_jni_body_failure(env, state);
             return;
         }
         const auto header_count = static_cast<jsize>(event->header_count);
         jobjectArray names = env->NewObjectArray(header_count, g_jni.string_class, nullptr);
         jobjectArray values = env->NewObjectArray(header_count, g_jni.string_class, nullptr);
+        if (!names || !values || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            if (names) env->DeleteLocalRef(names);
+            if (values) env->DeleteLocalRef(values);
+            report_jni_body_failure(env, state);
+            return;
+        }
+        bool failed = false;
         for (jsize i = 0; i < header_count && !env->ExceptionCheck(); ++i) {
+            if (!event->names[i] || !event->values[i]) {
+                failed = true;
+                break;
+            }
             jstring n = env->NewStringUTF(event->names[i]);
+            if (!n || env->ExceptionCheck()) {
+                if (n) env->DeleteLocalRef(n);
+                failed = true;
+                break;
+            }
             jstring v = env->NewStringUTF(event->values[i]);
+            if (!v || env->ExceptionCheck()) {
+                env->DeleteLocalRef(n);
+                if (v) env->DeleteLocalRef(v);
+                failed = true;
+                break;
+            }
             env->SetObjectArrayElement(names, i, n);
-            env->SetObjectArrayElement(values, i, v);
+            if (!env->ExceptionCheck()) env->SetObjectArrayElement(values, i, v);
             env->DeleteLocalRef(n);
             env->DeleteLocalRef(v);
         }
-        if (names && values)
-            env->CallVoidMethod(state->callback, g_jni.callback_headers, event->status_code, names,
-                                values);
+        if (failed || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            env->DeleteLocalRef(names);
+            env->DeleteLocalRef(values);
+            report_jni_body_failure(env, state);
+            return;
+        }
+        env->CallVoidMethod(state->callback, g_jni.callback_headers, event->status_code, names,
+                            values);
         env->DeleteLocalRef(names);
         env->DeleteLocalRef(values);
     } else if (event->type == KATHTTP3_EVENT_BODY) {
         if (state->failure_reported.load(std::memory_order_acquire)) return;
+        if (event->data_len != 0 && !event->data) {
+            report_jni_body_failure(env, state);
+            return;
+        }
         size_t offset = 0;
         const uint64_t now = monotonic_now_ns();
         while (offset < event->data_len) {
@@ -488,11 +590,11 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp3_internal_NativeBridge_ex
     jboolean streaming_request_body, jlong streaming_content_length, jobject callback) {
     auto* client = checked(h);
     if (!client || !method || !url || !callback) return JNI_FALSE;
-    const char* m = env->GetStringUTFChars(method, nullptr);
-    const char* u = env->GetStringUTFChars(url, nullptr);
-    kathttp3_request* req = kathttp3_request_create(m, u);
-    env->ReleaseStringUTFChars(method, m);
-    env->ReleaseStringUTFChars(url, u);
+    UtfChars m(env, method);
+    if (!m) return JNI_FALSE;
+    UtfChars u(env, url);
+    if (!u) return JNI_FALSE;
+    kathttp3_request* req = kathttp3_request_create(m.get(), u.get());
     if (!req) return JNI_FALSE;
     jsize count = names ? env->GetArrayLength(names) : 0;
     if (!values || env->GetArrayLength(values) != count) {
@@ -500,13 +602,22 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp3_internal_NativeBridge_ex
         return JNI_FALSE;
     }
     for (jsize i = 0; i < count; i++) {
-        auto n = (jstring)env->GetObjectArrayElement(names, i);
-        auto v = (jstring)env->GetObjectArrayElement(values, i);
-        const char* cn = env->GetStringUTFChars(n, nullptr);
-        const char* cv = env->GetStringUTFChars(v, nullptr);
-        int rc = kathttp3_request_add_header(req, cn, cv);
-        env->ReleaseStringUTFChars(n, cn);
-        env->ReleaseStringUTFChars(v, cv);
+        auto n = reinterpret_cast<jstring>(env->GetObjectArrayElement(names, i));
+        auto v = reinterpret_cast<jstring>(env->GetObjectArrayElement(values, i));
+        if (env->ExceptionCheck() || !n || !v) {
+            if (n) env->DeleteLocalRef(n);
+            if (v) env->DeleteLocalRef(v);
+            kathttp3_request_destroy(req);
+            return JNI_FALSE;
+        }
+        int rc = KATHTTP3_ERR_NOMEM;
+        {
+            UtfChars cn(env, n);
+            if (cn) {
+                UtfChars cv(env, v);
+                if (cv) rc = kathttp3_request_add_header(req, cn.get(), cv.get());
+            }
+        }
         env->DeleteLocalRef(n);
         env->DeleteLocalRef(v);
         if (rc != 0) {
@@ -515,11 +626,15 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_kathttp3_internal_NativeBridge_ex
         }
     }
     if (body) {
-        jsize len = env->GetArrayLength(body);
-        jbyte* data = env->GetByteArrayElements(body, nullptr);
-        int rc = kathttp3_request_set_body(req, reinterpret_cast<uint8_t*>(data),
-                                           static_cast<size_t>(len));
-        env->ReleaseByteArrayElements(body, data, JNI_ABORT);
+        const jsize len = env->GetArrayLength(body);
+        jbyte* data = len == 0 ? nullptr : env->GetByteArrayElements(body, nullptr);
+        if (len != 0 && !data) {
+            kathttp3_request_destroy(req);
+            return JNI_FALSE;
+        }
+        const int rc = kathttp3_request_set_body(req, reinterpret_cast<uint8_t*>(data),
+                                                 static_cast<size_t>(len));
+        if (data) env->ReleaseByteArrayElements(body, data, JNI_ABORT);
         if (rc != 0) {
             kathttp3_request_destroy(req);
             return JNI_FALSE;
@@ -563,6 +678,7 @@ extern "C" JNIEXPORT jint JNICALL Java_dev_kathttp3_internal_NativeBridge_append
     if (!client) return KATHTTP3_ERR_CLOSED;
     const jsize len = data ? env->GetArrayLength(data) : 0;
     jbyte* bytes = data && len ? env->GetByteArrayElements(data, nullptr) : nullptr;
+    if (data && len && !bytes) return KATHTTP3_ERR_NOMEM;
     const auto result = kathttp3_client_request_body_append(
         client, id, reinterpret_cast<const uint8_t*>(bytes), static_cast<size_t>(len), finished);
     if (bytes) env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
