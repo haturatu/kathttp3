@@ -1,10 +1,69 @@
 #include "android_cert_verifier.h"
 
+#include <limits>
+#include <new>
 #include <string>
 
 #include "log.h"
 
 namespace kathttp3 {
+
+namespace {
+
+template <typename T>
+class LocalRef {
+   public:
+    LocalRef(JNIEnv* env, T value) : env_(env), value_(value) {}
+    ~LocalRef() {
+        if (value_) env_->DeleteLocalRef(value_);
+    }
+    LocalRef(const LocalRef&) = delete;
+    LocalRef& operator=(const LocalRef&) = delete;
+    LocalRef(LocalRef&& other) noexcept : env_(other.env_), value_(other.value_) {
+        other.value_ = nullptr;
+    }
+    LocalRef& operator=(LocalRef&& other) noexcept {
+        if (this != &other) {
+            if (value_) env_->DeleteLocalRef(value_);
+            env_ = other.env_;
+            value_ = other.value_;
+            other.value_ = nullptr;
+        }
+        return *this;
+    }
+    explicit operator bool() const {
+        return value_ != nullptr;
+    }
+    T get() const {
+        return value_;
+    }
+
+   private:
+    JNIEnv* env_;
+    T value_;
+};
+
+class ScopedThreadAttachment {
+   public:
+    ScopedThreadAttachment(JavaVM* vm, bool attached) : vm_(vm), attached_(attached) {}
+    ~ScopedThreadAttachment() {
+        if (attached_) vm_->DetachCurrentThread();
+    }
+    ScopedThreadAttachment(const ScopedThreadAttachment&) = delete;
+    ScopedThreadAttachment& operator=(const ScopedThreadAttachment&) = delete;
+
+   private:
+    JavaVM* vm_;
+    bool attached_;
+};
+
+bool clear_jni_failure(JNIEnv* env) {
+    if (!env->ExceptionCheck()) return false;
+    env->ExceptionClear();
+    return true;
+}
+
+}  // namespace
 
 AndroidCertificateVerifier::AndroidCertificateVerifier(JavaVM* vm, jobject ext)
     : vm_(vm), ext_(ext) {}
@@ -12,9 +71,19 @@ AndroidCertificateVerifier::AndroidCertificateVerifier(JavaVM* vm, jobject ext)
 AndroidCertificateVerifier::~AndroidCertificateVerifier() {
     if (ext_) {
         JNIEnv* env = nullptr;
-        if (vm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK) {
+        bool attached = false;
+        if (vm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+#if defined(__ANDROID__)
+            attached = vm_->AttachCurrentThread(&env, nullptr) == JNI_OK;
+#else
+            attached = vm_->AttachCurrentThread(reinterpret_cast<void**>(&env), nullptr) == JNI_OK;
+#endif
+            if (!attached) env = nullptr;
+        }
+        if (env) {
             env->DeleteGlobalRef(ext_);
         }
+        if (attached) vm_->DetachCurrentThread();
         ext_ = nullptr;
     }
 }
@@ -25,6 +94,11 @@ VerifyResult AndroidCertificateVerifier::verify(std::string_view hostname,
     if (!ext_) {
         return {false, KATHTTP3_ERR_NO_TRUST_PROVIDER, "no Android trust manager available"};
     }
+    VerifyResult result{false, KATHTTP3_ERR_CERTIFICATE_VERIFY, "certificate verification failed"};
+    if (chain.empty() || chain.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+        return result;
+    }
+
     JNIEnv* env = nullptr;
     bool attached = false;
     if (vm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
@@ -39,144 +113,149 @@ VerifyResult AndroidCertificateVerifier::verify(std::string_view hostname,
         }
         attached = true;
     }
+    ScopedThreadAttachment attachment(vm_, attached);
 
-    VerifyResult result{false, KATHTTP3_ERR_CERTIFICATE_VERIFY, "certificate verification failed"};
+    LocalRef<jclass> x509_class(env, env->FindClass("java/security/cert/X509Certificate"));
+    LocalRef<jclass> factory_class(env, env->FindClass("java/security/cert/CertificateFactory"));
+    LocalRef<jclass> stream_class(env, env->FindClass("java/io/ByteArrayInputStream"));
+    if (clear_jni_failure(env) || !x509_class || !factory_class || !stream_class) return result;
 
-    jclass x509_cls = env->FindClass("java/security/cert/X509Certificate");
-    jclass cf_cls = env->FindClass("java/security/cert/CertificateFactory");
-    jclass bais_cls = env->FindClass("java/io/ByteArrayInputStream");
-    jmethodID cf_get = cf_cls ? env->GetStaticMethodID(
-                                    cf_cls, "getInstance",
-                                    "(Ljava/lang/String;)Ljava/security/cert/CertificateFactory;")
-                              : nullptr;
-    jmethodID bais_ctor = bais_cls ? env->GetMethodID(bais_cls, "<init>", "([B)V") : nullptr;
-    jmethodID gen_cert =
-        cf_cls ? env->GetMethodID(cf_cls, "generateCertificate",
-                                  "(Ljava/io/InputStream;)Ljava/security/cert/Certificate;")
-               : nullptr;
-    if (x509_cls && cf_get && bais_ctor && gen_cert) {
-        jstring x509_type = env->NewStringUTF("X.509");
-        jobject cf = env->CallStaticObjectMethod(cf_cls, cf_get, x509_type);
-        env->DeleteLocalRef(x509_type);
-        if (cf) {
-            jobjectArray arr =
-                env->NewObjectArray(static_cast<jsize>(chain.size()), x509_cls, nullptr);
-            if (arr) {
-                for (size_t i = 0; i < chain.size(); ++i) {
-                    const auto& d = chain[i].data;
-                    jbyteArray ba = env->NewByteArray(static_cast<jsize>(d.size()));
-                    if (ba) {
-                        env->SetByteArrayRegion(ba, 0, static_cast<jsize>(d.size()),
-                                                reinterpret_cast<const jbyte*>(d.data()));
-                        jobject bais = env->NewObject(bais_cls, bais_ctor, ba);
-                        jobject cert = bais ? env->CallObjectMethod(cf, gen_cert, bais) : nullptr;
-                        if (cert && !env->ExceptionCheck()) {
-                            env->SetObjectArrayElement(arr, static_cast<jsize>(i), cert);
-                        }
-                        if (cert) env->DeleteLocalRef(cert);
-                        if (bais) env->DeleteLocalRef(bais);
-                        env->DeleteLocalRef(ba);
-                    }
-                }
-
-                jclass ext_cls = env->FindClass("android/net/http/X509TrustManagerExtensions");
-                if (ext_cls) {
-                    jmethodID check =
-                        env->GetMethodID(ext_cls, "checkServerTrusted",
-                                         "([Ljava/security/cert/X509Certificate;Ljava/lang/"
-                                         "String;Ljava/lang/String;)Ljava/util/List;");
-                    if (check) {
-                        jstring auth_str = env->NewStringUTF(auth_type.data());
-                        jstring host_str = env->NewStringUTF(hostname.data());
-                        jobject verified =
-                            env->CallObjectMethod(ext_, check, arr, auth_str, host_str);
-                        if (env->ExceptionCheck()) {
-                            jthrowable ex = env->ExceptionOccurred();
-                            env->ExceptionClear();
-                            if (ex) {
-                                jclass ex_cls = env->GetObjectClass(ex);
-                                jmethodID to_string =
-                                    env->GetMethodID(ex_cls, "toString", "()Ljava/lang/String;");
-                                jstring msg =
-                                    to_string
-                                        ? static_cast<jstring>(env->CallObjectMethod(ex, to_string))
-                                        : nullptr;
-                                if (msg) {
-                                    const char* c = env->GetStringUTFChars(msg, nullptr);
-                                    result.message =
-                                        std::string("certificate verification failed: ") +
-                                        (c ? c : "unknown reason");
-                                    if (c) env->ReleaseStringUTFChars(msg, c);
-                                    env->DeleteLocalRef(msg);
-                                }
-                                env->DeleteLocalRef(ex);
-                            }
-                            result.code = KATHTTP3_ERR_CERTIFICATE_VERIFY;
-                        } else {
-                            if (verified) env->DeleteLocalRef(verified);
-                            result = {true, 0, ""};
-                        }
-                        if (auth_str) env->DeleteLocalRef(auth_str);
-                        if (host_str) env->DeleteLocalRef(host_str);
-                    }
-                    env->DeleteLocalRef(ext_cls);
-                }
-                env->DeleteLocalRef(arr);
-            }
-        }
-        env->DeleteLocalRef(x509_cls);
+    const jmethodID get_factory = env->GetStaticMethodID(
+        factory_class.get(), "getInstance",
+        "(Ljava/lang/String;)Ljava/security/cert/CertificateFactory;");
+    const jmethodID stream_constructor = env->GetMethodID(stream_class.get(), "<init>", "([B)V");
+    const jmethodID generate_certificate =
+        env->GetMethodID(factory_class.get(), "generateCertificate",
+                         "(Ljava/io/InputStream;)Ljava/security/cert/Certificate;");
+    if (clear_jni_failure(env) || !get_factory || !stream_constructor || !generate_certificate) {
+        return result;
     }
 
-    if (attached) vm_->DetachCurrentThread();
-    return result;
+    LocalRef<jstring> x509_type(env, env->NewStringUTF("X.509"));
+    if (clear_jni_failure(env) || !x509_type) return result;
+    LocalRef<jobject> factory(
+        env, env->CallStaticObjectMethod(factory_class.get(), get_factory, x509_type.get()));
+    if (clear_jni_failure(env) || !factory) return result;
+
+    LocalRef<jobjectArray> certificates(
+        env, env->NewObjectArray(static_cast<jsize>(chain.size()), x509_class.get(), nullptr));
+    if (clear_jni_failure(env) || !certificates) return result;
+    for (size_t i = 0; i < chain.size(); ++i) {
+        const auto& der = chain[i].data;
+        if (der.empty() || der.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+            return result;
+        }
+        const auto der_size = static_cast<jsize>(der.size());
+        LocalRef<jbyteArray> bytes(env, env->NewByteArray(der_size));
+        if (clear_jni_failure(env) || !bytes) return result;
+        env->SetByteArrayRegion(bytes.get(), 0, der_size,
+                                reinterpret_cast<const jbyte*>(der.data()));
+        if (clear_jni_failure(env)) return result;
+        LocalRef<jobject> stream(
+            env, env->NewObject(stream_class.get(), stream_constructor, bytes.get()));
+        if (clear_jni_failure(env) || !stream) return result;
+        LocalRef<jobject> certificate(
+            env, env->CallObjectMethod(factory.get(), generate_certificate, stream.get()));
+        if (clear_jni_failure(env) || !certificate) return result;
+        env->SetObjectArrayElement(certificates.get(), static_cast<jsize>(i), certificate.get());
+        if (clear_jni_failure(env)) return result;
+    }
+
+    LocalRef<jclass> extensions_class(
+        env, env->FindClass("android/net/http/X509TrustManagerExtensions"));
+    if (clear_jni_failure(env) || !extensions_class) return result;
+    const jmethodID check_server_trusted = env->GetMethodID(
+        extensions_class.get(), "checkServerTrusted",
+        "([Ljava/security/cert/X509Certificate;Ljava/lang/String;Ljava/lang/String;)Ljava/util/List;");
+    if (clear_jni_failure(env) || !check_server_trusted) return result;
+
+    const std::string auth_string(auth_type);
+    const std::string host_string(hostname);
+    LocalRef<jstring> auth(env, env->NewStringUTF(auth_string.c_str()));
+    LocalRef<jstring> host(env, env->NewStringUTF(host_string.c_str()));
+    if (clear_jni_failure(env) || !auth || !host) return result;
+    LocalRef<jobject> verified(
+        env, env->CallObjectMethod(ext_, check_server_trusted, certificates.get(), auth.get(),
+                                   host.get()));
+    if (clear_jni_failure(env) || !verified) return result;
+    return {true, 0, ""};
 }
 
 CertificateVerifier* create_android_platform_verifier(JavaVM* vm) {
+    if (!vm) return nullptr;
     JNIEnv* env = nullptr;
     if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
         KATHTTP3_LOG_ERR("create_android_platform_verifier: no JNI env\n");
         return nullptr;
     }
 
-    jclass tmf_cls = env->FindClass("javax/net/ssl/TrustManagerFactory");
-    if (!tmf_cls) return nullptr;
-    jmethodID get_def =
-        env->GetStaticMethodID(tmf_cls, "getDefaultAlgorithm", "()Ljava/lang/String;");
-    jmethodID get_inst = env->GetStaticMethodID(
-        tmf_cls, "getInstance", "(Ljava/lang/String;)Ljavax/net/ssl/TrustManagerFactory;");
-    if (!get_def || !get_inst) return nullptr;
-    jstring algo = static_cast<jstring>(env->CallStaticObjectMethod(tmf_cls, get_def));
-    jobject tmf = env->CallStaticObjectMethod(tmf_cls, get_inst, algo);
-    if (!tmf) return nullptr;
-    jmethodID init = env->GetMethodID(tmf_cls, "init", "(Ljava/security/KeyStore;)V");
-    jmethodID get_tms =
-        env->GetMethodID(tmf_cls, "getTrustManagers", "()[Ljavax/net/ssl/TrustManager;");
-    if (!init || !get_tms) return nullptr;
-    env->CallVoidMethod(tmf, init, nullptr);
-    jobjectArray tms = static_cast<jobjectArray>(env->CallObjectMethod(tmf, get_tms));
-    if (!tms) return nullptr;
+    LocalRef<jclass> factory_class(env, env->FindClass("javax/net/ssl/TrustManagerFactory"));
+    if (clear_jni_failure(env) || !factory_class) return nullptr;
+    const jmethodID get_default_algorithm =
+        env->GetStaticMethodID(factory_class.get(), "getDefaultAlgorithm", "()Ljava/lang/String;");
+    const jmethodID get_instance = env->GetStaticMethodID(
+        factory_class.get(), "getInstance",
+        "(Ljava/lang/String;)Ljavax/net/ssl/TrustManagerFactory;");
+    const jmethodID initialize =
+        env->GetMethodID(factory_class.get(), "init", "(Ljava/security/KeyStore;)V");
+    const jmethodID get_trust_managers = env->GetMethodID(
+        factory_class.get(), "getTrustManagers", "()[Ljavax/net/ssl/TrustManager;");
+    if (clear_jni_failure(env) || !get_default_algorithm || !get_instance || !initialize ||
+        !get_trust_managers) {
+        return nullptr;
+    }
 
-    jclass x509_tm_cls = env->FindClass("javax/net/ssl/X509TrustManager");
-    jobject tm = nullptr;
-    jsize n = env->GetArrayLength(tms);
-    for (jsize i = 0; i < n; ++i) {
-        jobject t = env->GetObjectArrayElement(tms, i);
-        if (env->IsInstanceOf(t, x509_tm_cls)) {
-            tm = t;
+    LocalRef<jstring> algorithm(
+        env, static_cast<jstring>(
+                 env->CallStaticObjectMethod(factory_class.get(), get_default_algorithm)));
+    if (clear_jni_failure(env) || !algorithm) return nullptr;
+    LocalRef<jobject> factory(
+        env, env->CallStaticObjectMethod(factory_class.get(), get_instance, algorithm.get()));
+    if (clear_jni_failure(env) || !factory) return nullptr;
+    env->CallVoidMethod(factory.get(), initialize, nullptr);
+    if (clear_jni_failure(env)) return nullptr;
+    LocalRef<jobjectArray> managers(
+        env, static_cast<jobjectArray>(
+                 env->CallObjectMethod(factory.get(), get_trust_managers)));
+    if (clear_jni_failure(env) || !managers) return nullptr;
+
+    LocalRef<jclass> x509_manager_class(env, env->FindClass("javax/net/ssl/X509TrustManager"));
+    if (clear_jni_failure(env) || !x509_manager_class) return nullptr;
+    LocalRef<jobject> trust_manager(env, nullptr);
+    const jsize count = env->GetArrayLength(managers.get());
+    if (clear_jni_failure(env)) return nullptr;
+    for (jsize i = 0; i < count; ++i) {
+        LocalRef<jobject> candidate(env, env->GetObjectArrayElement(managers.get(), i));
+        if (clear_jni_failure(env)) return nullptr;
+        if (!candidate) continue;
+        const bool is_x509 =
+            env->IsInstanceOf(candidate.get(), x509_manager_class.get()) == JNI_TRUE;
+        if (clear_jni_failure(env)) return nullptr;
+        if (is_x509) {
+            trust_manager = std::move(candidate);
             break;
         }
-        env->DeleteLocalRef(t);
     }
-    if (!tm) return nullptr;
+    if (!trust_manager) return nullptr;
 
-    jclass ext_cls = env->FindClass("android/net/http/X509TrustManagerExtensions");
-    jmethodID ext_ctor = env->GetMethodID(ext_cls, "<init>", "(Ljavax/net/ssl/X509TrustManager;)V");
-    if (!ext_cls || !ext_ctor) return nullptr;
-    jobject ext = env->NewObject(ext_cls, ext_ctor, tm);
-    if (!ext) return nullptr;
-    jobject global_ext = env->NewGlobalRef(ext);
+    LocalRef<jclass> extensions_class(
+        env, env->FindClass("android/net/http/X509TrustManagerExtensions"));
+    if (clear_jni_failure(env) || !extensions_class) return nullptr;
+    const jmethodID extensions_constructor = env->GetMethodID(
+        extensions_class.get(), "<init>", "(Ljavax/net/ssl/X509TrustManager;)V");
+    if (clear_jni_failure(env) || !extensions_constructor) return nullptr;
+    LocalRef<jobject> extensions(
+        env, env->NewObject(extensions_class.get(), extensions_constructor, trust_manager.get()));
+    if (clear_jni_failure(env) || !extensions) return nullptr;
+    jobject global_extensions = env->NewGlobalRef(extensions.get());
+    if (clear_jni_failure(env) || !global_extensions) {
+        if (global_extensions) env->DeleteGlobalRef(global_extensions);
+        return nullptr;
+    }
 
-    return new AndroidCertificateVerifier(vm, global_ext);
+    auto* verifier = new (std::nothrow) AndroidCertificateVerifier(vm, global_extensions);
+    if (!verifier) env->DeleteGlobalRef(global_extensions);
+    return verifier;
 }
 
 }  // namespace kathttp3
