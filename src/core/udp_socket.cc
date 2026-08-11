@@ -24,15 +24,34 @@ struct alignas(cmsghdr) ReceiveControlBuffer {
     std::array<uint8_t, 256> bytes{};
 };
 
+bool read_control_integer(cmsghdr* control, int& value) {
+    if (control->cmsg_len < CMSG_LEN(0)) return false;
+    const size_t payload_size = control->cmsg_len - CMSG_LEN(0);
+    if (payload_size >= sizeof(value)) {
+        std::memcpy(&value, CMSG_DATA(control), sizeof(value));
+        return true;
+    }
+    if (payload_size >= sizeof(uint8_t)) {
+        uint8_t byte = 0;
+        std::memcpy(&byte, CMSG_DATA(control), sizeof(byte));
+        value = static_cast<int>(byte);
+        return true;
+    }
+    return false;
+}
+
 void decode_receive_metadata(int family, msghdr& msg, UdpReceiveDatagram& datagram) {
     datagram.peer_length = msg.msg_namelen;
     datagram.ecn = 0;
     for (auto* cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+        int traffic_class = 0;
         if (family == AF_INET && cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_TOS) {
-            datagram.ecn = static_cast<uint8_t>(*reinterpret_cast<int*>(CMSG_DATA(cm)));
+            if (read_control_integer(cm, traffic_class))
+                datagram.ecn = static_cast<uint8_t>(traffic_class & 0x03);
         } else if (family == AF_INET6 && cm->cmsg_level == IPPROTO_IPV6 &&
                    cm->cmsg_type == IPV6_TCLASS) {
-            datagram.ecn = static_cast<uint8_t>(*reinterpret_cast<int*>(CMSG_DATA(cm)));
+            if (read_control_integer(cm, traffic_class))
+                datagram.ecn = static_cast<uint8_t>(traffic_class & 0x03);
         }
     }
 }
