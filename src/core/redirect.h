@@ -12,6 +12,7 @@ namespace kathttp3 {
 struct RedirectDecision {
     bool follow = false;
     bool cross_origin = false;
+    bool drop_body = false;
     std::string new_url;
     std::string new_method;
 };

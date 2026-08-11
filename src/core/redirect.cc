@@ -129,7 +129,8 @@ bool resolve_reference(const Url& base, std::string_view reference, Url& target)
 RedirectDecision RedirectPolicy::evaluate(const std::string& method, const Url& from,
                                           const Response& resp, bool auto_redirect,
                                           unsigned remaining) const {
-    RedirectDecision d{false, false, "", method};
+    RedirectDecision d;
+    d.new_method = method;
     if (!auto_redirect) return d;
     if (!is_redirect_status(resp.status_code)) return d;
     if (remaining == 0) {
@@ -151,8 +152,10 @@ RedirectDecision RedirectPolicy::evaluate(const std::string& method, const Url& 
     if ((resp.status_code == 303 && method != "HEAD") ||
         ((resp.status_code == 301 || resp.status_code == 302) && method == "POST")) {
         d.new_method = "GET";
+        d.drop_body = true;
     } else {
         d.new_method = method;
+        d.drop_body = resp.status_code == 303;
     }
 
     d.new_url = to.to_string();
