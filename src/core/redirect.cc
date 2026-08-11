@@ -147,9 +147,10 @@ RedirectDecision RedirectPolicy::evaluate(const std::string& method, const Url& 
     if (to.scheme != "https") return d;
     if (!to.valid()) return d;
 
-    // 301/302/303 switch to GET (dropping the body); 307/308 preserve method.
-    if ((resp.status_code == 301 || resp.status_code == 302 || resp.status_code == 303) &&
-        method != "HEAD") {
+    // A user agent may rewrite POST to GET for 301/302.  Other methods are
+    // preserved.  A 303 rewrites every method except HEAD to GET.
+    if ((resp.status_code == 303 && method != "HEAD") ||
+        ((resp.status_code == 301 || resp.status_code == 302) && method == "POST")) {
         d.new_method = "GET";
     } else {
         d.new_method = method;
