@@ -25,10 +25,12 @@ std::string Url::authority() const {
 }
 
 std::string Url::request_target() const {
-    if (!path.empty()) {
-        return query.empty() ? path : path + "?" + query;
+    std::string target = path.empty() ? "/" : path;
+    if (query_present) {
+        target += '?';
+        target += query;
     }
-    return query.empty() ? "/" : ("/?" + query);
+    return target;
 }
 
 std::string Url::to_string() const {
@@ -107,6 +109,7 @@ bool parse_url(std::string_view raw, Url& out) {
     } else {
         out.path = std::string(rest.substr(0, q));
         out.query = std::string(rest.substr(q + 1));
+        out.query_present = true;
     }
     return out.valid();
 }

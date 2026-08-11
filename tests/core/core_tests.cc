@@ -48,6 +48,12 @@ int main() {
     assert(u.port == 0 && u.authority() == "example.com");
     assert(parse_url("https://example.com:8443/a", u));
     assert(u.authority() == "example.com:8443");
+    assert(parse_url("https://example.com/a?", u));
+    assert(u.request_target() == "/a?");
+    assert(u.to_string() == "https://example.com/a?");
+    assert(parse_url("https://example.com?", u));
+    assert(u.request_target() == "/?");
+    assert(u.to_string() == "https://example.com/?");
     assert(!parse_url("http://example.com", u));
     assert(!parse_url("https://example.com:99999/", u));
     assert(parse_url("https://[::1]:443/", u));

@@ -428,11 +428,7 @@ bool Http3Session::submit_request(Job* job) {
     // though the QUIC connection used the effective port 443.
     const std::string authority = url.authority();
     add_nv(":authority", 10, authority);
-    std::string path = url.path.empty() ? "/" : url.path;
-    if (!url.query.empty()) {
-        path += "?";
-        path += url.query;
-    }
+    const std::string path = url.request_target();
     add_nv(":path", 5, path);
 
     for (const auto& h : req.headers.list()) {
