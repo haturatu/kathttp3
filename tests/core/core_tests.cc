@@ -25,6 +25,7 @@
 #include "network_change.h"
 #include "precommit_failover.h"
 #include "redirect.h"
+#include "request.h"
 #include "request_body_offset.h"
 #include "time_util.h"
 #include "udp_error.h"
@@ -60,6 +61,13 @@ int main() {
     assert(request != nullptr);
     assert(kathttp3_request_add_header(request, "TE", " Trailers\t") == KATHTTP3_OK);
     assert(kathttp3_request_add_header(request, "Connection", "close") == KATHTTP3_ERR_INVALID_ARG);
+    const std::array<uint8_t, 3> request_body{{1, 2, 3}};
+    assert(kathttp3_request_set_body(request, request_body.data(), request_body.size()) ==
+           KATHTTP3_OK);
+    assert(kathttp3_request_set_body(request, nullptr, 1) == KATHTTP3_ERR_INVALID_ARG);
+    assert(request->body == std::vector<uint8_t>(request_body.begin(), request_body.end()));
+    assert(kathttp3_request_set_body(request, nullptr, 0) == KATHTTP3_OK);
+    assert(request->body.empty());
     kathttp3_request_destroy(request);
     Response response;
     response.status_code = 303;
