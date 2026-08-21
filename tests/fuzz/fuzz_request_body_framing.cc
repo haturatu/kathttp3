@@ -15,8 +15,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     const std::string value(reinterpret_cast<const char*>(data) + name_len, value_len);
     const size_t body_len = size - name_len - value_len;
 
-    kathttp3_request* request =
-        kathttp3_request_create("POST", "https://example.com/upload");
+    kathttp3_request* request = kathttp3_request_create("POST", "https://example.com/upload");
     if (request == nullptr) return 0;
     (void)kathttp3_request_add_header(request, name.c_str(), value.c_str());
     (void)kathttp3_request_set_body(request, data + name_len + value_len, body_len);
