@@ -79,6 +79,27 @@ if(KATHTTP3_BUILD_FUZZERS)
   target_include_directories(kathttp3_fuzz_request_body PRIVATE src/core)
   target_compile_options(kathttp3_fuzz_request_body PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
   target_link_options(kathttp3_fuzz_request_body PRIVATE -fsanitize=fuzzer,address,undefined)
+
+  add_executable(kathttp3_fuzz_cookie_jar
+    tests/fuzz/fuzz_cookie_jar.cc src/core/url.cc src/core/header_list.cc
+    src/core/cookie_jar.cc)
+  target_include_directories(kathttp3_fuzz_cookie_jar PRIVATE src/core)
+  target_compile_options(kathttp3_fuzz_cookie_jar PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+  target_link_options(kathttp3_fuzz_cookie_jar PRIVATE -fsanitize=fuzzer,address,undefined -lpthread)
+
+  add_executable(kathttp3_fuzz_redirect
+    tests/fuzz/fuzz_redirect.cc src/core/url.cc src/core/header_list.cc
+    src/core/redirect.cc)
+  target_include_directories(kathttp3_fuzz_redirect PRIVATE src/core)
+  target_compile_options(kathttp3_fuzz_redirect PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+  target_link_options(kathttp3_fuzz_redirect PRIVATE -fsanitize=fuzzer,address,undefined)
+
+  add_executable(kathttp3_fuzz_request_body_framing
+    tests/fuzz/fuzz_request_body_framing.cc src/core/header_list.cc src/core/url.cc
+    src/core/request.cc)
+  target_include_directories(kathttp3_fuzz_request_body_framing PRIVATE src/core)
+  target_compile_options(kathttp3_fuzz_request_body_framing PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+  target_link_options(kathttp3_fuzz_request_body_framing PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
 set(KATHTTP3_CORE_SOURCES
