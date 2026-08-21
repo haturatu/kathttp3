@@ -67,8 +67,9 @@ jobs:
           key: android-native-deps-${{ runner.os }}-${{ hashFiles('third_party/versions.env', 'third_party/versions.cmake', 'third_party/patches/**', 'scripts/build-android-deps.sh') }}
       - run: >-
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          "platforms;android-36" "build-tools;36.0.0"
+          "platforms;android-37.0" "build-tools;37.0.0"
           "ndk;27.0.12077973" "cmake;3.22.1"
+      - run: ln -sfn "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37"
       - name: Build Android library, AAR, and example APK
         run: >-
           ./gradlew --no-daemon --stacktrace
