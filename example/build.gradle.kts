@@ -1,6 +1,6 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.plugin.compose") }
 android {
-    namespace = "dev.kathttp3.example"; compileSdk = 36
+    namespace = "dev.kathttp3.example"; compileSdk = 37
     defaultConfig { applicationId = "dev.kathttp3.example"; minSdk = 26; targetSdk = 36; versionCode = 1; versionName = "0.1" }
     buildFeatures { compose = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
