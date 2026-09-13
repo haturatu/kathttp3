@@ -833,11 +833,42 @@ int main() {
     matching_not_modified_headers.add("etag", "\"v1\"");
     const auto merged = revalidation_cache.merge_304(
         *stale_for_validation.response, revalidation_request, matching_not_modified_headers);
-    assert(merged && merged->retain_in_cache && merged->response.status_code == 200 &&
-           merged->response.body == revalidation_response.body);
+    assert(merged && merged->retention_candidate && merged->delivery.status_code == 200 &&
+           merged->delivery.body == revalidation_response.body);
     const auto refreshed = revalidation_cache.lookup(revalidation_request);
     assert(refreshed.state == CacheState::Fresh && refreshed.response);
     assert(refreshed.response->etag && *refreshed.response->etag == "\"v1\"");
+
+    auto revalidation_age_clock = std::make_shared<FakeCacheClock>();
+    ResponseCache revalidation_age_cache(
+        ResponseCacheConfig{.max_entries = 4, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        revalidation_age_clock);
+    Response revalidation_age_response;
+    revalidation_age_response.status_code = 200;
+    revalidation_age_response.headers.add("cache-control", "max-age=1");
+    revalidation_age_response.headers.add("etag", "\"age-v1\"");
+    revalidation_age_response.body = {11};
+    const CacheRequest revalidation_age_request{"GET", "https://cache.example/revalidate-age",
+                                                cache_request_headers, false};
+    const bool stored_revalidation_age =
+        revalidation_age_cache.store(revalidation_age_request, revalidation_age_response);
+    assert(stored_revalidation_age);
+    revalidation_age_clock->monotonic += 120'000'000'000ULL;
+    revalidation_age_clock->wall += 120;
+    const auto stale_age = revalidation_age_cache.lookup(revalidation_age_request);
+    assert(stale_age.state == CacheState::NeedsValidation && stale_age.response &&
+           stale_age.response->headers.get("age") == "120");
+    HeaderList age_not_modified_headers;
+    age_not_modified_headers.add("cache-control", "max-age=60");
+    age_not_modified_headers.add("date", "Thu, 01 Jan 1970 00:18:40 GMT");
+    age_not_modified_headers.add("etag", "\"age-v1\"");
+    const auto age_merged = revalidation_age_cache.merge_304(
+        *stale_age.response, revalidation_age_request, age_not_modified_headers);
+    assert(age_merged && age_merged->retention_candidate &&
+           age_merged->delivery.body == revalidation_age_response.body);
+    const auto age_refreshed = revalidation_age_cache.lookup(revalidation_age_request);
+    assert(age_refreshed.state == CacheState::Fresh && age_refreshed.response &&
+           age_refreshed.response->headers.get("age") == "0");
 
     Response no_store_revalidation_response = revalidation_response;
     no_store_revalidation_response.headers.clear();
@@ -856,9 +887,9 @@ int main() {
     no_store_not_modified_headers.add("etag", "\"no-store-v1\"");
     const auto no_store_merged = revalidation_cache.merge_304(
         *no_store_stale.response, no_store_revalidation_request, no_store_not_modified_headers);
-    assert(no_store_merged && !no_store_merged->retain_in_cache &&
-           no_store_merged->response.status_code == 200 &&
-           no_store_merged->response.body == no_store_revalidation_response.body);
+    assert(no_store_merged && !no_store_merged->retention_candidate &&
+           no_store_merged->delivery.status_code == 200 &&
+           no_store_merged->delivery.body == no_store_revalidation_response.body);
     const CacheLookup no_store_after_merge =
         revalidation_cache.lookup(no_store_revalidation_request);
     assert(no_store_after_merge.state == CacheState::Miss);
@@ -881,8 +912,8 @@ int main() {
     star_vary_not_modified_headers.add("etag", "\"star-v1\"");
     const auto star_vary_merged = revalidation_cache.merge_304(
         *star_vary_stale.response, star_vary_revalidation_request, star_vary_not_modified_headers);
-    assert(star_vary_merged && !star_vary_merged->retain_in_cache &&
-           star_vary_merged->response.body == star_vary_revalidation_response.body);
+    assert(star_vary_merged && !star_vary_merged->retention_candidate &&
+           star_vary_merged->delivery.body == star_vary_revalidation_response.body);
     const CacheLookup star_vary_after_merge =
         revalidation_cache.lookup(star_vary_revalidation_request);
     assert(star_vary_after_merge.state == CacheState::Miss);
@@ -908,7 +939,7 @@ int main() {
     changed_vary_not_modified_headers.add("etag", "\"vary-v1\"");
     const auto changed_vary = revalidation_cache.merge_304(
         *vary_stale.response, vary_revalidation_request, changed_vary_not_modified_headers);
-    assert(changed_vary && changed_vary->retain_in_cache);
+    assert(changed_vary && changed_vary->retention_candidate);
     const CacheLookup changed_vary_hit = revalidation_cache.lookup(vary_revalidation_request);
     assert(changed_vary_hit.state == CacheState::Fresh);
     HeaderList changed_vary_probe_headers;
@@ -948,10 +979,101 @@ int main() {
     matching_last_modified_headers.add("last-modified", "Thu, 01 Jan 1970 00:16:40 GMT");
     const auto matching_last_modified = revalidation_cache.merge_304(
         *last_modified_stale.response, last_modified_request, matching_last_modified_headers);
-    assert(matching_last_modified && matching_last_modified->retain_in_cache &&
-           matching_last_modified->response.body == last_modified_response.body);
+    assert(matching_last_modified && matching_last_modified->retention_candidate &&
+           matching_last_modified->delivery.body == last_modified_response.body);
     const CacheLookup last_modified_refreshed = revalidation_cache.lookup(last_modified_request);
     assert(last_modified_refreshed.state == CacheState::Fresh);
+
+    auto weak_etag_clock = std::make_shared<FakeCacheClock>();
+    ResponseCache weak_etag_cache(
+        ResponseCacheConfig{.max_entries = 4, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        weak_etag_clock);
+    Response weak_etag_response;
+    weak_etag_response.status_code = 200;
+    weak_etag_response.headers.add("cache-control", "max-age=0");
+    weak_etag_response.headers.add("etag", "\"weak-v1\"");
+    weak_etag_response.body = {17};
+    const CacheRequest weak_etag_request{"GET", "https://cache.example/revalidate-weak-etag",
+                                         cache_request_headers, false};
+    const bool stored_weak_etag = weak_etag_cache.store(weak_etag_request, weak_etag_response);
+    assert(stored_weak_etag);
+    const auto weak_etag_stale = weak_etag_cache.lookup(weak_etag_request);
+    assert(weak_etag_stale.state == CacheState::NeedsValidation && weak_etag_stale.response);
+    HeaderList weak_etag_not_modified_headers;
+    weak_etag_not_modified_headers.add("cache-control", "max-age=60");
+    weak_etag_not_modified_headers.add("etag", "W/\"weak-v1\"");
+    const auto weak_etag_merged = weak_etag_cache.merge_304(
+        *weak_etag_stale.response, weak_etag_request, weak_etag_not_modified_headers);
+    assert(weak_etag_merged && weak_etag_merged->retention_candidate &&
+           weak_etag_merged->delivery.body == weak_etag_response.body);
+    const auto weak_etag_hit = weak_etag_cache.lookup(weak_etag_request);
+    assert(weak_etag_hit.state == CacheState::Fresh && weak_etag_hit.response &&
+           weak_etag_hit.response->etag && *weak_etag_hit.response->etag == "W/\"weak-v1\"");
+
+    auto revalidation_race_clock = std::make_shared<FakeCacheClock>();
+    ResponseCache revalidation_race_cache(
+        ResponseCacheConfig{.max_entries = 4, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        revalidation_race_clock);
+    Response race_v1;
+    race_v1.status_code = 200;
+    race_v1.headers.add("cache-control", "max-age=0");
+    race_v1.headers.add("etag", "\"race-v1\"");
+    race_v1.body = {18};
+    const CacheRequest race_request{"GET", "https://cache.example/revalidate-race",
+                                    cache_request_headers, false};
+    const bool stored_race_v1 = revalidation_race_cache.store(race_request, race_v1);
+    assert(stored_race_v1);
+    const auto stale_race = revalidation_race_cache.lookup(race_request);
+    assert(stale_race.state == CacheState::NeedsValidation && stale_race.response);
+    Response race_v2;
+    race_v2.status_code = 200;
+    race_v2.headers.add("cache-control", "max-age=60");
+    race_v2.headers.add("etag", "\"race-v2\"");
+    race_v2.body = {19};
+    const bool stored_race_v2 = revalidation_race_cache.store(race_request, race_v2);
+    assert(stored_race_v2);
+    HeaderList delayed_race_not_modified_headers;
+    delayed_race_not_modified_headers.add("cache-control", "max-age=60");
+    delayed_race_not_modified_headers.add("etag", "\"race-v1\"");
+    const auto delayed_race_merge = revalidation_race_cache.merge_304(
+        *stale_race.response, race_request, delayed_race_not_modified_headers);
+    assert(delayed_race_merge && !delayed_race_merge->retention_candidate &&
+           delayed_race_merge->delivery.body == race_v1.body);
+    const auto race_hit = revalidation_race_cache.lookup(race_request);
+    assert(race_hit.state == CacheState::Fresh && race_hit.response &&
+           race_hit.response->body == race_v2.body && race_hit.response->etag &&
+           *race_hit.response->etag == "\"race-v2\"");
+
+    auto delivery_limit_clock = std::make_shared<FakeCacheClock>();
+    ResponseCache delivery_limit_cache(
+        ResponseCacheConfig{.max_entries = 4, .max_bytes = 1 << 14, .max_entry_bytes = 4096},
+        delivery_limit_clock);
+    Response delivery_limit_response;
+    delivery_limit_response.status_code = 200;
+    delivery_limit_response.headers.add("cache-control", "max-age=0");
+    delivery_limit_response.headers.add("etag", "\"limit-v1\"");
+    delivery_limit_response.headers.add("x-padding", std::string(3000, 'a'));
+    delivery_limit_response.body = {20};
+    const CacheRequest delivery_limit_request{
+        "GET", "https://cache.example/revalidate-delivery-limit", cache_request_headers, false};
+    const bool stored_delivery_limit =
+        delivery_limit_cache.store(delivery_limit_request, delivery_limit_response);
+    assert(stored_delivery_limit);
+    const auto delivery_limit_stale = delivery_limit_cache.lookup(delivery_limit_request);
+    assert(delivery_limit_stale.state == CacheState::NeedsValidation &&
+           delivery_limit_stale.response);
+    HeaderList delivery_limit_not_modified_headers;
+    delivery_limit_not_modified_headers.add("cache-control", "max-age=60");
+    delivery_limit_not_modified_headers.add("etag", "\"limit-v1\"");
+    delivery_limit_not_modified_headers.add("x-new-padding", std::string(1000, 'b'));
+    const auto delivery_limit_merge =
+        delivery_limit_cache.merge_304(*delivery_limit_stale.response, delivery_limit_request,
+                                       delivery_limit_not_modified_headers);
+    assert(delivery_limit_merge && !delivery_limit_merge->retention_candidate &&
+           delivery_limit_merge->delivery.body == delivery_limit_response.body);
+    const CacheLookup delivery_limit_after_merge =
+        delivery_limit_cache.lookup(delivery_limit_request);
+    assert(delivery_limit_after_merge.state == CacheState::Miss);
 
     ResponseCache lru_cache(
         ResponseCacheConfig{.max_entries = 1, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
@@ -978,7 +1100,15 @@ int main() {
         clock_failure_cache->store(cache_request, cache_response);
     assert(!stored_without_wall_clock);
     const CacheLookup clock_failure_hit = clock_failure_cache->lookup(cache_request);
-    assert(clock_failure_hit.state == CacheState::NeedsValidation);
+    assert(clock_failure_hit.state == CacheState::NeedsValidation && clock_failure_hit.response);
+    HeaderList clock_failure_not_modified_headers;
+    clock_failure_not_modified_headers.add("cache-control", "max-age=60");
+    clock_failure_not_modified_headers.add("etag", "\"v1\"");
+    const auto clock_failure_merge = clock_failure_cache->merge_304(
+        *clock_failure_hit.response, cache_request, clock_failure_not_modified_headers);
+    assert(clock_failure_merge && !clock_failure_merge->retention_candidate &&
+           clock_failure_merge->delivery.body == cache_response.body);
+    assert(clock_failure_cache->lookup(cache_request).state == CacheState::Miss);
     cache_clock->wall_available = true;
 
     Response must_revalidate_response = stale_error_response;
