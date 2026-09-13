@@ -1308,6 +1308,12 @@ bool QuicClient::run_handshake_race() {
 
 void QuicClient::run() {
     connection_started_at_ = now_ns();
+    process_cached_jobs();
+    if (!has_live_pending_job()) {
+        closed_.store(true, std::memory_order_release);
+        state_.store(ConnectionState::Closed, std::memory_order_release);
+        return;
+    }
     if (!prepare_endpoints()) {
         KATHTTP3_LOG_ERR("run: prepare_endpoints failed -> DNS err\n");
         fail_all_pending(terminal_error_ == KATHTTP3_ERR_QUIC ? KATHTTP3_ERR_DNS : terminal_error_);
@@ -1815,6 +1821,7 @@ void QuicClient::write_pending() {
 }
 
 void QuicClient::process_wakeup() {
+    process_cached_jobs();
     std::vector<int64_t> streams;
     {
         std::lock_guard<std::mutex> lk(job_mutex_);
@@ -1932,6 +1939,7 @@ void QuicClient::note_write_progress(int64_t stream_id) {
 }
 
 void QuicClient::try_submit_pending() {
+    process_cached_jobs();
     if (is_draining()) return;
     if (!http3_ready_ || !http3_ || !http3_->ready()) return;
     // Engine callbacks may synchronously invoke cancel()/close().  Never call
@@ -2120,7 +2128,28 @@ void QuicClient::notify_job_error(Job* job, int err) {
     engine_->on_job_error(job, err, "request failed");
 }
 
+void QuicClient::process_cached_jobs() {
+    std::vector<std::unique_ptr<Job>> cached_jobs;
+    {
+        std::lock_guard<std::mutex> lk(job_mutex_);
+        for (auto it = pending_jobs_.begin(); it != pending_jobs_.end();) {
+            if (!(*it)->cached_response) {
+                ++it;
+                continue;
+            }
+            if ((*it)->cancelled) {
+                it = pending_jobs_.erase(it);
+                continue;
+            }
+            cached_jobs.push_back(std::move(*it));
+            it = pending_jobs_.erase(it);
+        }
+    }
+    for (auto& job : cached_jobs) engine_->on_job_cached(job.get());
+}
+
 void QuicClient::fail_all_pending(int err) {
+    process_cached_jobs();
     std::vector<Job*> jobs;
     {
         std::lock_guard<std::mutex> lk(job_mutex_);

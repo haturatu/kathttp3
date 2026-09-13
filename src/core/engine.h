@@ -48,6 +48,7 @@ class Engine {
     void on_job_body(Job* job, const uint8_t* data, size_t len);
     void on_job_complete(Job* job);
     void on_job_error(Job* job, int err, const char* msg);
+    void on_job_cached(Job* job);
 
    private:
     std::mutex lifecycle_mutex_;
@@ -68,13 +69,9 @@ class Engine {
     void dispatch_error(Job* job, int err, const char* msg);
     void add_cookie_header(kathttp3_request* req, const Url& url);
     void store_cookies(const Url& url, const HeaderList& headers);
-    enum class CachePreparation { Bypass, Network, Delivered };
-    CachePreparation prepare_cache(Job* job, kathttp3_event_callback callback = nullptr,
-                                   void* user_data = nullptr);
+    void prepare_cache(Job* job);
     void add_cache_validator(Job* job, const CachedResponse& response);
     void deliver_cached(Job* job, const CachedResponse& response);
-    void deliver_cached_direct(int64_t request_id, kathttp3_event_callback callback,
-                               void* user_data, const CachedResponse& response);
     void store_job_response(Job* job);
     void invalidate_after_unsafe_request(Job* job, const HeaderList& headers);
     void deliver(const kathttp3_event& ev);

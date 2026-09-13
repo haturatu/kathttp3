@@ -46,6 +46,28 @@ bool has_header(const HeaderList& headers, std::string_view name) {
     return !headers.get_all(name).empty();
 }
 
+bool is_stale_if_error_status(int status) {
+    return status == 500 || status == 502 || status == 503 || status == 504;
+}
+
+bool is_stale_if_error_transport_error(int error) {
+    switch (error) {
+        case KATHTTP3_ERR_DNS:
+        case KATHTTP3_ERR_TIMEOUT:
+        case KATHTTP3_ERR_DNS_TIMEOUT:
+        case KATHTTP3_ERR_CONNECT_TIMEOUT:
+        case KATHTTP3_ERR_HANDSHAKE_TIMEOUT:
+        case KATHTTP3_ERR_RESPONSE_HEADERS_TIMEOUT:
+        case KATHTTP3_ERR_READ_TIMEOUT:
+        case KATHTTP3_ERR_WRITE_TIMEOUT:
+        case KATHTTP3_ERR_CALL_TIMEOUT:
+        case KATHTTP3_ERR_NETWORK_LOST:
+            return true;
+        default:
+            return false;
+    }
+}
+
 const HeaderList& original_cache_request_headers(const Job& job) {
     return job.cache_request_headers ? *job.cache_request_headers : job.request->headers;
 }
@@ -221,8 +243,7 @@ void Engine::execute(kathttp3_request* req, int64_t request_id, kathttp3_event_c
     job->response.url = url;
     job->cache_request_wall_seconds = wall_clock_seconds();
 
-    const CachePreparation cache_preparation = prepare_cache(job.get(), cb, user_data);
-    if (cache_preparation == CachePreparation::Delivered) return;
+    prepare_cache(job.get());
 
     QuicClient* c = get_or_create_client(url);
     if (!c) {
@@ -332,21 +353,16 @@ void Engine::destroy() {
     }
 }
 
-Engine::CachePreparation Engine::prepare_cache(Job* job, kathttp3_event_callback callback,
-                                               void* user_data) {
-    if (!http_cache_ || !job || !job->request) return CachePreparation::Bypass;
+void Engine::prepare_cache(Job* job) {
+    if (!http_cache_ || !job || !job->request) return;
     job->cache_request_headers = job->request->headers;
     const std::string cache_url = job->url.to_string();
     const CacheRequest request{job->request->method, cache_url, *job->cache_request_headers,
                                job->streaming || job->request->streaming_body};
     const CacheLookup lookup = http_cache_->lookup(request);
     if (lookup.state == CacheState::Fresh && lookup.response) {
-        if (callback) {
-            deliver_cached_direct(job->id, callback, user_data, *lookup.response);
-        } else {
-            deliver_cached(job, *lookup.response);
-        }
-        return CachePreparation::Delivered;
+        job->cached_response = *lookup.response;
+        return;
     }
     if (lookup.state == CacheState::NeedsValidation && lookup.response) {
         job->cache_validation = CacheValidation{
@@ -356,7 +372,6 @@ Engine::CachePreparation Engine::prepare_cache(Job* job, kathttp3_event_callback
         };
         add_cache_validator(job, *lookup.response);
     }
-    return CachePreparation::Network;
 }
 
 void Engine::add_cache_validator(Job* job, const CachedResponse& response) {
@@ -377,42 +392,9 @@ void Engine::deliver_cached(Job* job, const CachedResponse& response) {
     dispatch_complete(job);
 }
 
-void Engine::deliver_cached_direct(int64_t request_id, kathttp3_event_callback callback,
-                                   void* user_data, const CachedResponse& response) {
-    if (!callback) return;
-    const CachedResponse delivery =
-        http_cache_ ? http_cache_->response_with_current_age(response) : response;
-    std::vector<const char*> names;
-    std::vector<const char*> values;
-    names.reserve(delivery.headers.size());
-    values.reserve(delivery.headers.size());
-    for (const auto& header : delivery.headers.list()) {
-        names.push_back(header.name.c_str());
-        values.push_back(header.value.c_str());
-    }
-    std::lock_guard<std::recursive_mutex> callback_lock(callback_mutex_);
-    kathttp3_event headers_event{};
-    headers_event.type = KATHTTP3_EVENT_HEADERS;
-    headers_event.request_id = request_id;
-    headers_event.status_code = delivery.status_code;
-    headers_event.names = names.data();
-    headers_event.values = values.data();
-    headers_event.header_count = names.size();
-    invoke_callback(callback, user_data, headers_event, "cached headers delivery");
-
-    if (!delivery.body.empty()) {
-        kathttp3_event body_event{};
-        body_event.type = KATHTTP3_EVENT_BODY;
-        body_event.request_id = request_id;
-        body_event.data = delivery.body.data();
-        body_event.data_len = delivery.body.size();
-        invoke_callback(callback, user_data, body_event, "cached body delivery");
-    }
-
-    kathttp3_event complete_event{};
-    complete_event.type = KATHTTP3_EVENT_COMPLETE;
-    complete_event.request_id = request_id;
-    invoke_callback(callback, user_data, complete_event, "cached completion delivery");
+void Engine::on_job_cached(Job* job) {
+    if (!job || !job->cached_response) return;
+    deliver_cached(job, *job->cached_response);
 }
 
 void Engine::store_job_response(Job* job) {
@@ -432,8 +414,8 @@ void Engine::store_job_response(Job* job) {
 void Engine::invalidate_after_unsafe_request(Job* job, const HeaderList& headers) {
     if (!http_cache_ || !job || !job->request) return;
     const std::string& method = job->request->method;
-    const bool safe = case_eq(method, "GET") || case_eq(method, "HEAD") ||
-                      case_eq(method, "OPTIONS") || case_eq(method, "TRACE");
+    const bool safe =
+        method == "GET" || method == "HEAD" || method == "OPTIONS" || method == "TRACE";
     if (safe || job->response.status_code < 200 || job->response.status_code >= 400) return;
 
     http_cache_->invalidate(job->url.to_string());
@@ -526,7 +508,7 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
                 njob->response.url = new_url;
                 njob->cache_request_wall_seconds = wall_clock_seconds();
 
-                if (prepare_cache(njob.get()) == CachePreparation::Delivered) return;
+                prepare_cache(njob.get());
 
                 QuicClient* nc = get_or_create_client(new_url);
                 if (!nc) {
@@ -575,7 +557,7 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
         return;
     }
 
-    if (job->cache_validation && http_cache_ && status >= 500 &&
+    if (job->cache_validation && http_cache_ && is_stale_if_error_status(status) &&
         http_cache_->can_serve_stale_if_error(job->cache_validation->stored)) {
         /* Do not expose the error response or capture its body; completion or
          * stream failure will deliver the stale validated candidate. */
@@ -623,10 +605,6 @@ void Engine::on_job_body(Job* job, const uint8_t* data, size_t len) {
 
 void Engine::on_job_complete(Job* job) {
     if (job->redirected) return;  // intermediate redirect hop
-    if (job->cache_validation && job->cache_validation->serve_stale_on_error) {
-        deliver_cached(job, job->cache_validation->stored);
-        return;
-    }
     if (job->declared_content_length >= 0) {
         int st = job->response.status_code;
         bool exempt = (job->request->method == "HEAD") || st == 204 || st == 304 || (st / 100 == 1);
@@ -644,6 +622,10 @@ void Engine::on_job_complete(Job* job) {
             return;
         }
     }
+    if (job->cache_validation && job->cache_validation->serve_stale_on_error) {
+        deliver_cached(job, job->cache_validation->stored);
+        return;
+    }
 
     if (job->cache_validation && job->response.status_code == 304) {
         const std::string cache_url = job->url.to_string();
@@ -658,7 +640,7 @@ void Engine::on_job_complete(Job* job) {
             deliver_cached(job, *merged);
         } else {
             http_cache_->invalidate(cache_url);
-            deliver_cached(job, validation.stored);
+            dispatch_error(job, KATHTTP3_ERR_HTTP3, "cache validation failed");
         }
         return;
     }
@@ -668,9 +650,8 @@ void Engine::on_job_complete(Job* job) {
 
 void Engine::on_job_error(Job* job, int err, const char* msg) {
     if (job->redirected) return;
-    if (job->cache_validation && http_cache_ &&
-        (job->cache_validation->serve_stale_on_error ||
-         http_cache_->can_serve_stale_if_error(job->cache_validation->stored))) {
+    if (job->cache_validation && http_cache_ && is_stale_if_error_transport_error(err) &&
+        http_cache_->can_serve_stale_if_error(job->cache_validation->stored)) {
         deliver_cached(job, job->cache_validation->stored);
         return;
     }
@@ -772,40 +753,64 @@ void Engine::store_cookies(const Url& url, const HeaderList& headers) {
 /* ------------------------------------------------------------------ *
  * C ABI
  * ------------------------------------------------------------------ */
+namespace {
+
+void fill_default_options(kathttp3_client_options& opt, size_t size) {
+    std::memset(&opt, 0, sizeof(opt));
+    opt.struct_size = static_cast<uint32_t>(size);
+    opt.abi_version = KATHTTP3_ABI_VERSION;
+    opt.connect_timeout_ms = 10000;
+    opt.request_timeout_ms = 30000;
+    opt.idle_timeout_ms = 30000;
+    opt.max_redirects = 10;
+    opt.max_connections_per_origin = 1;
+    opt.enable_0rtt = 1;
+    opt.verify_cert = 1;
+    opt.insecure_cert = 0;
+    opt.trust_mode = KATHTTP3_TRUST_PLATFORM;
+    opt.dns_timeout_ms = opt.connect_timeout_ms;
+    opt.handshake_timeout_ms = opt.connect_timeout_ms;
+    opt.response_headers_timeout_ms = opt.request_timeout_ms;
+    opt.read_timeout_ms = opt.idle_timeout_ms;
+    opt.write_timeout_ms = opt.idle_timeout_ms;
+    opt.call_timeout_ms = opt.request_timeout_ms;
+    opt.consumer_stall_timeout_ms = opt.read_timeout_ms;
+    opt.enable_qlog = 0;
+    opt.max_connection_workers = 32;
+    opt.network_change_policy = KATHTTP3_NETWORK_CHANGE_ATTEMPT_MIGRATION;
+    opt.enable_http_cache = 0;
+    opt.http_cache_max_entries = 128;
+    opt.http_cache_max_bytes = 32ULL * 1024ULL * 1024ULL;
+    opt.http_cache_max_entry_bytes = 4ULL * 1024ULL * 1024ULL;
+}
+
+void init_options_storage(void* storage, size_t requested_size) {
+    if (!storage) return;
+    const size_t size = std::min(requested_size, sizeof(kathttp3_client_options));
+    kathttp3_client_options defaults{};
+    fill_default_options(defaults, size);
+    std::memset(storage, 0, size);
+    std::memcpy(storage, &defaults, size);
+}
+
+}  // namespace
+
 extern "C" {
 
 void kathttp3_client_options_init(kathttp3_client_options* opt) {
-    if (!opt) return;
-    std::memset(opt, 0, sizeof(*opt));
-    opt->struct_size = sizeof(kathttp3_client_options);
-    opt->abi_version = KATHTTP3_ABI_VERSION;
-    opt->connect_timeout_ms = 10000;
-    opt->request_timeout_ms = 30000;
-    opt->idle_timeout_ms = 30000;
-    opt->max_redirects = 10;
-    opt->max_connections_per_origin = 1;
-    opt->enable_0rtt = 1;
-    opt->verify_cert = 1;
-    opt->insecure_cert = 0;
-    opt->trust_mode = KATHTTP3_TRUST_PLATFORM;
-    opt->dns_timeout_ms = opt->connect_timeout_ms;
-    opt->handshake_timeout_ms = opt->connect_timeout_ms;
-    opt->response_headers_timeout_ms = opt->request_timeout_ms;
-    opt->read_timeout_ms = opt->idle_timeout_ms;
-    opt->write_timeout_ms = opt->idle_timeout_ms;
-    opt->call_timeout_ms = opt->request_timeout_ms;
-    opt->consumer_stall_timeout_ms = opt->read_timeout_ms;
-    opt->enable_qlog = 0;
-    opt->max_connection_workers = 32;
-    opt->network_change_policy = KATHTTP3_NETWORK_CHANGE_ATTEMPT_MIGRATION;
-    opt->enable_http_cache = 0;
-    opt->http_cache_max_entries = 128;
-    opt->http_cache_max_bytes = 32ULL * 1024ULL * 1024ULL;
-    opt->http_cache_max_entry_bytes = 4ULL * 1024ULL * 1024ULL;
+    init_options_storage(opt, KATHTTP3_CLIENT_OPTIONS_LEGACY_SIZE);
+}
+
+void kathttp3_client_options_init_size(void* storage, size_t size) {
+    init_options_storage(storage, size);
 }
 
 void kathttp3_client_config_init(kathttp3_client_config* config) {
     kathttp3_client_options_init(config);
+}
+
+void kathttp3_client_config_init_size(void* storage, size_t size) {
+    kathttp3_client_options_init_size(storage, size);
 }
 
 uint32_t kathttp3_api_version(void) {
@@ -820,7 +825,7 @@ kathttp3_client* kathttp3_client_create(const kathttp3_client_options* options) 
     if (options->abi_version != KATHTTP3_ABI_VERSION_CURRENT) return nullptr;
     try {
         kathttp3_client_options normalized;
-        kathttp3_client_options_init(&normalized);
+        kathttp3_client_options_init_size(&normalized, sizeof(normalized));
         std::memcpy(&normalized, options,
                     std::min<size_t>(options->struct_size, sizeof(normalized)));
         auto* e = new kathttp3::Engine(normalized);

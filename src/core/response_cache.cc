@@ -46,7 +46,7 @@ std::string_view trim_ows(std::string_view value) {
 }
 
 bool is_get(std::string_view method) {
-    return ascii_iequals(method, "GET");
+    return method == "GET";
 }
 
 bool has_header(const HeaderList& headers, std::string_view name) {
@@ -91,9 +91,16 @@ bool has_sensitive_request_header(const HeaderList& headers) {
     return has_header(headers, "authorization") || has_header(headers, "cookie");
 }
 
+bool has_conditional_request_header(const HeaderList& headers) {
+    return has_header(headers, "if-none-match") || has_header(headers, "if-modified-since") ||
+           has_header(headers, "if-match") || has_header(headers, "if-unmodified-since") ||
+           has_header(headers, "if-range");
+}
+
 bool request_cache_bypassed(const CacheRequest& request, const CacheControl& control) {
     return !is_get(request.method) || request.streaming || control.no_store ||
-           has_sensitive_request_header(request.headers) || has_header(request.headers, "range");
+           has_sensitive_request_header(request.headers) ||
+           has_conditional_request_header(request.headers) || has_header(request.headers, "range");
 }
 
 std::vector<std::string> request_field_values(const HeaderList& headers, std::string_view name) {
@@ -312,6 +319,7 @@ std::optional<CachedResponse> ResponseCache::make_cached_response(
     const auto last_modified_value = response.headers.get("last-modified");
     const bool has_validator = !etag_value.empty() || !last_modified_value.empty();
     /* A no-cache response is useful only when it can be revalidated. */
+    if (control.no_cache && !has_validator) return std::nullopt;
     if (!freshness_lifetime.has_value() && !control.no_cache && !has_validator) return std::nullopt;
     if (expires_invalid && !control.max_age && !control.no_cache && !has_validator)
         return std::nullopt;
@@ -351,6 +359,7 @@ std::optional<CachedResponse> ResponseCache::make_cached_response(
         cached.vary.push_back({name, request_field_values(request.headers, name)});
     if (!etag_value.empty()) cached.etag = std::string(etag_value);
     if (!last_modified_value.empty()) cached.last_modified = std::string(last_modified_value);
+    cached.requires_revalidation = control.no_cache;
     cached.must_revalidate = control.must_revalidate;
     cached.stale_if_error_seconds = control.stale_if_error;
     cached.accounted_bytes = accounted_bytes(cached);
@@ -373,6 +382,7 @@ bool ResponseCache::should_capture(const CacheRequest& request, int status,
         (!response_headers.get("expires").empty() && !response_headers.get("date").empty());
     const bool has_validator =
         !response_headers.get("etag").empty() || !response_headers.get("last-modified").empty();
+    if (control.no_cache && !has_validator) return false;
     return has_freshness || (control.no_cache && has_validator);
 }
 
@@ -418,8 +428,8 @@ CacheLookup ResponseCache::lookup_locked(const CacheRequest& request,
         const bool request_age_exceeded =
             request_control.max_age && age >= *request_control.max_age;
         const bool clock_unavailable = !now_wall_seconds || now_monotonic_ns == 0;
-        if (!clock_unavailable && !request_control.no_cache && !request_age_exceeded &&
-            age < response.freshness_lifetime_seconds) {
+        if (!clock_unavailable && !response.requires_revalidation && !request_control.no_cache &&
+            !request_age_exceeded && age < response.freshness_lifetime_seconds) {
             return {CacheState::Fresh, std::move(response)};
         }
         return {CacheState::NeedsValidation, std::move(response)};
@@ -439,6 +449,11 @@ std::optional<CachedResponse> ResponseCache::merge_304(
     const CachedResponse& stored, const CacheRequest& request, const HeaderList& response_headers,
     std::optional<uint64_t> request_wall_seconds) {
     if (stored.url != request.url || !vary_matches(stored, request.headers)) return std::nullopt;
+    const std::string_view response_etag = response_headers.get("etag");
+    if ((stored.etag && response_etag != *stored.etag) ||
+        (!stored.etag && !response_etag.empty())) {
+        return std::nullopt;
+    }
     Response merged;
     merged.status_code = stored.status_code;
     merged.headers = merge_headers(stored.headers, response_headers);
@@ -454,7 +469,9 @@ std::optional<CachedResponse> ResponseCache::merge_304(
 }
 
 bool ResponseCache::can_serve_stale_if_error(const CachedResponse& response) const {
-    if (!response.stale_if_error_seconds || response.must_revalidate) return false;
+    if (!response.stale_if_error_seconds || response.must_revalidate ||
+        response.requires_revalidation)
+        return false;
     if (!clock_->wall_seconds()) return false;
     const uint64_t age = current_age(response, clock_->monotonic_ns());
     if (age < response.freshness_lifetime_seconds) return false;

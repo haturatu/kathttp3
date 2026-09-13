@@ -55,6 +55,7 @@ struct CachedResponse {
 
     std::optional<std::string> etag;
     std::optional<std::string> last_modified;
+    bool requires_revalidation = false;
     bool must_revalidate = false;
     std::optional<uint64_t> stale_if_error_seconds;
     size_t accounted_bytes = 0;

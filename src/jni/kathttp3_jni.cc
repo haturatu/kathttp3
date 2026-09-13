@@ -511,7 +511,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp3_internal_NativeBridge_creat
     jboolean enable_http_cache, jint http_cache_max_entries, jlong http_cache_max_bytes,
     jlong http_cache_max_entry_bytes, jobject resolver) {
     kathttp3_client_options o;
-    kathttp3_client_options_init(&o);
+    kathttp3_client_options_init_size(&o, sizeof(o));
     o.connect_timeout_ms = static_cast<uint64_t>(connect);
     o.request_timeout_ms = static_cast<uint64_t>(request);
     o.idle_timeout_ms = static_cast<uint64_t>(idle);

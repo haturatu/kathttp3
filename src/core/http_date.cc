@@ -41,6 +41,23 @@ bool ascii_iequals(std::string_view lhs, std::string_view rhs) {
     return true;
 }
 
+bool valid_weekday(std::string_view value, bool long_form) {
+    if (long_form) {
+        constexpr std::array<std::string_view, 7> kLongWeekdays = {
+            "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+        };
+        for (const auto weekday : kLongWeekdays)
+            if (ascii_iequals(value, weekday)) return true;
+        return false;
+    }
+    constexpr std::array<std::string_view, 7> kShortWeekdays = {
+        "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
+    };
+    for (const auto weekday : kShortWeekdays)
+        if (ascii_iequals(value, weekday)) return true;
+    return false;
+}
+
 bool parse_number(std::string_view value, size_t min_digits, size_t max_digits, int& out) {
     if (value.size() < min_digits || value.size() > max_digits) return false;
     for (const char raw : value) {
@@ -120,7 +137,6 @@ std::optional<int64_t> parse_http_date(std::string_view value) {
     const size_t comma = value.find(',');
     if (comma != std::string_view::npos) {
         const std::string_view weekday = trim_ows(value.substr(0, comma));
-        if (weekday.empty()) return std::nullopt;
         const auto fields = split_spaces(value.substr(comma + 1));
         if (fields.size() == 5) {
             int day = 0;
@@ -128,8 +144,8 @@ std::optional<int64_t> parse_http_date(std::string_view value) {
             int hour = 0;
             int minute = 0;
             int second = 0;
-            if (!parse_number(fields[0], 2, 2, day) || month_number(fields[1]) == 0 ||
-                !parse_number(fields[2], 4, 4, year) ||
+            if (!valid_weekday(weekday, false) || !parse_number(fields[0], 2, 2, day) ||
+                month_number(fields[1]) == 0 || !parse_number(fields[2], 4, 4, year) ||
                 !parse_time(fields[3], hour, minute, second) || !ascii_iequals(fields[4], "GMT")) {
                 return std::nullopt;
             }
@@ -139,7 +155,8 @@ std::optional<int64_t> parse_http_date(std::string_view value) {
         if (fields.size() == 3) {
             const size_t first_dash = fields[0].find('-');
             const size_t second_dash = fields[0].find('-', first_dash + 1);
-            if (first_dash == std::string_view::npos || second_dash == std::string_view::npos ||
+            if (!valid_weekday(weekday, true) || first_dash == std::string_view::npos ||
+                second_dash == std::string_view::npos ||
                 fields[0].find('-', second_dash + 1) != std::string_view::npos ||
                 !ascii_iequals(fields[2], "GMT")) {
                 return std::nullopt;
@@ -172,7 +189,7 @@ std::optional<int64_t> parse_http_date(std::string_view value) {
     int minute = 0;
     int second = 0;
     const int month = month_number(fields[1]);
-    if (month == 0 || !parse_number(fields[2], 1, 2, day) ||
+    if (!valid_weekday(fields[0], false) || month == 0 || !parse_number(fields[2], 1, 2, day) ||
         !parse_time(fields[3], hour, minute, second) || !parse_number(fields[4], 4, 4, year)) {
         return std::nullopt;
     }

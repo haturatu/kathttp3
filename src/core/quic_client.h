@@ -109,6 +109,7 @@ struct Job {
                                              HTTP/3 receive flow-control */
     std::optional<CacheCapture> cache_capture;
     std::optional<CacheValidation> cache_validation;
+    std::optional<CachedResponse> cached_response;
     /* Request headers before native validators are appended. Vary matching
      * and a subsequent store must use the application's original fields. */
     std::optional<HeaderList> cache_request_headers;
@@ -248,6 +249,7 @@ class QuicClient {
     bool process_network_change();
     bool record_socket_error(int error, const char* operation);
     void expire_requests(uint64_t now);
+    void process_cached_jobs();
     void update_keep_alive();
     bool configure_early_data(ngtcp2_conn* conn, TlsClientContext::ResumptionState* resumption);
     void cache_0rtt_transport_params();
