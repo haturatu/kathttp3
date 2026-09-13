@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "time_util.h"
+
 namespace kathttp3 {
 
 static std::string to_lower(std::string_view s) {
@@ -158,8 +160,9 @@ static bool parse_cookie_expiry(std::string_view value, uint64_t& expiry) {
     const int64_t timestamp =
         days_from_civil(year, static_cast<unsigned>(month), static_cast<unsigned>(day)) * 86400 +
         hour * 3600 + minute * 60 + second;
-    const int64_t now = static_cast<int64_t>(std::time(nullptr));
-    expiry = timestamp <= now ? 1 : static_cast<uint64_t>(timestamp);
+    const auto now = wall_clock_seconds();
+    if (!now) return false;
+    expiry = timestamp <= static_cast<int64_t>(*now) ? 1 : static_cast<uint64_t>(timestamp);
     return true;
 }
 
@@ -226,12 +229,14 @@ void CookieJar::store(const Url& url, std::string_view set_cookie) {
                 parsed.ptr == value.data() + value.size()) {
                 c.persistent = true;
                 max_age_seen = true;
-                const uint64_t now = static_cast<uint64_t>(std::time(nullptr));
+                const auto now = wall_clock_seconds();
+                if (secs > 0 && !now) return;
                 const uint64_t delta = secs > 0 ? static_cast<uint64_t>(secs) : 0;
-                c.expiry = secs <= 0 ? 1
-                                     : (delta > std::numeric_limits<uint64_t>::max() - now
-                                            ? std::numeric_limits<uint64_t>::max()
-                                            : now + delta);
+                c.expiry = secs <= 0
+                               ? 1
+                               : (delta > std::numeric_limits<uint64_t>::max() - *now
+                                      ? std::numeric_limits<uint64_t>::max()
+                                      : *now + delta);
             }
         } else if (anl == "expires") {
             uint64_t expiry = 0;
@@ -268,10 +273,10 @@ void CookieJar::store(const Url& url, std::string_view set_cookie) {
 
 std::string CookieJar::cookie_header(const Url& url) {
     std::lock_guard<std::mutex> lk(mu_);
-    uint64_t now = static_cast<uint64_t>(std::time(nullptr));
+    const auto now = wall_clock_seconds();
     std::vector<const Cookie*> selected;
     for (auto it = cookies_.begin(); it != cookies_.end();) {
-        if (it->persistent && it->expiry && now >= it->expiry) {
+        if (it->persistent && it->expiry && now && *now >= it->expiry) {
             it = cookies_.erase(it);
         } else {
             ++it;
@@ -280,6 +285,9 @@ std::string CookieJar::cookie_header(const Url& url) {
     std::string_view request_path = "/";
     if (!url.path.empty()) request_path = url.path;
     for (const auto& c : cookies_) {
+        /* A persistent cookie cannot be proven unexpired while wall time is
+         * unavailable. Session cookies remain usable. */
+        if (c.persistent && !now) continue;
         if (c.secure && url.scheme != "https") continue;
         if (!domain_matches(c.domain, c.host_only, url.host)) continue;
         if (!path_matches(c.path, request_path)) continue;

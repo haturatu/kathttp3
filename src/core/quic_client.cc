@@ -790,7 +790,8 @@ bool QuicClient::prepare_endpoints() {
                 cancel_resolve(cancelled);
                 return false;
             }
-            if (deadline_elapsed_ns(now_ns(), started, timeouts_.dns_ms * NGTCP2_MILLISECONDS)) {
+            if (deadline_elapsed_ns(now_ns(), started,
+                                    milliseconds_to_ns_saturated(timeouts_.dns_ms))) {
                 cancel_resolve(cancelled);
                 terminal_error_ = KATHTTP3_ERR_DNS_TIMEOUT;
                 return false;
@@ -809,7 +810,8 @@ bool QuicClient::prepare_endpoints() {
             dns_wait_state_.reset();
         }
     }
-    if (deadline_elapsed_ns(now_ns(), started, timeouts_.dns_ms * NGTCP2_MILLISECONDS)) {
+    if (deadline_elapsed_ns(now_ns(), started,
+                            milliseconds_to_ns_saturated(timeouts_.dns_ms))) {
         endpoints_.clear();
         terminal_error_ = KATHTTP3_ERR_DNS_TIMEOUT;
     }
@@ -881,7 +883,7 @@ bool QuicClient::setup_connection() {
     ngtcp2_settings settings;
     ngtcp2_settings_default(&settings);
     settings.initial_ts = now_ns();
-    settings.handshake_timeout = timeouts_.handshake_ms * NGTCP2_MILLISECONDS;
+    settings.handshake_timeout = milliseconds_to_ns_saturated(timeouts_.handshake_ms);
     random_failed_.store(false, std::memory_order_release);
     settings.rand_ctx.native_handle = &random_failed_;
     // PMTUD is deliberately enabled. ngtcp2 uses its safe built-in probe
@@ -898,7 +900,7 @@ bool QuicClient::setup_connection() {
     configure_receive_windows(&params);
     params.initial_max_streams_bidi = 16;
     params.initial_max_streams_uni = 3;
-    params.max_idle_timeout = timeouts_.idle_ms * NGTCP2_MILLISECONDS;
+    params.max_idle_timeout = milliseconds_to_ns_saturated(timeouts_.idle_ms);
     params.active_connection_id_limit = 4;
 
     // path: point ngtcp2 at our persistent address storage, then copy the
@@ -981,7 +983,7 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
     ngtcp2_settings_default(&settings);
     candidate->started_at = now_ns();
     settings.initial_ts = candidate->started_at;
-    settings.handshake_timeout = timeouts_.handshake_ms * NGTCP2_MILLISECONDS;
+    settings.handshake_timeout = milliseconds_to_ns_saturated(timeouts_.handshake_ms);
     settings.rand_ctx.native_handle = &random_failed_;
     settings.no_pmtud = 0;
     if (candidate->qlog_fd != -1 || qlog_sink_cb_ != nullptr)
@@ -992,7 +994,7 @@ bool QuicClient::start_handshake_candidate(const ResolvedEndpoint& endpoint) {
     configure_receive_windows(&params);
     params.initial_max_streams_bidi = 16;
     params.initial_max_streams_uni = 3;
-    params.max_idle_timeout = timeouts_.idle_ms * NGTCP2_MILLISECONDS;
+    params.max_idle_timeout = milliseconds_to_ns_saturated(timeouts_.idle_ms);
     params.active_connection_id_limit = 4;
 
     candidate->path.local.addr = reinterpret_cast<ngtcp2_sockaddr*>(&candidate->local_addr);
@@ -1231,7 +1233,7 @@ bool QuicClient::run_handshake_race() {
         }
         if (timeouts_.connect_ms != 0 &&
             deadline_elapsed_ns(now, connection_started_at_,
-                                timeouts_.connect_ms * NGTCP2_MILLISECONDS)) {
+                                milliseconds_to_ns_saturated(timeouts_.connect_ms))) {
             terminal_error_ = KATHTTP3_ERR_CONNECT_TIMEOUT;
             return false;
         }
@@ -1297,7 +1299,7 @@ bool QuicClient::run_handshake_race() {
                 candidate.failed = true;
             if (!candidate.failed && timeouts_.handshake_ms != 0 &&
                 deadline_elapsed_ns(progressed_at, candidate.started_at,
-                                    timeouts_.handshake_ms * NGTCP2_MILLISECONDS)) {
+                                    milliseconds_to_ns_saturated(timeouts_.handshake_ms))) {
                 candidate.failed = true;
                 terminal_error_ = KATHTTP3_ERR_HANDSHAKE_TIMEOUT;
             }
@@ -1371,7 +1373,7 @@ void QuicClient::run() {
     while (endpoint_idx_ < endpoints_.size() && !stop_ && !handshake_confirmed_) {
         if (timeouts_.connect_ms != 0 &&
             deadline_elapsed_ns(now_ns(), connection_started_at_,
-                                timeouts_.connect_ms * NGTCP2_MILLISECONDS)) {
+                                milliseconds_to_ns_saturated(timeouts_.connect_ms))) {
             terminal_error_ = KATHTTP3_ERR_CONNECT_TIMEOUT;
             break;
         }
@@ -1436,7 +1438,7 @@ int QuicClient::event_loop() {
         uint64_t now = now_ns();
         if (!handshake_confirmed_.load() && timeouts_.handshake_ms != 0 &&
             deadline_elapsed_ns(now, handshake_started_at_,
-                                timeouts_.handshake_ms * NGTCP2_MILLISECONDS)) {
+                                milliseconds_to_ns_saturated(timeouts_.handshake_ms))) {
             terminal_error_ = KATHTTP3_ERR_HANDSHAKE_TIMEOUT;
             return -1;
         }
@@ -1550,31 +1552,32 @@ void QuicClient::expire_requests(uint64_t now) {
                 if (consumer_blocked) {
                     if (job->consumer_blocked_since == 0) job->consumer_blocked_since = now;
                     if (deadline_elapsed_ns(now, job->consumer_blocked_since,
-                                            timeouts_.consumer_stall_ms * NGTCP2_MILLISECONDS)) {
+                                            milliseconds_to_ns_saturated(
+                                                timeouts_.consumer_stall_ms))) {
                         error = KATHTTP3_ERR_CONSUMER_STALL;
                     }
                 } else {
                     job->consumer_blocked_since = 0;
                 }
                 if (deadline_elapsed_ns(now, job->submitted_at,
-                                        timeouts_.call_ms * NGTCP2_MILLISECONDS)) {
+                                        milliseconds_to_ns_saturated(timeouts_.call_ms))) {
                     error = KATHTTP3_ERR_CALL_TIMEOUT;
                 } else if (job->stream_id >= 0 && !job->saw_headers &&
                            timeouts_.response_headers_ms != 0 &&
                            deadline_elapsed_ns(
                                now, job->submitted_at,
-                               timeouts_.response_headers_ms * NGTCP2_MILLISECONDS)) {
+                               milliseconds_to_ns_saturated(timeouts_.response_headers_ms))) {
                     error = KATHTTP3_ERR_RESPONSE_HEADERS_TIMEOUT;
                 } else if (error == KATHTTP3_OK && job->saw_headers &&
                            job->last_read_progress_at != 0 && timeouts_.read_ms != 0 &&
                            !consumer_blocked &&
                            deadline_elapsed_ns(now, job->last_read_progress_at,
-                                               timeouts_.read_ms * NGTCP2_MILLISECONDS)) {
+                                               milliseconds_to_ns_saturated(timeouts_.read_ms))) {
                     error = KATHTTP3_ERR_READ_TIMEOUT;
                 } else if (job->request && job->body_sent < job->request->body.size() &&
                            job->last_write_progress_at != 0 && timeouts_.write_ms != 0 &&
                            deadline_elapsed_ns(now, job->last_write_progress_at,
-                                               timeouts_.write_ms * NGTCP2_MILLISECONDS)) {
+                                               milliseconds_to_ns_saturated(timeouts_.write_ms))) {
                     error = KATHTTP3_ERR_WRITE_TIMEOUT;
                 }
                 if (error != KATHTTP3_OK) {
