@@ -8,10 +8,12 @@
 #include <chrono>
 #include <condition_variable>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 
 #include "connection_state.h"
+#include "cache_control.h"
 #include "cookie_jar.h"
 #include "dns.h"
 #include "dns_wait.h"
@@ -19,6 +21,7 @@
 #include "handshake_race.h"
 #include "handshake_stream_buffer.h"
 #include "header_list.h"
+#include "http_date.h"
 #include "jni_body_batch.h"
 #include "kathttp3.h"
 #include "lazy_worker_start.h"
@@ -27,6 +30,7 @@
 #include "redirect.h"
 #include "request.h"
 #include "request_body_offset.h"
+#include "response_cache.h"
 #include "time_util.h"
 #include "udp_error.h"
 #include "udp_socket.h"
@@ -34,6 +38,26 @@
 #include "wakeup_coalescer.h"
 
 using namespace kathttp3;
+
+namespace {
+
+class FakeCacheClock final : public CacheClock {
+   public:
+    std::optional<uint64_t> wall_seconds() const override {
+        return wall_available ? std::optional<uint64_t>(wall) : std::nullopt;
+    }
+
+    uint64_t monotonic_ns() const override {
+        return monotonic;
+    }
+
+    bool wall_available = true;
+    uint64_t wall = 1'000;
+    uint64_t monotonic = 1'000'000'000ULL;
+};
+
+}  // namespace
+
 int main() {
     // The QUIC worker is elected only after the first Job is visible. This
     // prevents an empty worker from exiting before the initial submission.
@@ -536,6 +560,114 @@ int main() {
     assert(deadline_elapsed_ns(200, 100, 100));
     assert(!deadline_elapsed_ns(99, 100, 1));
     assert(!deadline_elapsed_ns(200, 0, 100));
+    assert(milliseconds_to_ns_saturated(0) == 0);
+    assert(milliseconds_to_ns_saturated(std::numeric_limits<uint64_t>::max() / 1'000'000ULL) ==
+           (std::numeric_limits<uint64_t>::max() / 1'000'000ULL) * 1'000'000ULL);
+    assert(milliseconds_to_ns_saturated(std::numeric_limits<uint64_t>::max() / 1'000'000ULL + 1) ==
+           std::numeric_limits<uint64_t>::max());
+
+    // Cache-Control directives are parsed as fields and tokens, not as
+    // substrings. Numeric overflow saturates while malformed numerals fail.
+    HeaderList cache_control_headers;
+    cache_control_headers.add("Cache-Control", "foo-max-age=60, MAX-AGE=\"60\", private");
+    cache_control_headers.add("cache-control", "no-cache, must-revalidate");
+    const CacheControl parsed_cache_control = parse_cache_control(cache_control_headers);
+    assert(parsed_cache_control.max_age && *parsed_cache_control.max_age == 60);
+    assert(parsed_cache_control.is_private && parsed_cache_control.no_cache &&
+           parsed_cache_control.must_revalidate);
+    assert(!parse_delta_seconds("-1"));
+    assert(!parse_delta_seconds("123abc"));
+    assert(!parse_delta_seconds(""));
+    assert(parse_delta_seconds("184467440737095516160") ==
+           std::numeric_limits<uint64_t>::max());
+    HeaderList conflicting_cache_control;
+    conflicting_cache_control.add("cache-control", "max-age=60");
+    conflicting_cache_control.add("cache-control", "Max-Age=120");
+    const CacheControl conflict = parse_cache_control(conflicting_cache_control);
+    assert(conflict.conflicting_max_age);
+    HeaderList invalid_cache_control;
+    invalid_cache_control.add("cache-control", "max-age=0x10");
+    assert(parse_cache_control(invalid_cache_control).invalid);
+
+    assert(parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT") == 784111777);
+    assert(parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT") == 784111777);
+    assert(parse_http_date("Sun Nov  6 08:49:37 1994") == 784111777);
+    assert(!parse_http_date("Sun, 06 Nov 1994 08:49:37 PST"));
+
+    auto cache_clock = std::make_shared<FakeCacheClock>();
+    ResponseCache response_cache(
+        ResponseCacheConfig{.max_entries = 4, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        cache_clock);
+    HeaderList cache_request_headers;
+    const CacheRequest cache_request{"GET", "https://cache.example/item", cache_request_headers,
+                                     false};
+    Response cache_response;
+    cache_response.status_code = 200;
+    cache_response.headers.add("Cache-Control", "max-age=60");
+    cache_response.headers.add("ETag", "\"v1\"");
+    cache_response.body = {1, 2, 3};
+    assert(response_cache.should_capture(cache_request, 200, cache_response.headers));
+    assert(response_cache.store(cache_request, cache_response));
+    CacheLookup cache_hit = response_cache.lookup(cache_request);
+    assert(cache_hit.state == CacheState::Fresh && cache_hit.response);
+    assert(cache_hit.response->body == cache_response.body);
+    assert(cache_hit.response->headers.get("age") == "0");
+    cache_clock->monotonic += 60'000'000'000ULL;
+    cache_hit = response_cache.lookup(cache_request);
+    assert(cache_hit.state == CacheState::NeedsValidation && cache_hit.response);
+    assert(response_cache.can_serve_stale_if_error(*cache_hit.response) == false);
+
+    Response zero_age_response;
+    zero_age_response.status_code = 200;
+    zero_age_response.headers.add("Cache-Control", "MAX-AGE=0");
+    zero_age_response.body = {4};
+    const CacheRequest zero_age_request{"GET", "https://cache.example/zero", cache_request_headers,
+                                        false};
+    assert(response_cache.store(zero_age_request, zero_age_response));
+    assert(response_cache.lookup(zero_age_request).state == CacheState::NeedsValidation);
+
+    HeaderList gzip_request_headers;
+    gzip_request_headers.add("accept-encoding", "gzip");
+    const CacheRequest gzip_request{"GET", "https://cache.example/vary", gzip_request_headers,
+                                    false};
+    Response vary_response;
+    vary_response.status_code = 200;
+    vary_response.headers.add("cache-control", "max-age=60");
+    vary_response.headers.add("Vary", "Accept-Encoding");
+    vary_response.body = {9};
+    assert(response_cache.store(gzip_request, vary_response));
+    HeaderList br_request_headers;
+    br_request_headers.add("accept-encoding", "br");
+    const CacheRequest br_request{"GET", "https://cache.example/vary", br_request_headers, false};
+    assert(response_cache.lookup(gzip_request).state == CacheState::Fresh);
+    assert(response_cache.lookup(br_request).state == CacheState::Miss);
+
+    HeaderList authorized_headers;
+    authorized_headers.add("Authorization", "Bearer secret");
+    const CacheRequest authorized_request{"GET", "https://cache.example/private",
+                                          authorized_headers, false};
+    assert(response_cache.lookup(authorized_request).state == CacheState::Miss);
+    assert(!response_cache.store(authorized_request, cache_response));
+
+    HeaderList stale_error_headers;
+    stale_error_headers.add("cache-control", "max-age=1, stale-if-error=5");
+    Response stale_error_response;
+    stale_error_response.status_code = 200;
+    stale_error_response.headers = stale_error_headers;
+    stale_error_response.body = {7};
+    const CacheRequest stale_error_request{"GET", "https://cache.example/error",
+                                           cache_request_headers, false};
+    cache_clock->monotonic = 1'000'000'000ULL;
+    assert(response_cache.store(stale_error_request, stale_error_response));
+    cache_clock->monotonic += 3'000'000'000ULL;
+    const auto stale_lookup = response_cache.lookup(stale_error_request);
+    assert(stale_lookup.response && response_cache.can_serve_stale_if_error(*stale_lookup.response));
+    response_cache.invalidate(stale_error_request.url);
+    assert(response_cache.lookup(stale_error_request).state == CacheState::Miss);
+
+    cache_clock->wall_available = false;
+    assert(!response_cache.store(cache_request, cache_response));
+    cache_clock->wall_available = true;
 
     size_t body_remaining = 0;
     const bool has_remaining_body = request_body_remaining(10, 4, &body_remaining);
@@ -684,5 +816,20 @@ int main() {
     const bool platform_negative_cache_hit =
         short_success_cache.lookup("missing-platform.test", 443, 1, cached);
     assert(!platform_negative_cache_hit);
+
+    // Network generation identity is exact: generation 1 must not retain the
+    // entries for 10, 11, or any other decimal string with the same prefix.
+    DnsCache generation_exact_cache(
+        {.max_entries = 8, .positive_ttl_ms = 1000, .negative_ttl_ms = 0});
+    generation_exact_cache.put_success("generation.test", 443, 1, endpoints);
+    generation_exact_cache.put_success("generation.test", 443, 10, endpoints);
+    generation_exact_cache.put_success("generation.test", 443, 2, endpoints);
+    generation_exact_cache.put_success("generation.test", 443, 20, endpoints);
+    generation_exact_cache.invalidate_network(1);
+    cached.clear();
+    assert(generation_exact_cache.lookup("generation.test", 443, 1, cached));
+    assert(!generation_exact_cache.lookup("generation.test", 443, 10, cached));
+    assert(!generation_exact_cache.lookup("generation.test", 443, 2, cached));
+    assert(!generation_exact_cache.lookup("generation.test", 443, 20, cached));
     std::cout << "core tests passed\n";
 }
