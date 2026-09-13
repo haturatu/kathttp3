@@ -534,13 +534,12 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_kathttp3_internal_NativeBridge_creat
                                   ? KATHTTP3_NETWORK_CHANGE_CLOSE_AND_RECONNECT
                                   : KATHTTP3_NETWORK_CHANGE_ATTEMPT_MIGRATION;
     o.enable_http_cache = enable_http_cache ? 1 : 0;
-    o.http_cache_max_entries = http_cache_max_entries > 0
-                                   ? static_cast<uint32_t>(http_cache_max_entries)
-                                   : 0;
-    o.http_cache_max_bytes = http_cache_max_bytes > 0 ? static_cast<uint64_t>(http_cache_max_bytes) : 0;
-    o.http_cache_max_entry_bytes = http_cache_max_entry_bytes > 0
-                                       ? static_cast<uint64_t>(http_cache_max_entry_bytes)
-                                       : 0;
+    o.http_cache_max_entries =
+        http_cache_max_entries > 0 ? static_cast<uint32_t>(http_cache_max_entries) : 0;
+    o.http_cache_max_bytes =
+        http_cache_max_bytes > 0 ? static_cast<uint64_t>(http_cache_max_bytes) : 0;
+    o.http_cache_max_entry_bytes =
+        http_cache_max_entry_bytes > 0 ? static_cast<uint64_t>(http_cache_max_entry_bytes) : 0;
 #ifdef __ANDROID__
     std::unique_ptr<kathttp3::AndroidQlogLogcatSink> qlog_logcat_sink;
     if (enable_qlog && enable_qlog_logcat) {

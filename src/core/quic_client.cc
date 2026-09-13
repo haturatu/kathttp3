@@ -809,8 +809,7 @@ bool QuicClient::prepare_endpoints() {
             dns_wait_state_.reset();
         }
     }
-    if (deadline_elapsed_ns(now_ns(), started,
-                            milliseconds_to_ns_saturated(timeouts_.dns_ms))) {
+    if (deadline_elapsed_ns(now_ns(), started, milliseconds_to_ns_saturated(timeouts_.dns_ms))) {
         endpoints_.clear();
         terminal_error_ = KATHTTP3_ERR_DNS_TIMEOUT;
     }
@@ -1550,9 +1549,9 @@ void QuicClient::expire_requests(uint64_t now) {
                                           job->delivered_unconsumed_bytes, connection_unconsumed);
                 if (consumer_blocked) {
                     if (job->consumer_blocked_since == 0) job->consumer_blocked_since = now;
-                    if (deadline_elapsed_ns(now, job->consumer_blocked_since,
-                                            milliseconds_to_ns_saturated(
-                                                timeouts_.consumer_stall_ms))) {
+                    if (deadline_elapsed_ns(
+                            now, job->consumer_blocked_since,
+                            milliseconds_to_ns_saturated(timeouts_.consumer_stall_ms))) {
                         error = KATHTTP3_ERR_CONSUMER_STALL;
                     }
                 } else {

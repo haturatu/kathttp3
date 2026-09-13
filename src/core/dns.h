@@ -109,8 +109,7 @@ class DnsCache {
         bool negative = false;
         std::vector<ResolvedEndpoint> endpoints;
     };
-    DnsCacheKey make_key(const std::string& host, uint16_t port,
-                         uint64_t network_generation) const;
+    DnsCacheKey make_key(const std::string& host, uint16_t port, uint64_t network_generation) const;
     void put(Entry entry);
     size_t max_entries_;
     uint64_t positive_ttl_ms_;

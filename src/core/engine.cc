@@ -97,12 +97,11 @@ Engine::Engine(const kathttp3_client_options& opt)
     cache_max_entry_bytes_ =
         size_option(opt_.http_cache_max_entry_bytes, kDefaultCacheMaxEntryBytes);
     if (opt_.enable_http_cache != 0) {
-        http_cache_ = std::make_shared<ResponseCache>(
-            ResponseCacheConfig{
-                size_option(opt_.http_cache_max_entries, 128),
-                size_option(opt_.http_cache_max_bytes, kDefaultCacheMaxBytes),
-                cache_max_entry_bytes_,
-            });
+        http_cache_ = std::make_shared<ResponseCache>(ResponseCacheConfig{
+            size_option(opt_.http_cache_max_entries, 128),
+            size_option(opt_.http_cache_max_bytes, kDefaultCacheMaxBytes),
+            cache_max_entry_bytes_,
+        });
     }
     if (!tls_ctx_.init(static_cast<kathttp3_trust_mode>(opt_.trust_mode), opt_.insecure_cert != 0,
                        opt_.ca_cert_file ? opt_.ca_cert_file : std::string(),
@@ -334,13 +333,11 @@ void Engine::destroy() {
 }
 
 Engine::CachePreparation Engine::prepare_cache(Job* job, kathttp3_event_callback callback,
-                                                void* user_data) {
+                                               void* user_data) {
     if (!http_cache_ || !job || !job->request) return CachePreparation::Bypass;
     job->cache_request_headers = job->request->headers;
     const std::string cache_url = job->url.to_string();
-    const CacheRequest request{job->request->method,
-                               cache_url,
-                               *job->cache_request_headers,
+    const CacheRequest request{job->request->method, cache_url, *job->cache_request_headers,
                                job->streaming || job->request->streaming_body};
     const CacheLookup lookup = http_cache_->lookup(request);
     if (lookup.state == CacheState::Fresh && lookup.response) {
@@ -426,8 +423,7 @@ void Engine::store_job_response(Job* job) {
     response.url = job->url;
     response.body = std::move(job->cache_capture->body);
     const std::string cache_url = job->url.to_string();
-    const CacheRequest request{job->request->method,
-                               cache_url,
+    const CacheRequest request{job->request->method, cache_url,
                                original_cache_request_headers(*job),
                                job->streaming || job->request->streaming_body};
     (void)http_cache_->store(request, response, job->cache_request_wall_seconds);
@@ -447,8 +443,8 @@ void Engine::invalidate_after_unsafe_request(Job* job, const HeaderList& headers
                (candidate.port ? candidate.port : default_port(candidate.scheme)) ==
                    (job->url.port ? job->url.port : default_port(job->url.scheme));
     };
-    for (const std::string_view field : {std::string_view("location"),
-                                         std::string_view("content-location")}) {
+    for (const std::string_view field :
+         {std::string_view("location"), std::string_view("content-location")}) {
         for (const std::string_view value : headers.get_all(field)) {
             Url related;
             if (!parse_url(value, related)) {
@@ -655,9 +651,9 @@ void Engine::on_job_complete(Job* job) {
                                    original_cache_request_headers(*job),
                                    job->streaming || job->request->streaming_body};
         const auto& validation = *job->cache_validation;
-        const auto merged = http_cache_->merge_304(validation.stored, request,
-                                                   validation.response_headers,
-                                                   job->cache_request_wall_seconds);
+        const auto merged =
+            http_cache_->merge_304(validation.stored, request, validation.response_headers,
+                                   job->cache_request_wall_seconds);
         if (merged) {
             deliver_cached(job, *merged);
         } else {

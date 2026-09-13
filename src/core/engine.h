@@ -70,7 +70,7 @@ class Engine {
     void store_cookies(const Url& url, const HeaderList& headers);
     enum class CachePreparation { Bypass, Network, Delivered };
     CachePreparation prepare_cache(Job* job, kathttp3_event_callback callback = nullptr,
-                                    void* user_data = nullptr);
+                                   void* user_data = nullptr);
     void add_cache_validator(Job* job, const CachedResponse& response);
     void deliver_cached(Job* job, const CachedResponse& response);
     void deliver_cached_direct(int64_t request_id, kathttp3_event_callback callback,

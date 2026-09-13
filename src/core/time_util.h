@@ -64,8 +64,8 @@ inline std::chrono::steady_clock::time_point steady_deadline_after_ms(
     const uint64_t max_milliseconds = static_cast<uint64_t>(remaining_ms.count());
     if (milliseconds >= max_milliseconds) return Clock::time_point::max();
 
-    return now + std::chrono::duration_cast<Clock::duration>(Milliseconds(
-                         static_cast<Milliseconds::rep>(milliseconds)));
+    return now + std::chrono::duration_cast<Clock::duration>(
+                     Milliseconds(static_cast<Milliseconds::rep>(milliseconds)));
 }
 
 /* std::time() returns (time_t)-1 on failure.  Never turn that sentinel into a

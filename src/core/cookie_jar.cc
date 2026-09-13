@@ -232,11 +232,10 @@ void CookieJar::store(const Url& url, std::string_view set_cookie) {
                 const auto now = wall_clock_seconds();
                 if (secs > 0 && !now) return;
                 const uint64_t delta = secs > 0 ? static_cast<uint64_t>(secs) : 0;
-                c.expiry = secs <= 0
-                               ? 1
-                               : (delta > std::numeric_limits<uint64_t>::max() - *now
-                                      ? std::numeric_limits<uint64_t>::max()
-                                      : *now + delta);
+                c.expiry = secs <= 0 ? 1
+                                     : (delta > std::numeric_limits<uint64_t>::max() - *now
+                                            ? std::numeric_limits<uint64_t>::max()
+                                            : *now + delta);
             }
         } else if (anl == "expires") {
             uint64_t expiry = 0;
