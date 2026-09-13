@@ -777,8 +777,7 @@ bool QuicClient::prepare_endpoints() {
         // Resolver completion, cancellation, network change and shutdown all
         // notify this wait directly; the monotonic deadline is the only timer.
         std::unique_lock<std::mutex> lock(result->mutex);
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeouts_.dns_ms);
+        const auto deadline = steady_deadline_after_ms(timeouts_.dns_ms);
         while (!result->complete) {
             if (requested_network_generation_.load(std::memory_order_acquire) >
                 applied_network_generation_) {

@@ -1,8 +1,6 @@
 #include "response_cache.h"
 
 #include <algorithm>
-#include <chrono>
-#include <cctype>
 #include <limits>
 #include <string>
 #include <utility>
@@ -53,6 +51,40 @@ bool is_get(std::string_view method) {
 
 bool has_header(const HeaderList& headers, std::string_view name) {
     return !headers.get_all(name).empty();
+}
+
+bool is_token_char(unsigned char ch) {
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) {
+        return true;
+    }
+    switch (ch) {
+        case '!':
+        case '#':
+        case '$':
+        case '%':
+        case '&':
+        case '\'':
+        case '*':
+        case '+':
+        case '-':
+        case '.':
+        case '^':
+        case '_':
+        case '`':
+        case '|':
+        case '~':
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool is_field_name(std::string_view name) {
+    if (name.empty()) return false;
+    for (const char raw : name) {
+        if (!is_token_char(static_cast<unsigned char>(raw))) return false;
+    }
+    return true;
 }
 
 bool has_sensitive_request_header(const HeaderList& headers) {
@@ -115,6 +147,10 @@ ParsedVary parse_vary(const HeaderList& headers) {
                 out.star = true;
                 continue;
             }
+            if (!is_field_name(name)) {
+                out.valid = false;
+                continue;
+            }
             const std::string normalized = ascii_lower(name);
             if (std::find(out.names.begin(), out.names.end(), normalized) == out.names.end())
                 out.names.push_back(normalized);
@@ -154,11 +190,11 @@ size_t accounted_bytes(const CachedResponse& response) {
     }
     for (const auto& key : response.vary) {
         total = saturating_size_add(total, key.name.size());
-        for (const auto& value : key.request_values) total = saturating_size_add(total, value.size());
+        for (const auto& value : key.request_values)
+            total = saturating_size_add(total, value.size());
     }
     if (response.etag) total = saturating_size_add(total, response.etag->size());
-    if (response.last_modified)
-        total = saturating_size_add(total, response.last_modified->size());
+    if (response.last_modified) total = saturating_size_add(total, response.last_modified->size());
     return total;
 }
 
@@ -199,12 +235,19 @@ HeaderList merge_headers(const HeaderList& stored, const HeaderList& updated) {
 std::optional<uint64_t> parse_age(const HeaderList& headers, bool& invalid) {
     const auto values = headers.get_all("age");
     if (values.empty()) return 0;
-    const auto parsed = parse_delta_seconds(values.front());
-    if (!parsed) {
-        invalid = true;
-        return std::nullopt;
+    uint64_t result = 0;
+    for (const std::string_view value : values) {
+        const auto parsed = parse_delta_seconds(value);
+        if (!parsed) {
+            invalid = true;
+            return std::nullopt;
+        }
+        /* Multiple Age fields are not expected, but choosing the largest
+         * value is the conservative result if an intermediary combined or
+         * duplicated them. */
+        result = std::max(result, *parsed);
     }
-    return parsed;
+    return result;
 }
 
 }  // namespace
@@ -237,8 +280,10 @@ std::optional<CachedResponse> ResponseCache::make_cached_response(
     const CacheRequest& request, const Response& response,
     std::optional<uint64_t> request_wall_seconds, std::optional<uint64_t> now_wall_seconds,
     uint64_t now_monotonic_ns) const {
-    if (request_cache_bypassed(request, parse_cache_control(request.headers)) ||
-        response.status_code != 200 || response.body.size() > max_entry_bytes_) {
+    const CacheControl request_control = parse_cache_control(request.headers);
+    if (request_cache_bypassed(request, request_control) || request_control.invalid ||
+        response.status_code != 200 || response.body.size() > max_entry_bytes_ ||
+        now_monotonic_ns == 0) {
         return std::nullopt;
     }
     const CacheControl control = parse_cache_control(response.headers);
@@ -250,7 +295,8 @@ std::optional<CachedResponse> ResponseCache::make_cached_response(
     const auto date_value = response.headers.get("date");
     const auto expires_value = response.headers.get("expires");
     const auto parsed_date = date_value.empty() ? std::nullopt : parse_http_date(date_value);
-    const auto parsed_expires = expires_value.empty() ? std::nullopt : parse_http_date(expires_value);
+    const auto parsed_expires =
+        expires_value.empty() ? std::nullopt : parse_http_date(expires_value);
 
     bool expires_invalid = !expires_value.empty() && !parsed_expires;
     std::optional<uint64_t> freshness_lifetime;
@@ -266,20 +312,27 @@ std::optional<CachedResponse> ResponseCache::make_cached_response(
     const auto last_modified_value = response.headers.get("last-modified");
     const bool has_validator = !etag_value.empty() || !last_modified_value.empty();
     /* A no-cache response is useful only when it can be revalidated. */
-    if (!freshness_lifetime.has_value() && !control.no_cache && !has_validator)
+    if (!freshness_lifetime.has_value() && !control.no_cache && !has_validator) return std::nullopt;
+    if (expires_invalid && !control.max_age && !control.no_cache && !has_validator)
         return std::nullopt;
-    if (expires_invalid && !control.no_cache && !has_validator) return std::nullopt;
 
     bool invalid_age = false;
     const auto age_value = parse_age(response.headers, invalid_age);
-    const uint64_t corrected_age = invalid_age ? std::numeric_limits<uint64_t>::max()
-                                               : age_value.value_or(0);
+    const uint64_t corrected_age =
+        invalid_age ? std::numeric_limits<uint64_t>::max() : age_value.value_or(0);
     if (!now_wall_seconds) return std::nullopt;
 
     uint64_t apparent_age = 0;
-    if (parsed_date && *now_wall_seconds > 0 &&
-        static_cast<uint64_t>(*parsed_date) < *now_wall_seconds) {
-        apparent_age = *now_wall_seconds - static_cast<uint64_t>(*parsed_date);
+    if (parsed_date) {
+        if (*parsed_date <= 0) {
+            const uint64_t date_magnitude =
+                *parsed_date == std::numeric_limits<int64_t>::min()
+                    ? static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1ULL
+                    : static_cast<uint64_t>(-*parsed_date);
+            apparent_age = saturating_add(*now_wall_seconds, date_magnitude);
+        } else if (static_cast<uint64_t>(*parsed_date) < *now_wall_seconds) {
+            apparent_age = *now_wall_seconds - static_cast<uint64_t>(*parsed_date);
+        }
     }
     uint64_t response_delay = 0;
     if (request_wall_seconds && *now_wall_seconds >= *request_wall_seconds)
@@ -308,17 +361,18 @@ std::optional<CachedResponse> ResponseCache::make_cached_response(
 bool ResponseCache::should_capture(const CacheRequest& request, int status,
                                    const HeaderList& response_headers) const {
     const CacheControl request_control = parse_cache_control(request.headers);
-    if (request_cache_bypassed(request, request_control) || request_control.invalid || status != 200)
+    if (request_cache_bypassed(request, request_control) || request_control.invalid ||
+        status != 200)
         return false;
     const CacheControl control = parse_cache_control(response_headers);
     if (control.no_store || control.invalid || control.conflicting_max_age) return false;
     const ParsedVary vary = parse_vary(response_headers);
     if (!vary.valid || vary.star) return false;
-    const bool has_freshness = control.max_age.has_value() ||
-                               (!response_headers.get("expires").empty() &&
-                                !response_headers.get("date").empty());
-    const bool has_validator = !response_headers.get("etag").empty() ||
-                               !response_headers.get("last-modified").empty();
+    const bool has_freshness =
+        control.max_age.has_value() ||
+        (!response_headers.get("expires").empty() && !response_headers.get("date").empty());
+    const bool has_validator =
+        !response_headers.get("etag").empty() || !response_headers.get("last-modified").empty();
     return has_freshness || (control.no_cache && has_validator);
 }
 
@@ -362,8 +416,8 @@ CacheLookup ResponseCache::lookup_locked(const CacheRequest& request,
         response.headers = headers_with_age(response.headers, age);
 
         const bool request_age_exceeded =
-            request_control.max_age && age > *request_control.max_age;
-        const bool clock_unavailable = !now_wall_seconds;
+            request_control.max_age && age >= *request_control.max_age;
+        const bool clock_unavailable = !now_wall_seconds || now_monotonic_ns == 0;
         if (!clock_unavailable && !request_control.no_cache && !request_age_exceeded &&
             age < response.freshness_lifetime_seconds) {
             return {CacheState::Fresh, std::move(response)};
@@ -406,6 +460,12 @@ bool ResponseCache::can_serve_stale_if_error(const CachedResponse& response) con
     if (age < response.freshness_lifetime_seconds) return false;
     const uint64_t stale = age - response.freshness_lifetime_seconds;
     return stale <= *response.stale_if_error_seconds;
+}
+
+CachedResponse ResponseCache::response_with_current_age(const CachedResponse& response) const {
+    CachedResponse out = response;
+    out.headers = headers_with_age(response.headers, current_age(response, clock_->monotonic_ns()));
+    return out;
 }
 
 void ResponseCache::invalidate(std::string_view url) {

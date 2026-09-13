@@ -106,8 +106,8 @@ ParsedDirective parse_directive(std::string_view raw) {
     return out;
 }
 
-void parse_numeric_directive(std::optional<uint64_t>& destination, bool& seen,
-                             bool& conflict, bool& invalid, const ParsedDirective& directive) {
+void parse_numeric_directive(std::optional<uint64_t>& destination, bool& seen, bool& conflict,
+                             bool& invalid, const ParsedDirective& directive) {
     if (!directive.has_value || !directive.value_valid) {
         invalid = true;
         return;
@@ -132,12 +132,18 @@ std::optional<uint64_t> parse_delta_seconds(std::string_view value) {
     if (value.empty()) return std::nullopt;
 
     uint64_t result = 0;
+    bool saturated = false;
     constexpr uint64_t kMax = std::numeric_limits<uint64_t>::max();
     for (const char raw : value) {
-        const unsigned char digit = static_cast<unsigned char>(raw - '0');
         if (raw < '0' || raw > '9') return std::nullopt;
-        if (result > (kMax - digit) / 10) return kMax;
-        result = result * 10 + digit;
+        if (saturated) continue;
+        const uint64_t digit = static_cast<uint64_t>(raw - '0');
+        if (result > (kMax - digit) / 10) {
+            result = kMax;
+            saturated = true;
+        } else {
+            result = result * 10 + digit;
+        }
     }
     return result;
 }
@@ -163,8 +169,8 @@ CacheControl parse_cache_control(const HeaderList& headers) {
                                         out.invalid, directive);
             } else if (ascii_iequals(directive.name, "stale-if-error")) {
                 bool ignored_conflict = false;
-                parse_numeric_directive(out.stale_if_error, stale_if_error_seen,
-                                        ignored_conflict, out.invalid, directive);
+                parse_numeric_directive(out.stale_if_error, stale_if_error_seen, ignored_conflict,
+                                        out.invalid, directive);
             }
         }
     }

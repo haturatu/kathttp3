@@ -1,8 +1,8 @@
 #include "http_date.h"
 
 #include <array>
-#include <charconv>
 #include <cctype>
+#include <charconv>
 #include <limits>
 #include <string>
 #include <vector>
@@ -43,7 +43,8 @@ bool ascii_iequals(std::string_view lhs, std::string_view rhs) {
 
 bool parse_number(std::string_view value, size_t min_digits, size_t max_digits, int& out) {
     if (value.size() < min_digits || value.size() > max_digits) return false;
-    for (const unsigned char ch : value) {
+    for (const char raw : value) {
+        const unsigned char ch = static_cast<unsigned char>(raw);
         if (ch < '0' || ch > '9') return false;
     }
     const auto result = std::from_chars(value.data(), value.data() + value.size(), out);
@@ -53,8 +54,7 @@ bool parse_number(std::string_view value, size_t min_digits, size_t max_digits, 
 int month_number(std::string_view value) {
     if (value.size() != 3) return 0;
     constexpr std::array<std::string_view, 12> kMonths = {
-        "jan", "feb", "mar", "apr", "may", "jun",
-        "jul", "aug", "sep", "oct", "nov", "dec",
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
     };
     for (size_t i = 0; i < kMonths.size(); ++i) {
         if (ascii_iequals(value, kMonths[i])) return static_cast<int>(i + 1);
@@ -74,8 +74,7 @@ bool leap_year(int year) {
 }
 
 int days_in_month(int year, int month) {
-    constexpr std::array<int, 12> kDays = {31, 28, 31, 30, 31, 30,
-                                           31, 31, 30, 31, 30, 31};
+    constexpr std::array<int, 12> kDays = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     return month == 2 && leap_year(year) ? 29 : kDays[static_cast<size_t>(month - 1)];
 }
 
@@ -91,14 +90,13 @@ int64_t days_from_civil(int year, unsigned month, unsigned day) {
 }
 
 std::optional<int64_t> make_timestamp(int year, int month, int day, int hour, int minute,
-                                       int second) {
-    if (year < 1601 || month < 1 || month > 12 || day < 1 ||
-        day > days_in_month(year, month) || hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
-        second < 0 || second > 59) {
+                                      int second) {
+    if (year < 1601 || month < 1 || month > 12 || day < 1 || day > days_in_month(year, month) ||
+        hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
         return std::nullopt;
     }
-    const int64_t days = days_from_civil(year, static_cast<unsigned>(month),
-                                         static_cast<unsigned>(day));
+    const int64_t days =
+        days_from_civil(year, static_cast<unsigned>(month), static_cast<unsigned>(day));
     constexpr int64_t kSecondsPerDay = 86400;
     if (days > std::numeric_limits<int64_t>::max() / kSecondsPerDay ||
         days < std::numeric_limits<int64_t>::min() / kSecondsPerDay) {
@@ -131,8 +129,8 @@ std::optional<int64_t> parse_http_date(std::string_view value) {
             int minute = 0;
             int second = 0;
             if (!parse_number(fields[0], 2, 2, day) || month_number(fields[1]) == 0 ||
-                !parse_number(fields[2], 4, 4, year) || !parse_time(fields[3], hour, minute, second) ||
-                !ascii_iequals(fields[4], "GMT")) {
+                !parse_number(fields[2], 4, 4, year) ||
+                !parse_time(fields[3], hour, minute, second) || !ascii_iequals(fields[4], "GMT")) {
                 return std::nullopt;
             }
             /* IMF-fixdate ends in GMT; accept only that fixed zone. */
@@ -158,10 +156,9 @@ std::optional<int64_t> parse_http_date(std::string_view value) {
                 return std::nullopt;
             }
             year += year >= 70 ? 1900 : 2000;
-            return make_timestamp(year,
-                                 month_number(fields[0].substr(first_dash + 1,
-                                                                second_dash - first_dash - 1)),
-                                 day, hour, minute, second);
+            return make_timestamp(
+                year, month_number(fields[0].substr(first_dash + 1, second_dash - first_dash - 1)),
+                day, hour, minute, second);
         }
         return std::nullopt;
     }
@@ -176,8 +173,7 @@ std::optional<int64_t> parse_http_date(std::string_view value) {
     int second = 0;
     const int month = month_number(fields[1]);
     if (month == 0 || !parse_number(fields[2], 1, 2, day) ||
-        !parse_time(fields[3], hour, minute, second) ||
-        !parse_number(fields[4], 4, 4, year)) {
+        !parse_time(fields[3], hour, minute, second) || !parse_number(fields[4], 4, 4, year)) {
         return std::nullopt;
     }
     return make_timestamp(year, month, day, hour, minute, second);
