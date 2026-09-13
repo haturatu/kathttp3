@@ -153,6 +153,7 @@ int kathttp3_request_set_body(kathttp3_request* request, const uint8_t* data, si
     } else {
         request->body.clear();
     }
+    request->body_present = true;
     request->streaming_body = false;
     request->streaming_body_length = -1;
     return KATHTTP3_OK;
@@ -161,6 +162,7 @@ int kathttp3_request_set_body(kathttp3_request* request, const uint8_t* data, si
 int kathttp3_request_set_streaming_body(kathttp3_request* request, int64_t content_length) {
     if (!request || content_length < -1) return KATHTTP3_ERR_INVALID_ARG;
     request->body.clear();
+    request->body_present = true;
     request->streaming_body = true;
     request->streaming_body_length = content_length;
     return KATHTTP3_OK;

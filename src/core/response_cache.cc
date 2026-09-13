@@ -98,7 +98,7 @@ bool has_conditional_request_header(const HeaderList& headers) {
 }
 
 bool request_cache_bypassed(const CacheRequest& request, const CacheControl& control) {
-    return !is_get(request.method) || request.streaming || control.no_store ||
+    return !is_get(request.method) || request.streaming || request.has_body || control.no_store ||
            has_sensitive_request_header(request.headers) ||
            has_conditional_request_header(request.headers) || has_header(request.headers, "range");
 }
@@ -286,7 +286,7 @@ ResponseCache::ResponseCache(size_t max_entries)
 std::optional<CachedResponse> ResponseCache::make_cached_response(
     const CacheRequest& request, const Response& response,
     std::optional<uint64_t> request_wall_seconds, std::optional<uint64_t> now_wall_seconds,
-    uint64_t now_monotonic_ns) const {
+    uint64_t now_monotonic_ns, bool require_cacheable) const {
     const CacheControl request_control = parse_cache_control(request.headers);
     if (request_cache_bypassed(request, request_control) || request_control.invalid ||
         response.status_code != 200 || response.body.size() > max_entry_bytes_ ||
@@ -294,10 +294,12 @@ std::optional<CachedResponse> ResponseCache::make_cached_response(
         return std::nullopt;
     }
     const CacheControl control = parse_cache_control(response.headers);
-    if (control.no_store || control.invalid || control.conflicting_max_age) return std::nullopt;
+    if (require_cacheable && (control.no_store || control.invalid || control.conflicting_max_age)) {
+        return std::nullopt;
+    }
 
     const ParsedVary vary = parse_vary(response.headers);
-    if (!vary.valid || vary.star) return std::nullopt;
+    if (require_cacheable && (!vary.valid || vary.star)) return std::nullopt;
 
     const auto date_value = response.headers.get("date");
     const auto expires_value = response.headers.get("expires");
@@ -319,10 +321,13 @@ std::optional<CachedResponse> ResponseCache::make_cached_response(
     const auto last_modified_value = response.headers.get("last-modified");
     const bool has_validator = !etag_value.empty() || !last_modified_value.empty();
     /* A no-cache response is useful only when it can be revalidated. */
-    if (control.no_cache && !has_validator) return std::nullopt;
-    if (!freshness_lifetime.has_value() && !control.no_cache && !has_validator) return std::nullopt;
-    if (expires_invalid && !control.max_age && !control.no_cache && !has_validator)
-        return std::nullopt;
+    if (require_cacheable) {
+        if (control.no_cache && !has_validator) return std::nullopt;
+        if (!freshness_lifetime.has_value() && !control.no_cache && !has_validator)
+            return std::nullopt;
+        if (expires_invalid && !control.max_age && !control.no_cache && !has_validator)
+            return std::nullopt;
+    }
 
     bool invalid_age = false;
     const auto age_value = parse_age(response.headers, invalid_age);
@@ -445,13 +450,18 @@ CacheLookup ResponseCache::lookup(const CacheRequest& request) {
     return lookup_locked(request, request_control, now_wall_seconds, clock_->monotonic_ns());
 }
 
-std::optional<CachedResponse> ResponseCache::merge_304(
+std::optional<RevalidationResult> ResponseCache::merge_304(
     const CachedResponse& stored, const CacheRequest& request, const HeaderList& response_headers,
     std::optional<uint64_t> request_wall_seconds) {
     if (stored.url != request.url || !vary_matches(stored, request.headers)) return std::nullopt;
     const std::string_view response_etag = response_headers.get("etag");
-    if ((stored.etag && response_etag != *stored.etag) ||
-        (!stored.etag && !response_etag.empty())) {
+    const std::string_view response_last_modified = response_headers.get("last-modified");
+    if (!response_etag.empty()) {
+        if (!stored.etag || response_etag != *stored.etag) return std::nullopt;
+    } else if (!response_last_modified.empty()) {
+        if (!stored.last_modified || response_last_modified != *stored.last_modified)
+            return std::nullopt;
+    } else if (stored.etag || stored.last_modified) {
         return std::nullopt;
     }
     Response merged;
@@ -460,12 +470,26 @@ std::optional<CachedResponse> ResponseCache::merge_304(
     merged.body = stored.body;
     const auto now_wall_seconds = clock_->wall_seconds();
     if (!now_wall_seconds) return std::nullopt;
+    const uint64_t now_monotonic_ns = clock_->monotonic_ns();
+    const auto delivery = make_cached_response(request, merged, request_wall_seconds,
+                                               now_wall_seconds, now_monotonic_ns, false);
+    if (!delivery) return std::nullopt;
     const auto refreshed = make_cached_response(request, merged, request_wall_seconds,
-                                                now_wall_seconds, clock_->monotonic_ns());
-    if (!refreshed) return std::nullopt;
+                                                now_wall_seconds, now_monotonic_ns);
+    const bool cacheable = refreshed.has_value();
+    const CachedResponse& response = refreshed ? *refreshed : *delivery;
     std::lock_guard<std::mutex> lock(mutex_);
-    insert_locked(*refreshed);
-    return refreshed;
+    bool removed_stored = false;
+    for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+        if (!same_variant(*it, stored)) continue;
+        total_bytes_ -= std::min(total_bytes_, it->accounted_bytes);
+        entries_.erase(it);
+        removed_stored = true;
+        break;
+    }
+    const bool retain_in_cache = cacheable && removed_stored;
+    if (retain_in_cache) insert_locked(*refreshed);
+    return RevalidationResult{response, retain_in_cache};
 }
 
 bool ResponseCache::can_serve_stale_if_error(const CachedResponse& response) const {

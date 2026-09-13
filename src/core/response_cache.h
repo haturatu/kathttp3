@@ -66,6 +66,7 @@ struct CacheRequest {
     std::string_view url;
     const HeaderList& headers;
     bool streaming = false;
+    bool has_body = false;
 };
 
 enum class CacheState {
@@ -77,6 +78,11 @@ enum class CacheState {
 struct CacheLookup {
     CacheState state = CacheState::Miss;
     std::optional<CachedResponse> response;
+};
+
+struct RevalidationResult {
+    CachedResponse response;
+    bool retain_in_cache = false;
 };
 
 /* RFC 9111 current_age after the resident time is added using a monotonic
@@ -101,7 +107,7 @@ class ResponseCache {
     bool store(const CacheRequest& request, const Response& response,
                std::optional<uint64_t> request_wall_seconds = std::nullopt);
 
-    std::optional<CachedResponse> merge_304(
+    std::optional<RevalidationResult> merge_304(
         const CachedResponse& stored, const CacheRequest& request,
         const HeaderList& response_headers,
         std::optional<uint64_t> request_wall_seconds = std::nullopt);
@@ -129,7 +135,8 @@ class ResponseCache {
                                                        const Response& response,
                                                        std::optional<uint64_t> request_wall_seconds,
                                                        std::optional<uint64_t> now_wall_seconds,
-                                                       uint64_t now_monotonic_ns) const;
+                                                       uint64_t now_monotonic_ns,
+                                                       bool require_cacheable = true) const;
     CacheLookup lookup_locked(const CacheRequest& request, const CacheControl& request_control,
                               std::optional<uint64_t> now_wall_seconds, uint64_t now_monotonic_ns);
     void insert_locked(CachedResponse response);

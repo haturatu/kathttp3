@@ -15,6 +15,8 @@ struct kathttp3_request {
     std::string url;
     kathttp3::HeaderList headers;
     std::vector<uint8_t> body;
+    /* Distinguishes an explicitly supplied zero-length body from no body. */
+    bool body_present = false;
     bool streaming_body = false;
     int64_t streaming_body_length = -1; /* -1 = unknown */
     int follow_redirects = 1;
