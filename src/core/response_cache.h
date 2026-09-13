@@ -49,7 +49,10 @@ struct CachedResponse {
     std::vector<uint8_t> body;
     std::vector<VaryKey> vary;
 
+    /* Stable identity of the stored generation. It is assigned only when an
+     * entry enters the cache and is preserved by lookup copies. */
     uint64_t entry_id = 0;
+    int64_t selection_date_seconds = 0;
     uint64_t stored_at_monotonic_ns = 0;
     uint64_t corrected_initial_age_seconds = 0;
     uint64_t freshness_lifetime_seconds = 0;
@@ -123,6 +126,7 @@ class ResponseCache {
     CachedResponse response_with_current_age(const CachedResponse& response) const;
 
     void invalidate(std::string_view url);
+    bool invalidate_entry(uint64_t entry_id);
     void clear();
 
     size_t size() const;

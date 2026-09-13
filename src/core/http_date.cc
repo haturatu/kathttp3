@@ -106,6 +106,29 @@ int64_t days_from_civil(int year, unsigned month, unsigned day) {
     return static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(day_of_era) - 719468;
 }
 
+void civil_from_days(int64_t days, int64_t& year, unsigned& month, unsigned& day) {
+    days += 719468;
+    const int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+    const unsigned day_of_era = static_cast<unsigned>(days - era * 146097);
+    const unsigned year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
+    year = static_cast<int64_t>(year_of_era) + era * 400;
+    const unsigned day_of_year =
+        day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    const unsigned adjusted_month = (5 * day_of_year + 2) / 153;
+    day = day_of_year - (153 * adjusted_month + 2) / 5 + 1;
+    month = adjusted_month < 10 ? adjusted_month + 3 : adjusted_month - 9;
+    year += month <= 2;
+}
+
+void append_fixed_decimal(std::string& out, uint64_t value, size_t width) {
+    char buffer[32]{};
+    const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
+    const size_t digits = static_cast<size_t>(result.ptr - buffer);
+    out.append(width > digits ? width - digits : 0, '0');
+    out.append(buffer, digits);
+}
+
 std::optional<int64_t> make_timestamp(int year, int month, int day, int hour, int minute,
                                       int second) {
     if (year < 1601 || month < 1 || month > 12 || day < 1 || day > days_in_month(year, month) ||
@@ -194,6 +217,48 @@ std::optional<int64_t> parse_http_date(std::string_view value) {
         return std::nullopt;
     }
     return make_timestamp(year, month, day, hour, minute, second);
+}
+
+std::string format_http_date(uint64_t seconds) {
+    constexpr int64_t kSecondsPerDay = 86400;
+    constexpr int kMaxYear = 9999;
+    const int64_t kMaxDateSeconds =
+        days_from_civil(kMaxYear, 12, 31) * kSecondsPerDay + (kSecondsPerDay - 1);
+    const uint64_t max_date_seconds = static_cast<uint64_t>(kMaxDateSeconds);
+    if (seconds > max_date_seconds) seconds = max_date_seconds;
+
+    const int64_t signed_seconds = static_cast<int64_t>(seconds);
+    const int64_t days = signed_seconds / kSecondsPerDay;
+    const unsigned seconds_of_day = static_cast<unsigned>(signed_seconds % kSecondsPerDay);
+    int64_t year = 0;
+    unsigned month = 0;
+    unsigned day = 0;
+    civil_from_days(days, year, month, day);
+
+    constexpr std::array<std::string_view, 7> kWeekdays = {
+        "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
+    };
+    constexpr std::array<std::string_view, 12> kMonths = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    };
+    const size_t weekday = static_cast<size_t>((days + 4) % 7);
+    std::string out;
+    out.reserve(29);
+    out.append(kWeekdays[weekday]);
+    out.append(", ");
+    append_fixed_decimal(out, day, 2);
+    out.push_back(' ');
+    out.append(kMonths[month - 1]);
+    out.push_back(' ');
+    append_fixed_decimal(out, static_cast<uint64_t>(year), 4);
+    out.push_back(' ');
+    append_fixed_decimal(out, seconds_of_day / 3600, 2);
+    out.push_back(':');
+    append_fixed_decimal(out, (seconds_of_day / 60) % 60, 2);
+    out.push_back(':');
+    append_fixed_decimal(out, seconds_of_day % 60, 2);
+    out.append(" GMT");
+    return out;
 }
 
 } /* namespace kathttp3 */

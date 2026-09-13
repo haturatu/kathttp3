@@ -177,6 +177,12 @@ bool same_variant(const CachedResponse& lhs, const CachedResponse& rhs) {
     return lhs.url == rhs.url && lhs.vary == rhs.vary;
 }
 
+bool more_recent(const CachedResponse& lhs, const CachedResponse& rhs) {
+    if (lhs.selection_date_seconds != rhs.selection_date_seconds)
+        return lhs.selection_date_seconds > rhs.selection_date_seconds;
+    return lhs.stored_at_monotonic_ns > rhs.stored_at_monotonic_ns;
+}
+
 struct EntityTag {
     bool weak = false;
     std::string opaque;
@@ -202,10 +208,16 @@ std::optional<EntityTag> parse_entity_tag(std::string_view value) {
     return out;
 }
 
-bool weak_entity_tag_equal(std::string_view lhs, std::string_view rhs) {
-    const auto left = parse_entity_tag(lhs);
-    const auto right = parse_entity_tag(rhs);
-    return left && right && left->opaque == right->opaque;
+bool entity_tag_selects_stored(std::string_view stored, std::string_view received) {
+    const auto stored_tag = parse_entity_tag(stored);
+    const auto received_tag = parse_entity_tag(received);
+    if (!stored_tag || !received_tag) return false;
+    if (!received_tag->weak) {
+        /* A strong validator in a 304 may update only a representation with
+         * the same strong validator. */
+        return !stored_tag->weak && stored_tag->opaque == received_tag->opaque;
+    }
+    return stored_tag->opaque == received_tag->opaque;
 }
 
 uint64_t saturating_add(uint64_t lhs, uint64_t rhs) {
@@ -403,6 +415,12 @@ std::optional<CachedResponse> ResponseCache::make_cached_response(
     cached.status_code = response.status_code;
     cached.headers = response.headers;
     cached.body = response.body;
+    if (parsed_date) {
+        cached.selection_date_seconds = *parsed_date;
+    } else if (now_wall_seconds) {
+        cached.selection_date_seconds = static_cast<int64_t>(std::min(
+            *now_wall_seconds, static_cast<uint64_t>(std::numeric_limits<int64_t>::max())));
+    }
     cached.stored_at_monotonic_ns = now_monotonic_ns;
     cached.corrected_initial_age_seconds = std::max(apparent_age, corrected_age_value);
     cached.freshness_lifetime_seconds = freshness_lifetime.value_or(0);
@@ -440,6 +458,7 @@ bool ResponseCache::should_capture(const CacheRequest& request, int status,
 void ResponseCache::insert_locked(CachedResponse response) {
     for (auto it = entries_.begin(); it != entries_.end(); ++it) {
         if (!same_variant(*it, response)) continue;
+        if (more_recent(*it, response)) return;
         total_bytes_ -= std::min(total_bytes_, it->accounted_bytes);
         entries_.erase(it);
         break;
@@ -471,23 +490,25 @@ CacheLookup ResponseCache::lookup_locked(const CacheRequest& request,
                                          const CacheControl& request_control,
                                          std::optional<uint64_t> now_wall_seconds,
                                          uint64_t now_monotonic_ns) {
+    auto best = entries_.end();
     for (auto it = entries_.begin(); it != entries_.end(); ++it) {
         if (it->url != request.url || !vary_matches(*it, request.headers)) continue;
-        CachedResponse response = *it;
-        entries_.splice(entries_.begin(), entries_, it);
-        const uint64_t age = current_age(response, now_monotonic_ns);
-        response.headers = headers_with_age(response.headers, age);
-
-        const bool request_age_exceeded =
-            request_control.max_age && age >= *request_control.max_age;
-        const bool clock_unavailable = !now_wall_seconds || now_monotonic_ns == 0;
-        if (!clock_unavailable && !response.requires_revalidation && !request_control.no_cache &&
-            !request_age_exceeded && age < response.freshness_lifetime_seconds) {
-            return {CacheState::Fresh, std::move(response)};
-        }
-        return {CacheState::NeedsValidation, std::move(response)};
+        if (best == entries_.end() || more_recent(*it, *best)) best = it;
     }
-    return {};
+    if (best == entries_.end()) return {};
+
+    CachedResponse response = *best;
+    entries_.splice(entries_.begin(), entries_, best);
+    const uint64_t age = current_age(response, now_monotonic_ns);
+    response.headers = headers_with_age(response.headers, age);
+
+    const bool request_age_exceeded = request_control.max_age && age >= *request_control.max_age;
+    const bool clock_unavailable = !now_wall_seconds || now_monotonic_ns == 0;
+    if (!clock_unavailable && !response.requires_revalidation && !request_control.no_cache &&
+        !request_age_exceeded && age < response.freshness_lifetime_seconds) {
+        return {CacheState::Fresh, std::move(response)};
+    }
+    return {CacheState::NeedsValidation, std::move(response)};
 }
 
 CacheLookup ResponseCache::lookup(const CacheRequest& request) {
@@ -507,7 +528,7 @@ std::optional<RevalidationResult> ResponseCache::merge_304(
     const std::string_view response_etag = response_headers.get("etag");
     const std::string_view response_last_modified = response_headers.get("last-modified");
     if (response_has_etag) {
-        if (!stored.etag || !weak_entity_tag_equal(*stored.etag, response_etag))
+        if (!stored.etag || !entity_tag_selects_stored(*stored.etag, response_etag))
             return std::nullopt;
     } else if (response_has_last_modified) {
         if (!stored.last_modified || response_last_modified != *stored.last_modified)
@@ -515,12 +536,16 @@ std::optional<RevalidationResult> ResponseCache::merge_304(
     } else if (stored.etag || stored.last_modified) {
         return std::nullopt;
     }
-    Response merged;
-    merged.status_code = stored.status_code;
-    merged.headers = merge_headers(headers_for_revalidation(stored.headers), response_headers);
-    merged.body = stored.body;
     const auto now_wall_seconds = clock_->wall_seconds();
     const uint64_t now_monotonic_ns = clock_->monotonic_ns();
+    HeaderList validation_headers = response_headers;
+    if (!has_header(validation_headers, "date") && now_wall_seconds) {
+        validation_headers.add("date", format_http_date(*now_wall_seconds));
+    }
+    Response merged;
+    merged.status_code = stored.status_code;
+    merged.headers = merge_headers(headers_for_revalidation(stored.headers), validation_headers);
+    merged.body = stored.body;
     const auto delivery = make_cached_response(request, merged, request_wall_seconds,
                                                now_wall_seconds, now_monotonic_ns, false);
     if (!delivery) return std::nullopt;
@@ -576,6 +601,18 @@ void ResponseCache::invalidate(std::string_view url) {
             ++it;
         }
     }
+}
+
+bool ResponseCache::invalidate_entry(uint64_t entry_id) {
+    if (entry_id == 0) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = std::find_if(entries_.begin(), entries_.end(), [entry_id](const auto& entry) {
+        return entry.entry_id == entry_id;
+    });
+    if (it == entries_.end()) return false;
+    total_bytes_ -= std::min(total_bytes_, it->accounted_bytes);
+    entries_.erase(it);
+    return true;
 }
 
 void ResponseCache::clear() {
