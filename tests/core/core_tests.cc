@@ -600,6 +600,8 @@ int main() {
     assert(parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT") == 784111777);
     assert(parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT") == 784111777);
     assert(parse_http_date("Sun Nov  6 08:49:37 1994") == 784111777);
+    assert(format_http_date(784111777) == "Sun, 06 Nov 1994 08:49:37 GMT");
+    assert(format_http_date(1'000) == "Thu, 01 Jan 1970 00:16:40 GMT");
     assert(!parse_http_date("Sun, 06 Nov 1994 08:49:37 PST"));
     assert(!parse_http_date("Xun, 06 Nov 1994 08:49:37 GMT"));
     assert(!parse_http_date("Sund, 06-Nov-94 08:49:37 GMT"));
@@ -834,7 +836,8 @@ int main() {
     const auto merged = revalidation_cache.merge_304(
         *stale_for_validation.response, revalidation_request, matching_not_modified_headers);
     assert(merged && merged->retention_candidate && merged->delivery.status_code == 200 &&
-           merged->delivery.body == revalidation_response.body);
+           merged->delivery.body == revalidation_response.body &&
+           merged->delivery.headers.get("date") == "Thu, 01 Jan 1970 00:16:40 GMT");
     const auto refreshed = revalidation_cache.lookup(revalidation_request);
     assert(refreshed.state == CacheState::Fresh && refreshed.response);
     assert(refreshed.response->etag && *refreshed.response->etag == "\"v1\"");
@@ -1009,6 +1012,22 @@ int main() {
     const auto weak_etag_hit = weak_etag_cache.lookup(weak_etag_request);
     assert(weak_etag_hit.state == CacheState::Fresh && weak_etag_hit.response &&
            weak_etag_hit.response->etag && *weak_etag_hit.response->etag == "W/\"weak-v1\"");
+    weak_etag_clock->monotonic += 60'000'000'000ULL;
+    weak_etag_clock->wall += 60;
+    const auto weak_stored_stale = weak_etag_cache.lookup(weak_etag_request);
+    assert(weak_stored_stale.state == CacheState::NeedsValidation && weak_stored_stale.response);
+    HeaderList strong_from_weak_headers;
+    strong_from_weak_headers.add("cache-control", "max-age=60");
+    strong_from_weak_headers.add("etag", "\"weak-v1\"");
+    const auto strong_from_weak = weak_etag_cache.merge_304(
+        *weak_stored_stale.response, weak_etag_request, strong_from_weak_headers);
+    assert(!strong_from_weak);
+    HeaderList weak_from_weak_headers;
+    weak_from_weak_headers.add("cache-control", "max-age=60");
+    weak_from_weak_headers.add("etag", "W/\"weak-v1\"");
+    const auto weak_from_weak = weak_etag_cache.merge_304(
+        *weak_stored_stale.response, weak_etag_request, weak_from_weak_headers);
+    assert(weak_from_weak && weak_from_weak->retention_candidate);
 
     auto revalidation_race_clock = std::make_shared<FakeCacheClock>();
     ResponseCache revalidation_race_cache(
@@ -1043,6 +1062,133 @@ int main() {
     assert(race_hit.state == CacheState::Fresh && race_hit.response &&
            race_hit.response->body == race_v2.body && race_hit.response->etag &&
            *race_hit.response->etag == "\"race-v2\"");
+
+    auto validation_failure_clock = std::make_shared<FakeCacheClock>();
+    ResponseCache validation_failure_cache(
+        ResponseCacheConfig{.max_entries = 4, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        validation_failure_clock);
+    Response validation_v1 = race_v1;
+    validation_v1.headers.clear();
+    validation_v1.headers.add("cache-control", "max-age=0");
+    validation_v1.headers.add("etag", "\"failure-v1\"");
+    validation_v1.body = {23};
+    const CacheRequest validation_failure_request{"GET", "https://cache.example/revalidate-failure",
+                                                  cache_request_headers, false};
+    const bool stored_validation_v1 =
+        validation_failure_cache.store(validation_failure_request, validation_v1);
+    assert(stored_validation_v1);
+    const auto stale_validation_failure =
+        validation_failure_cache.lookup(validation_failure_request);
+    assert(stale_validation_failure.state == CacheState::NeedsValidation &&
+           stale_validation_failure.response);
+    Response validation_v2 = validation_v1;
+    validation_v2.headers.clear();
+    validation_v2.headers.add("cache-control", "max-age=60");
+    validation_v2.headers.add("etag", "\"failure-v2\"");
+    validation_v2.body = {24};
+    const bool stored_validation_v2 =
+        validation_failure_cache.store(validation_failure_request, validation_v2);
+    assert(stored_validation_v2);
+    HeaderList failed_validation_headers;
+    failed_validation_headers.add("etag", "\"unexpected\"");
+    const auto failed_validation = validation_failure_cache.merge_304(
+        *stale_validation_failure.response, validation_failure_request, failed_validation_headers);
+    assert(!failed_validation);
+    const bool removed_old_validation =
+        validation_failure_cache.invalidate_entry(stale_validation_failure.response->entry_id);
+    assert(!removed_old_validation);
+    const auto validation_failure_hit = validation_failure_cache.lookup(validation_failure_request);
+    assert(validation_failure_hit.state == CacheState::Fresh && validation_failure_hit.response &&
+           validation_failure_hit.response->body == validation_v2.body);
+
+    auto variant_invalidation_clock = std::make_shared<FakeCacheClock>();
+    ResponseCache variant_invalidation_cache(
+        ResponseCacheConfig{.max_entries = 4, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        variant_invalidation_clock);
+    HeaderList en_request_headers;
+    en_request_headers.add("accept-language", "en");
+    HeaderList ja_request_headers;
+    ja_request_headers.add("accept-language", "ja");
+    const CacheRequest en_request{"GET", "https://cache.example/invalidate-variant",
+                                  en_request_headers, false};
+    const CacheRequest ja_request{"GET", "https://cache.example/invalidate-variant",
+                                  ja_request_headers, false};
+    Response en_response;
+    en_response.status_code = 200;
+    en_response.headers.add("cache-control", "max-age=60");
+    en_response.headers.add("vary", "accept-language");
+    en_response.body = {25};
+    Response ja_response = en_response;
+    ja_response.body = {26};
+    const bool stored_en_response = variant_invalidation_cache.store(en_request, en_response);
+    const bool stored_ja_response = variant_invalidation_cache.store(ja_request, ja_response);
+    assert(stored_en_response && stored_ja_response);
+    const auto en_hit = variant_invalidation_cache.lookup(en_request);
+    assert(en_hit.state == CacheState::Fresh && en_hit.response);
+    const bool removed_en = variant_invalidation_cache.invalidate_entry(en_hit.response->entry_id);
+    assert(removed_en);
+    const auto ja_hit = variant_invalidation_cache.lookup(ja_request);
+    assert(ja_hit.state == CacheState::Fresh && ja_hit.response &&
+           ja_hit.response->body == ja_response.body);
+
+    auto selection_clock = std::make_shared<FakeCacheClock>();
+    ResponseCache selection_cache(
+        ResponseCacheConfig{.max_entries = 8, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        selection_clock);
+    HeaderList encoding_request_headers;
+    encoding_request_headers.add("accept-encoding", "gzip");
+    HeaderList language_request_headers;
+    language_request_headers.add("accept-language", "ja");
+    const CacheRequest encoding_request{"GET", "https://cache.example/selection",
+                                        encoding_request_headers, false};
+    const CacheRequest language_request{"GET", "https://cache.example/selection",
+                                        language_request_headers, false};
+    Response encoding_response;
+    encoding_response.status_code = 200;
+    encoding_response.headers.add("cache-control", "max-age=60");
+    encoding_response.headers.add("vary", "accept-encoding");
+    encoding_response.headers.add("date", "Thu, 01 Jan 1970 00:16:40 GMT");
+    encoding_response.body = {27};
+    Response language_response;
+    language_response.status_code = 200;
+    language_response.headers.add("cache-control", "max-age=60");
+    language_response.headers.add("vary", "accept-language");
+    language_response.headers.add("date", "Thu, 01 Jan 1970 00:16:50 GMT");
+    language_response.body = {28};
+    const bool stored_encoding_response =
+        selection_cache.store(encoding_request, encoding_response);
+    const bool stored_language_response =
+        selection_cache.store(language_request, language_response);
+    assert(stored_encoding_response && stored_language_response);
+    const auto encoding_only_hit = selection_cache.lookup(encoding_request);
+    assert(encoding_only_hit.state == CacheState::Fresh && encoding_only_hit.response &&
+           encoding_only_hit.response->body == encoding_response.body);
+    HeaderList combined_selection_headers = encoding_request_headers;
+    combined_selection_headers.add("accept-language", "ja");
+    const CacheRequest combined_selection_request{"GET", "https://cache.example/selection",
+                                                  combined_selection_headers, false};
+    const auto combined_selection_hit = selection_cache.lookup(combined_selection_request);
+    assert(combined_selection_hit.state == CacheState::Fresh && combined_selection_hit.response &&
+           combined_selection_hit.response->body == language_response.body);
+
+    Response order_newer = language_response;
+    order_newer.headers.clear();
+    order_newer.headers.add("cache-control", "max-age=60");
+    order_newer.headers.add("date", "Thu, 01 Jan 1970 00:17:00 GMT");
+    order_newer.body = {29};
+    Response order_older = order_newer;
+    order_older.headers.clear();
+    order_older.headers.add("cache-control", "max-age=60");
+    order_older.headers.add("date", "Thu, 01 Jan 1970 00:16:59 GMT");
+    order_older.body = {30};
+    const CacheRequest order_request{"GET", "https://cache.example/selection-order",
+                                     cache_request_headers, false};
+    const bool stored_order_newer = selection_cache.store(order_request, order_newer);
+    const bool stored_order_older = selection_cache.store(order_request, order_older);
+    assert(stored_order_newer && stored_order_older);
+    const auto order_hit = selection_cache.lookup(order_request);
+    assert(order_hit.state == CacheState::Fresh && order_hit.response &&
+           order_hit.response->body == order_newer.body);
 
     auto delivery_limit_clock = std::make_shared<FakeCacheClock>();
     ResponseCache delivery_limit_cache(
