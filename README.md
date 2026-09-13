@@ -316,13 +316,17 @@ The worker drives `ngtcp2_conn_get_expiry2`/`ngtcp2_conn_handle_expiry` with mon
 ## C ABI compatibility
 
 The C ABI uses `kathttp3_client_config` (an alias of the retained
-`kathttp3_client_options`) with `struct_size` and `abi_version`. Initialize it
-with `kathttp3_client_config_init`. KatHttp3 accepts known smaller structs and
-defaults appended fields; it rejects future ABI versions. During the 0.x line,
-existing enum values and fields are not reordered and optional fields are
-appended only. HTTP cache fields are appended, disabled by default, and use
-zero values to select the defaults of 128 entries, 32 MiB total, and 4 MiB per
-entry. Symbols are hidden by default except `kathttp3_*` exports.
+`kathttp3_client_options`) with `struct_size` and `abi_version`. For a current
+header-sized configuration, initialize it with
+`kathttp3_client_config_init_size(&config, sizeof(config))`. The legacy
+`kathttp3_client_config_init` is bounded to the pre-cache prefix so binaries
+compiled against the older layout cannot be overrun; use the size-aware
+initializer when accessing appended fields. KatHttp3 accepts known smaller
+structs and defaults omitted fields; it rejects future ABI versions. During
+the 0.x line, existing enum values and fields are not reordered and optional
+fields are appended only. HTTP cache fields are appended, disabled by default,
+and use zero values to select the defaults of 128 entries, 32 MiB total, and 4
+MiB per entry. Symbols are hidden by default except `kathttp3_*` exports.
 
 ## Known limitations
 
