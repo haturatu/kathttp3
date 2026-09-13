@@ -119,11 +119,12 @@ int main() {
     const std::array<uint8_t, 3> initial_request_body{{1, 2, 3}};
     assert(kathttp3_request_set_body(request, initial_request_body.data(),
                                      initial_request_body.size()) == KATHTTP3_OK);
+    assert(request->body_present);
     assert(kathttp3_request_set_body(request, nullptr, 1) == KATHTTP3_ERR_INVALID_ARG);
     assert(request->body ==
            std::vector<uint8_t>(initial_request_body.begin(), initial_request_body.end()));
     assert(kathttp3_request_set_body(request, nullptr, 0) == KATHTTP3_OK);
-    assert(request->body.empty());
+    assert(request->body.empty() && request->body_present);
     kathttp3_request_destroy(request);
     assert(kathttp3_request_create("", "https://example.com/") == nullptr);
     assert(kathttp3_request_create("BAD METHOD", "https://example.com/") == nullptr);
@@ -729,6 +730,13 @@ int main() {
         response_cache.store(lowercase_method_request, cache_response);
     assert(!stored_lowercase_method);
 
+    const CacheRequest get_with_body_request{"GET", "https://cache.example/item",
+                                             cache_request_headers, false, true};
+    const CacheLookup get_with_body_hit = response_cache.lookup(get_with_body_request);
+    assert(get_with_body_hit.state == CacheState::Miss);
+    const bool stored_get_with_body = response_cache.store(get_with_body_request, cache_response);
+    assert(!stored_get_with_body);
+
     constexpr std::array<const char*, 5> kConditionalHeaders = {
         "if-none-match", "if-modified-since", "if-match", "if-unmodified-since", "if-range",
     };
@@ -798,7 +806,7 @@ int main() {
         revalidation_clock);
     Response revalidation_response;
     revalidation_response.status_code = 200;
-    revalidation_response.headers.add("cache-control", "max-age=0");
+    revalidation_response.headers.add("cache-control", "max-age=0, stale-if-error=300");
     revalidation_response.headers.add("etag", "\"v1\"");
     revalidation_response.body = {8, 9};
     const CacheRequest revalidation_request{"GET", "https://cache.example/revalidate",
@@ -809,6 +817,7 @@ int main() {
     const auto stale_for_validation = revalidation_cache.lookup(revalidation_request);
     assert(stale_for_validation.state == CacheState::NeedsValidation &&
            stale_for_validation.response && stale_for_validation.response->etag);
+    assert(revalidation_cache.can_serve_stale_if_error(*stale_for_validation.response));
     HeaderList not_modified_headers;
     not_modified_headers.add("cache-control", "max-age=60");
     not_modified_headers.add("etag", "\"v2\"");
@@ -824,10 +833,125 @@ int main() {
     matching_not_modified_headers.add("etag", "\"v1\"");
     const auto merged = revalidation_cache.merge_304(
         *stale_for_validation.response, revalidation_request, matching_not_modified_headers);
-    assert(merged && merged->status_code == 200 && merged->body == revalidation_response.body);
+    assert(merged && merged->retain_in_cache && merged->response.status_code == 200 &&
+           merged->response.body == revalidation_response.body);
     const auto refreshed = revalidation_cache.lookup(revalidation_request);
     assert(refreshed.state == CacheState::Fresh && refreshed.response);
     assert(refreshed.response->etag && *refreshed.response->etag == "\"v1\"");
+
+    Response no_store_revalidation_response = revalidation_response;
+    no_store_revalidation_response.headers.clear();
+    no_store_revalidation_response.headers.add("cache-control", "max-age=0");
+    no_store_revalidation_response.headers.add("etag", "\"no-store-v1\"");
+    no_store_revalidation_response.body = {12, 13};
+    const CacheRequest no_store_revalidation_request{
+        "GET", "https://cache.example/revalidate-no-store", cache_request_headers, false};
+    const bool stored_no_store_revalidation =
+        revalidation_cache.store(no_store_revalidation_request, no_store_revalidation_response);
+    assert(stored_no_store_revalidation);
+    const auto no_store_stale = revalidation_cache.lookup(no_store_revalidation_request);
+    assert(no_store_stale.state == CacheState::NeedsValidation && no_store_stale.response);
+    HeaderList no_store_not_modified_headers;
+    no_store_not_modified_headers.add("cache-control", "no-store");
+    no_store_not_modified_headers.add("etag", "\"no-store-v1\"");
+    const auto no_store_merged = revalidation_cache.merge_304(
+        *no_store_stale.response, no_store_revalidation_request, no_store_not_modified_headers);
+    assert(no_store_merged && !no_store_merged->retain_in_cache &&
+           no_store_merged->response.status_code == 200 &&
+           no_store_merged->response.body == no_store_revalidation_response.body);
+    const CacheLookup no_store_after_merge =
+        revalidation_cache.lookup(no_store_revalidation_request);
+    assert(no_store_after_merge.state == CacheState::Miss);
+
+    Response star_vary_revalidation_response = revalidation_response;
+    star_vary_revalidation_response.headers.clear();
+    star_vary_revalidation_response.headers.add("cache-control", "max-age=0");
+    star_vary_revalidation_response.headers.add("etag", "\"star-v1\"");
+    star_vary_revalidation_response.body = {16};
+    const CacheRequest star_vary_revalidation_request{
+        "GET", "https://cache.example/revalidate-star", cache_request_headers, false};
+    const bool stored_star_vary_revalidation =
+        revalidation_cache.store(star_vary_revalidation_request, star_vary_revalidation_response);
+    assert(stored_star_vary_revalidation);
+    const auto star_vary_stale = revalidation_cache.lookup(star_vary_revalidation_request);
+    assert(star_vary_stale.state == CacheState::NeedsValidation && star_vary_stale.response);
+    HeaderList star_vary_not_modified_headers;
+    star_vary_not_modified_headers.add("cache-control", "max-age=60");
+    star_vary_not_modified_headers.add("vary", "*");
+    star_vary_not_modified_headers.add("etag", "\"star-v1\"");
+    const auto star_vary_merged = revalidation_cache.merge_304(
+        *star_vary_stale.response, star_vary_revalidation_request, star_vary_not_modified_headers);
+    assert(star_vary_merged && !star_vary_merged->retain_in_cache &&
+           star_vary_merged->response.body == star_vary_revalidation_response.body);
+    const CacheLookup star_vary_after_merge =
+        revalidation_cache.lookup(star_vary_revalidation_request);
+    assert(star_vary_after_merge.state == CacheState::Miss);
+
+    HeaderList vary_revalidation_request_headers;
+    vary_revalidation_request_headers.add("accept-encoding", "gzip");
+    const CacheRequest vary_revalidation_request{"GET", "https://cache.example/revalidate-vary",
+                                                 vary_revalidation_request_headers, false};
+    Response vary_revalidation_response;
+    vary_revalidation_response.status_code = 200;
+    vary_revalidation_response.headers.add("cache-control", "max-age=0");
+    vary_revalidation_response.headers.add("vary", "accept-encoding");
+    vary_revalidation_response.headers.add("etag", "\"vary-v1\"");
+    vary_revalidation_response.body = {14};
+    const bool stored_vary_revalidation =
+        revalidation_cache.store(vary_revalidation_request, vary_revalidation_response);
+    assert(stored_vary_revalidation);
+    const auto vary_stale = revalidation_cache.lookup(vary_revalidation_request);
+    assert(vary_stale.state == CacheState::NeedsValidation && vary_stale.response);
+    HeaderList changed_vary_not_modified_headers;
+    changed_vary_not_modified_headers.add("cache-control", "max-age=60");
+    changed_vary_not_modified_headers.add("vary", "accept-language");
+    changed_vary_not_modified_headers.add("etag", "\"vary-v1\"");
+    const auto changed_vary = revalidation_cache.merge_304(
+        *vary_stale.response, vary_revalidation_request, changed_vary_not_modified_headers);
+    assert(changed_vary && changed_vary->retain_in_cache);
+    const CacheLookup changed_vary_hit = revalidation_cache.lookup(vary_revalidation_request);
+    assert(changed_vary_hit.state == CacheState::Fresh);
+    HeaderList changed_vary_probe_headers;
+    changed_vary_probe_headers.add("accept-encoding", "gzip");
+    changed_vary_probe_headers.add("accept-language", "ja");
+    const CacheRequest changed_vary_probe{"GET", "https://cache.example/revalidate-vary",
+                                          changed_vary_probe_headers, false};
+    const CacheLookup changed_vary_probe_hit = revalidation_cache.lookup(changed_vary_probe);
+    assert(changed_vary_probe_hit.state == CacheState::Miss);
+
+    const CacheRequest last_modified_request{
+        "GET", "https://cache.example/revalidate-last-modified", cache_request_headers, false};
+    Response last_modified_response;
+    last_modified_response.status_code = 200;
+    last_modified_response.headers.add("cache-control", "max-age=0");
+    last_modified_response.headers.add("last-modified", "Thu, 01 Jan 1970 00:16:40 GMT");
+    last_modified_response.body = {15};
+    const bool stored_last_modified =
+        revalidation_cache.store(last_modified_request, last_modified_response);
+    assert(stored_last_modified);
+    const auto last_modified_stale = revalidation_cache.lookup(last_modified_request);
+    assert(last_modified_stale.state == CacheState::NeedsValidation &&
+           last_modified_stale.response && last_modified_stale.response->last_modified);
+    HeaderList mismatched_last_modified_headers;
+    mismatched_last_modified_headers.add("cache-control", "max-age=60");
+    mismatched_last_modified_headers.add("last-modified", "Thu, 01 Jan 1970 00:16:41 GMT");
+    const auto mismatched_last_modified = revalidation_cache.merge_304(
+        *last_modified_stale.response, last_modified_request, mismatched_last_modified_headers);
+    assert(!mismatched_last_modified);
+    HeaderList missing_last_modified_headers;
+    missing_last_modified_headers.add("cache-control", "max-age=60");
+    const auto missing_last_modified = revalidation_cache.merge_304(
+        *last_modified_stale.response, last_modified_request, missing_last_modified_headers);
+    assert(!missing_last_modified);
+    HeaderList matching_last_modified_headers;
+    matching_last_modified_headers.add("cache-control", "max-age=60");
+    matching_last_modified_headers.add("last-modified", "Thu, 01 Jan 1970 00:16:40 GMT");
+    const auto matching_last_modified = revalidation_cache.merge_304(
+        *last_modified_stale.response, last_modified_request, matching_last_modified_headers);
+    assert(matching_last_modified && matching_last_modified->retain_in_cache &&
+           matching_last_modified->response.body == last_modified_response.body);
+    const CacheLookup last_modified_refreshed = revalidation_cache.lookup(last_modified_request);
+    assert(last_modified_refreshed.state == CacheState::Fresh);
 
     ResponseCache lru_cache(
         ResponseCacheConfig{.max_entries = 1, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
