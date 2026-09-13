@@ -12,8 +12,8 @@
 #include <memory>
 #include <mutex>
 
-#include "connection_state.h"
 #include "cache_control.h"
+#include "connection_state.h"
 #include "cookie_jar.h"
 #include "dns.h"
 #include "dns_wait.h"
@@ -585,8 +585,7 @@ int main() {
     assert(!parse_delta_seconds("-1"));
     assert(!parse_delta_seconds("123abc"));
     assert(!parse_delta_seconds(""));
-    assert(parse_delta_seconds("184467440737095516160") ==
-           std::numeric_limits<uint64_t>::max());
+    assert(parse_delta_seconds("184467440737095516160") == std::numeric_limits<uint64_t>::max());
     assert(!parse_delta_seconds("184467440737095516160garbage"));
     HeaderList conflicting_cache_control;
     conflicting_cache_control.add("cache-control", "max-age=60");
@@ -615,7 +614,8 @@ int main() {
     cache_response.headers.add("ETag", "\"v1\"");
     cache_response.body = {1, 2, 3};
     assert(response_cache.should_capture(cache_request, 200, cache_response.headers));
-    assert(response_cache.store(cache_request, cache_response));
+    const bool stored_cache_response = response_cache.store(cache_request, cache_response);
+    assert(stored_cache_response);
     CacheLookup cache_hit = response_cache.lookup(cache_request);
     assert(cache_hit.state == CacheState::Fresh && cache_hit.response);
     assert(cache_hit.response->body == cache_response.body);
@@ -627,8 +627,9 @@ int main() {
     HeaderList request_revalidate_headers;
     request_revalidate_headers.add("cache-control", "max-age=0");
     const CacheRequest request_revalidate{"GET", "https://cache.example/item",
-                                         request_revalidate_headers, false};
-    assert(response_cache.lookup(request_revalidate).state == CacheState::NeedsValidation);
+                                          request_revalidate_headers, false};
+    const CacheLookup request_revalidate_hit = response_cache.lookup(request_revalidate);
+    assert(request_revalidate_hit.state == CacheState::NeedsValidation);
 
     Response zero_age_response;
     zero_age_response.status_code = 200;
@@ -636,8 +637,10 @@ int main() {
     zero_age_response.body = {4};
     const CacheRequest zero_age_request{"GET", "https://cache.example/zero", cache_request_headers,
                                         false};
-    assert(response_cache.store(zero_age_request, zero_age_response));
-    assert(response_cache.lookup(zero_age_request).state == CacheState::NeedsValidation);
+    const bool stored_zero_age_response = response_cache.store(zero_age_request, zero_age_response);
+    assert(stored_zero_age_response);
+    const CacheLookup zero_age_hit = response_cache.lookup(zero_age_request);
+    assert(zero_age_hit.state == CacheState::NeedsValidation);
 
     Response date_age_response;
     date_age_response.status_code = 200;
@@ -646,8 +649,9 @@ int main() {
     date_age_response.headers.add("age", "5");
     date_age_response.body = {6};
     const CacheRequest date_age_request{"GET", "https://cache.example/date-age",
-                                       cache_request_headers, false};
-    assert(response_cache.store(date_age_request, date_age_response));
+                                        cache_request_headers, false};
+    const bool stored_date_age_response = response_cache.store(date_age_request, date_age_response);
+    assert(stored_date_age_response);
     const auto date_age_hit = response_cache.lookup(date_age_request);
     assert(date_age_hit.state == CacheState::Fresh && date_age_hit.response);
     assert(date_age_hit.response->headers.get("age") == "10");
@@ -659,8 +663,10 @@ int main() {
     expires_response.body = {10};
     const CacheRequest expires_request{"GET", "https://cache.example/expires",
                                        cache_request_headers, false};
-    assert(response_cache.store(expires_request, expires_response));
-    assert(response_cache.lookup(expires_request).state == CacheState::Fresh);
+    const bool stored_expires_response = response_cache.store(expires_request, expires_response);
+    assert(stored_expires_response);
+    const CacheLookup expires_hit = response_cache.lookup(expires_request);
+    assert(expires_hit.state == CacheState::Fresh);
 
     HeaderList star_vary_headers;
     star_vary_headers.add("cache-control", "max-age=60");
@@ -669,16 +675,20 @@ int main() {
     star_vary_response.status_code = 200;
     star_vary_response.headers = star_vary_headers;
     star_vary_response.body = {5};
-    const CacheRequest star_vary_request{"GET", "https://cache.example/star",
-                                         cache_request_headers, false};
-    assert(!response_cache.store(star_vary_request, star_vary_response));
+    const CacheRequest star_vary_request{"GET", "https://cache.example/star", cache_request_headers,
+                                         false};
+    const bool stored_star_vary_response =
+        response_cache.store(star_vary_request, star_vary_response);
+    assert(!stored_star_vary_response);
     Response invalid_vary_response = star_vary_response;
     invalid_vary_response.headers.clear();
     invalid_vary_response.headers.add("cache-control", "max-age=60");
     invalid_vary_response.headers.add("vary", "accept encoding");
     const CacheRequest invalid_vary_request{"GET", "https://cache.example/invalid-vary",
                                             cache_request_headers, false};
-    assert(!response_cache.store(invalid_vary_request, invalid_vary_response));
+    const bool stored_invalid_vary_response =
+        response_cache.store(invalid_vary_request, invalid_vary_response);
+    assert(!stored_invalid_vary_response);
 
     HeaderList gzip_request_headers;
     gzip_request_headers.add("accept-encoding", "gzip");
@@ -689,19 +699,25 @@ int main() {
     vary_response.headers.add("cache-control", "max-age=60");
     vary_response.headers.add("Vary", "Accept-Encoding");
     vary_response.body = {9};
-    assert(response_cache.store(gzip_request, vary_response));
+    const bool stored_gzip_response = response_cache.store(gzip_request, vary_response);
+    assert(stored_gzip_response);
     HeaderList br_request_headers;
     br_request_headers.add("accept-encoding", "br");
     const CacheRequest br_request{"GET", "https://cache.example/vary", br_request_headers, false};
-    assert(response_cache.lookup(gzip_request).state == CacheState::Fresh);
-    assert(response_cache.lookup(br_request).state == CacheState::Miss);
+    const CacheLookup gzip_hit = response_cache.lookup(gzip_request);
+    assert(gzip_hit.state == CacheState::Fresh);
+    const CacheLookup br_hit = response_cache.lookup(br_request);
+    assert(br_hit.state == CacheState::Miss);
 
     HeaderList authorized_headers;
     authorized_headers.add("Authorization", "Bearer secret");
     const CacheRequest authorized_request{"GET", "https://cache.example/private",
                                           authorized_headers, false};
-    assert(response_cache.lookup(authorized_request).state == CacheState::Miss);
-    assert(!response_cache.store(authorized_request, cache_response));
+    const CacheLookup authorized_hit = response_cache.lookup(authorized_request);
+    assert(authorized_hit.state == CacheState::Miss);
+    const bool stored_authorized_response =
+        response_cache.store(authorized_request, cache_response);
+    assert(!stored_authorized_response);
 
     HeaderList stale_error_headers;
     stale_error_headers.add("cache-control", "max-age=1, stale-if-error=5");
@@ -712,12 +728,16 @@ int main() {
     const CacheRequest stale_error_request{"GET", "https://cache.example/error",
                                            cache_request_headers, false};
     cache_clock->monotonic = 1'000'000'000ULL;
-    assert(response_cache.store(stale_error_request, stale_error_response));
+    const bool stored_stale_error_response =
+        response_cache.store(stale_error_request, stale_error_response);
+    assert(stored_stale_error_response);
     cache_clock->monotonic += 3'000'000'000ULL;
     const auto stale_lookup = response_cache.lookup(stale_error_request);
-    assert(stale_lookup.response && response_cache.can_serve_stale_if_error(*stale_lookup.response));
+    assert(stale_lookup.response &&
+           response_cache.can_serve_stale_if_error(*stale_lookup.response));
     response_cache.invalidate(stale_error_request.url);
-    assert(response_cache.lookup(stale_error_request).state == CacheState::Miss);
+    const CacheLookup stale_after_invalidation = response_cache.lookup(stale_error_request);
+    assert(stale_after_invalidation.state == CacheState::Miss);
 
     auto revalidation_clock = std::make_shared<FakeCacheClock>();
     ResponseCache revalidation_cache(
@@ -730,15 +750,17 @@ int main() {
     revalidation_response.body = {8, 9};
     const CacheRequest revalidation_request{"GET", "https://cache.example/revalidate",
                                             cache_request_headers, false};
-    assert(revalidation_cache.store(revalidation_request, revalidation_response));
+    const bool stored_revalidation_response =
+        revalidation_cache.store(revalidation_request, revalidation_response);
+    assert(stored_revalidation_response);
     const auto stale_for_validation = revalidation_cache.lookup(revalidation_request);
     assert(stale_for_validation.state == CacheState::NeedsValidation &&
            stale_for_validation.response && stale_for_validation.response->etag);
     HeaderList not_modified_headers;
     not_modified_headers.add("cache-control", "max-age=60");
     not_modified_headers.add("etag", "\"v2\"");
-    const auto merged = revalidation_cache.merge_304(
-        *stale_for_validation.response, revalidation_request, not_modified_headers);
+    const auto merged = revalidation_cache.merge_304(*stale_for_validation.response,
+                                                     revalidation_request, not_modified_headers);
     assert(merged && merged->status_code == 200 && merged->body == revalidation_response.body);
     const auto refreshed = revalidation_cache.lookup(revalidation_request);
     assert(refreshed.state == CacheState::Fresh && refreshed.response);
@@ -748,29 +770,37 @@ int main() {
         ResponseCacheConfig{.max_entries = 1, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
         revalidation_clock);
     Response lru_response = cache_response;
-    const CacheRequest lru_a{"GET", "https://cache.example/lru-a", cache_request_headers,
-                             false};
-    const CacheRequest lru_b{"GET", "https://cache.example/lru-b", cache_request_headers,
-                             false};
-    assert(lru_cache.store(lru_a, lru_response));
-    assert(lru_cache.store(lru_b, lru_response));
-    assert(lru_cache.lookup(lru_a).state == CacheState::Miss);
-    assert(lru_cache.lookup(lru_b).state == CacheState::Fresh);
+    const CacheRequest lru_a{"GET", "https://cache.example/lru-a", cache_request_headers, false};
+    const CacheRequest lru_b{"GET", "https://cache.example/lru-b", cache_request_headers, false};
+    const bool stored_lru_a = lru_cache.store(lru_a, lru_response);
+    assert(stored_lru_a);
+    const bool stored_lru_b = lru_cache.store(lru_b, lru_response);
+    assert(stored_lru_b);
+    const CacheLookup lru_a_hit = lru_cache.lookup(lru_a);
+    assert(lru_a_hit.state == CacheState::Miss);
+    const CacheLookup lru_b_hit = lru_cache.lookup(lru_b);
+    assert(lru_b_hit.state == CacheState::Fresh);
 
     auto clock_failure_cache = std::make_shared<ResponseCache>(
         ResponseCacheConfig{.max_entries = 2, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
         cache_clock);
-    assert(clock_failure_cache->store(cache_request, cache_response));
+    const bool stored_clock_response = clock_failure_cache->store(cache_request, cache_response);
+    assert(stored_clock_response);
     cache_clock->wall_available = false;
-    assert(!clock_failure_cache->store(cache_request, cache_response));
-    assert(clock_failure_cache->lookup(cache_request).state == CacheState::NeedsValidation);
+    const bool stored_without_wall_clock =
+        clock_failure_cache->store(cache_request, cache_response);
+    assert(!stored_without_wall_clock);
+    const CacheLookup clock_failure_hit = clock_failure_cache->lookup(cache_request);
+    assert(clock_failure_hit.state == CacheState::NeedsValidation);
     cache_clock->wall_available = true;
 
     Response must_revalidate_response = stale_error_response;
     must_revalidate_response.headers.add("cache-control", "must-revalidate");
     const CacheRequest must_revalidate_request{"GET", "https://cache.example/must-revalidate",
                                                cache_request_headers, false};
-    assert(response_cache.store(must_revalidate_request, must_revalidate_response));
+    const bool stored_must_revalidate_response =
+        response_cache.store(must_revalidate_request, must_revalidate_response);
+    assert(stored_must_revalidate_response);
     cache_clock->monotonic += 3'000'000'000ULL;
     const auto must_revalidate_lookup = response_cache.lookup(must_revalidate_request);
     assert(must_revalidate_lookup.response &&
@@ -934,9 +964,17 @@ int main() {
     generation_exact_cache.put_success("generation.test", 443, 20, endpoints);
     generation_exact_cache.invalidate_network(1);
     cached.clear();
-    assert(generation_exact_cache.lookup("generation.test", 443, 1, cached));
-    assert(!generation_exact_cache.lookup("generation.test", 443, 10, cached));
-    assert(!generation_exact_cache.lookup("generation.test", 443, 2, cached));
-    assert(!generation_exact_cache.lookup("generation.test", 443, 20, cached));
+    const bool generation_one_hit =
+        generation_exact_cache.lookup("generation.test", 443, 1, cached);
+    assert(generation_one_hit);
+    const bool generation_ten_hit =
+        generation_exact_cache.lookup("generation.test", 443, 10, cached);
+    assert(!generation_ten_hit);
+    const bool generation_two_hit =
+        generation_exact_cache.lookup("generation.test", 443, 2, cached);
+    assert(!generation_two_hit);
+    const bool generation_twenty_hit =
+        generation_exact_cache.lookup("generation.test", 443, 20, cached);
+    assert(!generation_twenty_hit);
     std::cout << "core tests passed\n";
 }
