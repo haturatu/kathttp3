@@ -49,6 +49,7 @@ struct CachedResponse {
     std::vector<uint8_t> body;
     std::vector<VaryKey> vary;
 
+    uint64_t entry_id = 0;
     uint64_t stored_at_monotonic_ns = 0;
     uint64_t corrected_initial_age_seconds = 0;
     uint64_t freshness_lifetime_seconds = 0;
@@ -81,8 +82,11 @@ struct CacheLookup {
 };
 
 struct RevalidationResult {
-    CachedResponse response;
-    bool retain_in_cache = false;
+    /* A valid 304 always produces a response for the request. The optional
+     * candidate is separate because admission limits and cache clocks may
+     * prevent retaining that response without making delivery fail. */
+    CachedResponse delivery;
+    std::optional<CachedResponse> retention_candidate;
 };
 
 /* RFC 9111 current_age after the resident time is added using a monotonic
@@ -148,6 +152,7 @@ class ResponseCache {
     mutable std::mutex mutex_;
     std::list<CachedResponse> entries_; /* front = most recently used */
     size_t total_bytes_ = 0;
+    uint64_t next_entry_id_ = 1;
 };
 
 } /* namespace kathttp3 */

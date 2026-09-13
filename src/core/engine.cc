@@ -733,7 +733,7 @@ void Engine::on_job_complete(Job* job) {
             http_cache_->merge_304(validation.stored, request, validation.response_headers,
                                    job->cache_request_wall_seconds);
         if (merged) {
-            deliver_cached(job, merged->response);
+            deliver_cached(job, merged->delivery);
         } else {
             http_cache_->invalidate(cache_url);
             dispatch_error(job, KATHTTP3_ERR_HTTP3, "cache validation failed");
