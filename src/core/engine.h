@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -13,6 +14,7 @@
 #include "dns.h"
 #include "kathttp3.h"
 #include "quic_client.h"
+#include "response_cache.h"
 #include "tls.h"
 
 struct kathttp3_request;
@@ -66,6 +68,15 @@ class Engine {
     void dispatch_error(Job* job, int err, const char* msg);
     void add_cookie_header(kathttp3_request* req, const Url& url);
     void store_cookies(const Url& url, const HeaderList& headers);
+    enum class CachePreparation { Bypass, Network, Delivered };
+    CachePreparation prepare_cache(Job* job, kathttp3_event_callback callback = nullptr,
+                                    void* user_data = nullptr);
+    void add_cache_validator(Job* job, const CachedResponse& response);
+    void deliver_cached(Job* job, const CachedResponse& response);
+    void deliver_cached_direct(int64_t request_id, kathttp3_event_callback callback,
+                               void* user_data, const CachedResponse& response);
+    void store_job_response(Job* job);
+    void invalidate_after_unsafe_request(Job* job, const HeaderList& headers);
     void deliver(const kathttp3_event& ev);
 
     std::mutex mtx_; /* serializes registry access and event delivery */
@@ -87,6 +98,8 @@ class Engine {
     void* qlog_sink_userdata_ = nullptr;
     std::shared_ptr<Resolver> resolver_;
     std::shared_ptr<DnsCache> dns_cache_;
+    std::shared_ptr<ResponseCache> http_cache_;
+    size_t cache_max_entry_bytes_ = 4 * 1024 * 1024;
     TlsClientContext tls_ctx_;
     CookieJar cookie_jar_;
     int wakeup_fd_ = -1;
