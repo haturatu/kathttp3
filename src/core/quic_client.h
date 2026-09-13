@@ -249,7 +249,6 @@ class QuicClient {
     bool process_network_change();
     bool record_socket_error(int error, const char* operation);
     void expire_requests(uint64_t now);
-    void process_cached_jobs();
     void update_keep_alive();
     bool configure_early_data(ngtcp2_conn* conn, TlsClientContext::ResumptionState* resumption);
     void cache_0rtt_transport_params();

@@ -72,6 +72,10 @@ const HeaderList& original_cache_request_headers(const Job& job) {
     return job.cache_request_headers ? *job.cache_request_headers : job.request->headers;
 }
 
+bool request_has_body(const kathttp3_request& request) {
+    return request.body_present || !request.body.empty() || request.streaming_body;
+}
+
 bool parse_content_length(std::string_view s, uint64_t& out) {
     if (s.empty()) return false;
     const char* begin = s.data();
@@ -245,6 +249,25 @@ void Engine::execute(kathttp3_request* req, int64_t request_id, kathttp3_event_c
 
     prepare_cache(job.get());
 
+    if (job->cached_response) {
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            registry_[request_id] = ReqEntry{cb, user_data, nullptr, false, false, 0};
+        }
+        if (!queue_cached_job(job)) {
+            {
+                std::lock_guard<std::mutex> lk(mtx_);
+                registry_.erase(request_id);
+            }
+            kathttp3_event ev{};
+            ev.type = KATHTTP3_EVENT_ERROR;
+            ev.request_id = request_id;
+            ev.error_code = KATHTTP3_ERR_NOMEM;
+            invoke_callback(cb, user_data, ev, "cache dispatcher admission");
+        }
+        return;
+    }
+
     QuicClient* c = get_or_create_client(url);
     if (!c) {
         kathttp3_event ev{};
@@ -318,6 +341,7 @@ void Engine::cancel(int64_t request_id) {
 void Engine::destroy() {
     std::unique_lock<std::mutex> lifecycle(lifecycle_mutex_);
     if (destroyed_.exchange(true)) return;
+    stop_cached_dispatcher();
     std::vector<std::unique_ptr<QuicClient>> clients;
     {
         std::lock_guard<std::mutex> lk(pool_mutex_);
@@ -358,7 +382,8 @@ void Engine::prepare_cache(Job* job) {
     job->cache_request_headers = job->request->headers;
     const std::string cache_url = job->url.to_string();
     const CacheRequest request{job->request->method, cache_url, *job->cache_request_headers,
-                               job->streaming || job->request->streaming_body};
+                               job->streaming || job->request->streaming_body,
+                               request_has_body(*job->request)};
     const CacheLookup lookup = http_cache_->lookup(request);
     if (lookup.state == CacheState::Fresh && lookup.response) {
         job->cached_response = *lookup.response;
@@ -368,7 +393,7 @@ void Engine::prepare_cache(Job* job) {
         job->cache_validation = CacheValidation{
             *lookup.response,
             {},
-            http_cache_->can_serve_stale_if_error(*lookup.response),
+            false,
         };
         add_cache_validator(job, *lookup.response);
     }
@@ -397,6 +422,59 @@ void Engine::on_job_cached(Job* job) {
     deliver_cached(job, *job->cached_response);
 }
 
+bool Engine::queue_cached_job(std::unique_ptr<Job>& job) {
+    if (!job) return false;
+    try {
+        {
+            std::lock_guard<std::mutex> lock(cache_dispatch_mutex_);
+            if (cache_dispatch_stop_) return false;
+            cache_dispatch_jobs_.push_back(std::move(job));
+            if (!cache_dispatch_thread_.joinable()) {
+                try {
+                    cache_dispatch_thread_ = std::thread([this] { run_cached_dispatcher(); });
+                } catch (...) {
+                    job = std::move(cache_dispatch_jobs_.back());
+                    cache_dispatch_jobs_.pop_back();
+                    return false;
+                }
+            }
+        }
+        cache_dispatch_cv_.notify_one();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void Engine::run_cached_dispatcher() {
+    for (;;) {
+        std::unique_ptr<Job> job;
+        {
+            std::unique_lock<std::mutex> lock(cache_dispatch_mutex_);
+            cache_dispatch_cv_.wait(
+                lock, [this] { return cache_dispatch_stop_ || !cache_dispatch_jobs_.empty(); });
+            if (cache_dispatch_stop_) return;
+            job = std::move(cache_dispatch_jobs_.front());
+            cache_dispatch_jobs_.pop_front();
+        }
+        try {
+            on_job_cached(job.get());
+        } catch (...) {
+            on_job_error(job.get(), KATHTTP3_ERR_NOMEM, "cache delivery");
+        }
+    }
+}
+
+void Engine::stop_cached_dispatcher() {
+    {
+        std::lock_guard<std::mutex> lock(cache_dispatch_mutex_);
+        cache_dispatch_stop_ = true;
+        cache_dispatch_jobs_.clear();
+    }
+    cache_dispatch_cv_.notify_all();
+    if (cache_dispatch_thread_.joinable()) cache_dispatch_thread_.join();
+}
+
 void Engine::store_job_response(Job* job) {
     if (!http_cache_ || !job || !job->request || !job->cache_capture ||
         !job->cache_capture->enabled || job->redirected || job->response.status_code != 200)
@@ -405,9 +483,9 @@ void Engine::store_job_response(Job* job) {
     response.url = job->url;
     response.body = std::move(job->cache_capture->body);
     const std::string cache_url = job->url.to_string();
-    const CacheRequest request{job->request->method, cache_url,
-                               original_cache_request_headers(*job),
-                               job->streaming || job->request->streaming_body};
+    const CacheRequest request{
+        job->request->method, cache_url, original_cache_request_headers(*job),
+        job->streaming || job->request->streaming_body, request_has_body(*job->request)};
     (void)http_cache_->store(request, response, job->cache_request_wall_seconds);
 }
 
@@ -487,8 +565,10 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
                 }
                 if (dec.drop_body) {
                     nr->body.clear();
+                    nr->body_present = false;
                 } else {
                     nr->body = job->request->body;
+                    nr->body_present = request_has_body(*job->request);
                 }
                 nr->follow_redirects = 1;
                 nr->streaming = job->request->streaming;
@@ -509,6 +589,21 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
                 njob->cache_request_wall_seconds = wall_clock_seconds();
 
                 prepare_cache(njob.get());
+
+                if (njob->cached_response) {
+                    {
+                        std::lock_guard<std::mutex> lk(mtx_);
+                        auto it = registry_.find(job->id);
+                        if (it != registry_.end()) {
+                            it->second.client = nullptr;
+                            it->second.redirect_count = njob->redirect_count;
+                        }
+                    }
+                    if (!queue_cached_job(njob)) {
+                        dispatch_error(job, KATHTTP3_ERR_NOMEM, "cache dispatcher admission");
+                    }
+                    return;
+                }
 
                 QuicClient* nc = get_or_create_client(new_url);
                 if (!nc) {
@@ -574,7 +669,8 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
     if (http_cache_ && !job->streaming && !job->request->streaming_body) {
         const std::string cache_url = job->url.to_string();
         const CacheRequest request{job->request->method, cache_url,
-                                   original_cache_request_headers(*job), false};
+                                   original_cache_request_headers(*job), false,
+                                   request_has_body(*job->request)};
         if (http_cache_->should_capture(request, status, headers)) {
             job->cache_capture = CacheCapture{true, cache_max_entry_bytes_, {}};
             if (job->declared_content_length >= 0 &&
@@ -629,15 +725,15 @@ void Engine::on_job_complete(Job* job) {
 
     if (job->cache_validation && job->response.status_code == 304) {
         const std::string cache_url = job->url.to_string();
-        const CacheRequest request{job->request->method, cache_url,
-                                   original_cache_request_headers(*job),
-                                   job->streaming || job->request->streaming_body};
+        const CacheRequest request{
+            job->request->method, cache_url, original_cache_request_headers(*job),
+            job->streaming || job->request->streaming_body, request_has_body(*job->request)};
         const auto& validation = *job->cache_validation;
         const auto merged =
             http_cache_->merge_304(validation.stored, request, validation.response_headers,
                                    job->cache_request_wall_seconds);
         if (merged) {
-            deliver_cached(job, *merged);
+            deliver_cached(job, merged->response);
         } else {
             http_cache_->invalidate(cache_url);
             dispatch_error(job, KATHTTP3_ERR_HTTP3, "cache validation failed");
