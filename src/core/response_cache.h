@@ -95,18 +95,21 @@ class ResponseCache {
      * The final store repeats all checks and also validates body size and
      * completion, so this is only an allocation/admission hint. */
     bool should_capture(const CacheRequest& request, int status,
-                       const HeaderList& response_headers) const;
+                        const HeaderList& response_headers) const;
 
     bool store(const CacheRequest& request, const Response& response,
                std::optional<uint64_t> request_wall_seconds = std::nullopt);
 
-    std::optional<CachedResponse> merge_304(const CachedResponse& stored,
-                                             const CacheRequest& request,
-                                             const HeaderList& response_headers,
-                                             std::optional<uint64_t> request_wall_seconds =
-                                                 std::nullopt);
+    std::optional<CachedResponse> merge_304(
+        const CachedResponse& stored, const CacheRequest& request,
+        const HeaderList& response_headers,
+        std::optional<uint64_t> request_wall_seconds = std::nullopt);
 
     bool can_serve_stale_if_error(const CachedResponse& response) const;
+
+    /* Return a delivery copy with an RFC 9111 Age field calculated at the
+     * current monotonic time. The stored entry itself is not mutated. */
+    CachedResponse response_with_current_age(const CachedResponse& response) const;
 
     void invalidate(std::string_view url);
     void clear();
@@ -127,8 +130,7 @@ class ResponseCache {
                                                        std::optional<uint64_t> now_wall_seconds,
                                                        uint64_t now_monotonic_ns) const;
     CacheLookup lookup_locked(const CacheRequest& request, const CacheControl& request_control,
-                              std::optional<uint64_t> now_wall_seconds,
-                              uint64_t now_monotonic_ns);
+                              std::optional<uint64_t> now_wall_seconds, uint64_t now_monotonic_ns);
     void insert_locked(CachedResponse response);
 
     std::shared_ptr<const CacheClock> clock_;
