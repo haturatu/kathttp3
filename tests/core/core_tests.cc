@@ -600,6 +600,8 @@ int main() {
     assert(parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT") == 784111777);
     assert(parse_http_date("Sun Nov  6 08:49:37 1994") == 784111777);
     assert(!parse_http_date("Sun, 06 Nov 1994 08:49:37 PST"));
+    assert(!parse_http_date("Xun, 06 Nov 1994 08:49:37 GMT"));
+    assert(!parse_http_date("Sund, 06-Nov-94 08:49:37 GMT"));
 
     auto cache_clock = std::make_shared<FakeCacheClock>();
     ResponseCache response_cache(
@@ -719,6 +721,57 @@ int main() {
         response_cache.store(authorized_request, cache_response);
     assert(!stored_authorized_response);
 
+    const CacheRequest lowercase_method_request{"get", "https://cache.example/item",
+                                                cache_request_headers, false};
+    const CacheLookup lowercase_method_hit = response_cache.lookup(lowercase_method_request);
+    assert(lowercase_method_hit.state == CacheState::Miss);
+    const bool stored_lowercase_method =
+        response_cache.store(lowercase_method_request, cache_response);
+    assert(!stored_lowercase_method);
+
+    constexpr std::array<const char*, 5> kConditionalHeaders = {
+        "if-none-match", "if-modified-since", "if-match", "if-unmodified-since", "if-range",
+    };
+    for (const char* name : kConditionalHeaders) {
+        HeaderList conditional_headers;
+        conditional_headers.add(name, "\"caller-validator\"");
+        const CacheRequest conditional_request{"GET", "https://cache.example/item",
+                                               conditional_headers, false};
+        const CacheLookup conditional_hit = response_cache.lookup(conditional_request);
+        assert(conditional_hit.state == CacheState::Miss);
+        const bool stored_conditional = response_cache.store(conditional_request, cache_response);
+        assert(!stored_conditional);
+    }
+
+    auto no_cache_clock = std::make_shared<FakeCacheClock>();
+    ResponseCache no_cache_cache(
+        ResponseCacheConfig{.max_entries = 4, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        no_cache_clock);
+    Response no_cache_response;
+    no_cache_response.status_code = 200;
+    no_cache_response.headers.add("cache-control", "no-cache, max-age=60");
+    no_cache_response.headers.add("etag", "\"no-cache-v1\"");
+    no_cache_response.body = {11};
+    const CacheRequest no_cache_request{"GET", "https://cache.example/no-cache",
+                                        cache_request_headers, false};
+    assert(no_cache_cache.should_capture(no_cache_request, 200, no_cache_response.headers));
+    const bool stored_no_cache = no_cache_cache.store(no_cache_request, no_cache_response);
+    assert(stored_no_cache);
+    const CacheLookup no_cache_hit = no_cache_cache.lookup(no_cache_request);
+    assert(no_cache_hit.state == CacheState::NeedsValidation && no_cache_hit.response &&
+           no_cache_hit.response->requires_revalidation);
+
+    Response no_cache_without_validator = no_cache_response;
+    no_cache_without_validator.headers.clear();
+    no_cache_without_validator.headers.add("cache-control", "no-cache, max-age=60");
+    const CacheRequest no_cache_without_validator_request{
+        "GET", "https://cache.example/no-cache-without-validator", cache_request_headers, false};
+    assert(!no_cache_cache.should_capture(no_cache_without_validator_request, 200,
+                                          no_cache_without_validator.headers));
+    const bool stored_no_cache_without_validator =
+        no_cache_cache.store(no_cache_without_validator_request, no_cache_without_validator);
+    assert(!stored_no_cache_without_validator);
+
     HeaderList stale_error_headers;
     stale_error_headers.add("cache-control", "max-age=1, stale-if-error=5");
     Response stale_error_response;
@@ -759,12 +812,22 @@ int main() {
     HeaderList not_modified_headers;
     not_modified_headers.add("cache-control", "max-age=60");
     not_modified_headers.add("etag", "\"v2\"");
-    const auto merged = revalidation_cache.merge_304(*stale_for_validation.response,
-                                                     revalidation_request, not_modified_headers);
+    const auto mismatched = revalidation_cache.merge_304(
+        *stale_for_validation.response, revalidation_request, not_modified_headers);
+    assert(!mismatched);
+    const auto still_stale = revalidation_cache.lookup(revalidation_request);
+    assert(still_stale.state == CacheState::NeedsValidation && still_stale.response &&
+           still_stale.response->etag && *still_stale.response->etag == "\"v1\"");
+
+    HeaderList matching_not_modified_headers;
+    matching_not_modified_headers.add("cache-control", "max-age=60");
+    matching_not_modified_headers.add("etag", "\"v1\"");
+    const auto merged = revalidation_cache.merge_304(
+        *stale_for_validation.response, revalidation_request, matching_not_modified_headers);
     assert(merged && merged->status_code == 200 && merged->body == revalidation_response.body);
     const auto refreshed = revalidation_cache.lookup(revalidation_request);
     assert(refreshed.state == CacheState::Fresh && refreshed.response);
-    assert(refreshed.response->etag && *refreshed.response->etag == "\"v2\"");
+    assert(refreshed.response->etag && *refreshed.response->etag == "\"v1\"");
 
     ResponseCache lru_cache(
         ResponseCacheConfig{.max_entries = 1, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},

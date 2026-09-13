@@ -227,4 +227,10 @@ if(KATHTTP3_BUILD_TESTS AND NOT ANDROID)
   # HTTP/3 backend at test-link time.
   add_library(kathttp3_c_abi_header_test OBJECT tests/core/c_abi_header_test.c)
   target_include_directories(kathttp3_c_abi_header_test PRIVATE src/core)
+  if(NOT KATHTTP3_ANALYSIS_ONLY)
+    add_executable(kathttp3_c_abi_tests
+                   $<TARGET_OBJECTS:kathttp3_c_abi_header_test>)
+    target_link_libraries(kathttp3_c_abi_tests PRIVATE kathttp3 pthread)
+    add_test(NAME kathttp3_c_abi_tests COMMAND kathttp3_c_abi_tests)
+  endif()
 endif()

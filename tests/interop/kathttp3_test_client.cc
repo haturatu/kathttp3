@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     kathttp3_client_options options;
-    kathttp3_client_options_init(&options);
+    kathttp3_client_options_init_size(&options, sizeof(options));
     options.trust_mode = KATHTTP3_TRUST_CUSTOM_CA;
     options.ca_cert_file = ca_cert.c_str();
     options.connect_timeout_ms = 5000;
