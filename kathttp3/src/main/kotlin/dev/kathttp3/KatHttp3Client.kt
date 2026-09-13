@@ -45,6 +45,8 @@ class KatHttp3Client(private val config: KatHttp3ClientConfig = KatHttp3ClientCo
         config.qlogEnabled, config.qlogEnabled &&
             (config.qlogPathPrefix == null || config.qlogLogcatEnabled), config.caCertificateFile,
         config.qlogPathPrefix, config.maxConnectionWorkers, config.networkChangePolicy.ordinal,
+        config.enableHttpCache, config.httpCacheMaxEntries, config.httpCacheMaxBytes,
+        config.httpCacheMaxEntryBytes,
         config.resolver,
     ).also { check(it != 0L) }
     private val networkMonitor = applicationContext?.let {

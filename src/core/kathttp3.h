@@ -143,6 +143,12 @@ typedef struct kathttp3_client_options {
     /* Bounds origin-owned QUIC workers. Zero selects the safe default (32). */
     uint32_t max_connection_workers;
     uint32_t network_change_policy; /* kathttp3_network_change_policy */
+    /* Native private HTTP cache. Disabled by default to preserve existing
+     * request semantics; zero limits select the documented defaults. */
+    uint8_t enable_http_cache;
+    uint32_t http_cache_max_entries;
+    uint64_t http_cache_max_bytes;
+    uint64_t http_cache_max_entry_bytes;
 } kathttp3_client_options;
 
 /* Stable name for new C callers. `kathttp3_client_options` remains source
