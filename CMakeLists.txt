@@ -100,11 +100,19 @@ if(KATHTTP3_BUILD_FUZZERS)
   target_include_directories(kathttp3_fuzz_request_body_framing PRIVATE src/core)
   target_compile_options(kathttp3_fuzz_request_body_framing PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
   target_link_options(kathttp3_fuzz_request_body_framing PRIVATE -fsanitize=fuzzer,address,undefined)
+
+  add_executable(kathttp3_fuzz_cache_parsers
+    tests/fuzz/fuzz_cache_parsers.cc src/core/cache_control.cc src/core/http_date.cc
+    src/core/header_list.cc)
+  target_include_directories(kathttp3_fuzz_cache_parsers PRIVATE src/core)
+  target_compile_options(kathttp3_fuzz_cache_parsers PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+  target_link_options(kathttp3_fuzz_cache_parsers PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
 set(KATHTTP3_CORE_SOURCES
-  src/core/cookie_jar.cc src/core/dns.cc
+  src/core/cache_control.cc src/core/cookie_jar.cc src/core/dns.cc
   src/core/engine.cc src/core/header_list.cc src/core/http3_session.cc
+  src/core/http_date.cc src/core/response_cache.cc
   src/core/quic_client.cc src/core/redirect.cc src/core/request.cc
   src/core/tls.cc src/core/cert_verifier.cc
   src/core/udp_socket.cc src/core/url.cc)
@@ -198,6 +206,7 @@ endif()
 if(KATHTTP3_BUILD_TESTS AND NOT ANDROID)
   enable_testing()
   add_executable(kathttp3_core_tests tests/core/core_tests.cc
+    src/core/cache_control.cc src/core/http_date.cc src/core/response_cache.cc
     src/core/url.cc src/core/header_list.cc src/core/redirect.cc
     src/core/cookie_jar.cc src/core/dns.cc src/core/request.cc
     src/core/udp_socket.cc)
