@@ -565,6 +565,10 @@ int main() {
            (std::numeric_limits<uint64_t>::max() / 1'000'000ULL) * 1'000'000ULL);
     assert(milliseconds_to_ns_saturated(std::numeric_limits<uint64_t>::max() / 1'000'000ULL + 1) ==
            std::numeric_limits<uint64_t>::max());
+    const auto deadline_before = std::chrono::steady_clock::now();
+    assert(steady_deadline_after_ms(1) >= deadline_before);
+    assert(steady_deadline_after_ms(std::numeric_limits<uint64_t>::max()) ==
+           std::chrono::steady_clock::time_point::max());
 
     // Cache-Control directives are parsed as fields and tokens, not as
     // substrings. Numeric overflow saturates while malformed numerals fail.
@@ -575,11 +579,15 @@ int main() {
     assert(parsed_cache_control.max_age && *parsed_cache_control.max_age == 60);
     assert(parsed_cache_control.is_private && parsed_cache_control.no_cache &&
            parsed_cache_control.must_revalidate);
+    HeaderList quoted_unknown;
+    quoted_unknown.add("cache-control", "x=\"no-store\", max-age=60");
+    assert(!parse_cache_control(quoted_unknown).no_store);
     assert(!parse_delta_seconds("-1"));
     assert(!parse_delta_seconds("123abc"));
     assert(!parse_delta_seconds(""));
     assert(parse_delta_seconds("184467440737095516160") ==
            std::numeric_limits<uint64_t>::max());
+    assert(!parse_delta_seconds("184467440737095516160garbage"));
     HeaderList conflicting_cache_control;
     conflicting_cache_control.add("cache-control", "max-age=60");
     conflicting_cache_control.add("cache-control", "Max-Age=120");
@@ -616,6 +624,11 @@ int main() {
     cache_hit = response_cache.lookup(cache_request);
     assert(cache_hit.state == CacheState::NeedsValidation && cache_hit.response);
     assert(response_cache.can_serve_stale_if_error(*cache_hit.response) == false);
+    HeaderList request_revalidate_headers;
+    request_revalidate_headers.add("cache-control", "max-age=0");
+    const CacheRequest request_revalidate{"GET", "https://cache.example/item",
+                                         request_revalidate_headers, false};
+    assert(response_cache.lookup(request_revalidate).state == CacheState::NeedsValidation);
 
     Response zero_age_response;
     zero_age_response.status_code = 200;
@@ -625,6 +638,47 @@ int main() {
                                         false};
     assert(response_cache.store(zero_age_request, zero_age_response));
     assert(response_cache.lookup(zero_age_request).state == CacheState::NeedsValidation);
+
+    Response date_age_response;
+    date_age_response.status_code = 200;
+    date_age_response.headers.add("cache-control", "max-age=60");
+    date_age_response.headers.add("date", "Thu, 01 Jan 1970 00:16:30 GMT");
+    date_age_response.headers.add("age", "5");
+    date_age_response.body = {6};
+    const CacheRequest date_age_request{"GET", "https://cache.example/date-age",
+                                       cache_request_headers, false};
+    assert(response_cache.store(date_age_request, date_age_response));
+    const auto date_age_hit = response_cache.lookup(date_age_request);
+    assert(date_age_hit.state == CacheState::Fresh && date_age_hit.response);
+    assert(date_age_hit.response->headers.get("age") == "10");
+
+    Response expires_response;
+    expires_response.status_code = 200;
+    expires_response.headers.add("date", "Thu, 01 Jan 1970 00:16:40 GMT");
+    expires_response.headers.add("expires", "Thu, 01 Jan 1970 00:17:40 GMT");
+    expires_response.body = {10};
+    const CacheRequest expires_request{"GET", "https://cache.example/expires",
+                                       cache_request_headers, false};
+    assert(response_cache.store(expires_request, expires_response));
+    assert(response_cache.lookup(expires_request).state == CacheState::Fresh);
+
+    HeaderList star_vary_headers;
+    star_vary_headers.add("cache-control", "max-age=60");
+    star_vary_headers.add("vary", "*");
+    Response star_vary_response;
+    star_vary_response.status_code = 200;
+    star_vary_response.headers = star_vary_headers;
+    star_vary_response.body = {5};
+    const CacheRequest star_vary_request{"GET", "https://cache.example/star",
+                                         cache_request_headers, false};
+    assert(!response_cache.store(star_vary_request, star_vary_response));
+    Response invalid_vary_response = star_vary_response;
+    invalid_vary_response.headers.clear();
+    invalid_vary_response.headers.add("cache-control", "max-age=60");
+    invalid_vary_response.headers.add("vary", "accept encoding");
+    const CacheRequest invalid_vary_request{"GET", "https://cache.example/invalid-vary",
+                                            cache_request_headers, false};
+    assert(!response_cache.store(invalid_vary_request, invalid_vary_response));
 
     HeaderList gzip_request_headers;
     gzip_request_headers.add("accept-encoding", "gzip");
@@ -665,9 +719,62 @@ int main() {
     response_cache.invalidate(stale_error_request.url);
     assert(response_cache.lookup(stale_error_request).state == CacheState::Miss);
 
+    auto revalidation_clock = std::make_shared<FakeCacheClock>();
+    ResponseCache revalidation_cache(
+        ResponseCacheConfig{.max_entries = 4, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        revalidation_clock);
+    Response revalidation_response;
+    revalidation_response.status_code = 200;
+    revalidation_response.headers.add("cache-control", "max-age=0");
+    revalidation_response.headers.add("etag", "\"v1\"");
+    revalidation_response.body = {8, 9};
+    const CacheRequest revalidation_request{"GET", "https://cache.example/revalidate",
+                                            cache_request_headers, false};
+    assert(revalidation_cache.store(revalidation_request, revalidation_response));
+    const auto stale_for_validation = revalidation_cache.lookup(revalidation_request);
+    assert(stale_for_validation.state == CacheState::NeedsValidation &&
+           stale_for_validation.response && stale_for_validation.response->etag);
+    HeaderList not_modified_headers;
+    not_modified_headers.add("cache-control", "max-age=60");
+    not_modified_headers.add("etag", "\"v2\"");
+    const auto merged = revalidation_cache.merge_304(
+        *stale_for_validation.response, revalidation_request, not_modified_headers);
+    assert(merged && merged->status_code == 200 && merged->body == revalidation_response.body);
+    const auto refreshed = revalidation_cache.lookup(revalidation_request);
+    assert(refreshed.state == CacheState::Fresh && refreshed.response);
+    assert(refreshed.response->etag && *refreshed.response->etag == "\"v2\"");
+
+    ResponseCache lru_cache(
+        ResponseCacheConfig{.max_entries = 1, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        revalidation_clock);
+    Response lru_response = cache_response;
+    const CacheRequest lru_a{"GET", "https://cache.example/lru-a", cache_request_headers,
+                             false};
+    const CacheRequest lru_b{"GET", "https://cache.example/lru-b", cache_request_headers,
+                             false};
+    assert(lru_cache.store(lru_a, lru_response));
+    assert(lru_cache.store(lru_b, lru_response));
+    assert(lru_cache.lookup(lru_a).state == CacheState::Miss);
+    assert(lru_cache.lookup(lru_b).state == CacheState::Fresh);
+
+    auto clock_failure_cache = std::make_shared<ResponseCache>(
+        ResponseCacheConfig{.max_entries = 2, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        cache_clock);
+    assert(clock_failure_cache->store(cache_request, cache_response));
     cache_clock->wall_available = false;
-    assert(!response_cache.store(cache_request, cache_response));
+    assert(!clock_failure_cache->store(cache_request, cache_response));
+    assert(clock_failure_cache->lookup(cache_request).state == CacheState::NeedsValidation);
     cache_clock->wall_available = true;
+
+    Response must_revalidate_response = stale_error_response;
+    must_revalidate_response.headers.add("cache-control", "must-revalidate");
+    const CacheRequest must_revalidate_request{"GET", "https://cache.example/must-revalidate",
+                                               cache_request_headers, false};
+    assert(response_cache.store(must_revalidate_request, must_revalidate_response));
+    cache_clock->monotonic += 3'000'000'000ULL;
+    const auto must_revalidate_lookup = response_cache.lookup(must_revalidate_request);
+    assert(must_revalidate_lookup.response &&
+           !response_cache.can_serve_stale_if_error(*must_revalidate_lookup.response));
 
     size_t body_remaining = 0;
     const bool has_remaining_body = request_body_remaining(10, 4, &body_remaining);
