@@ -455,23 +455,27 @@ bool ResponseCache::should_capture(const CacheRequest& request, int status,
     return has_freshness || (control.no_cache && has_validator);
 }
 
-void ResponseCache::insert_locked(CachedResponse response) {
+std::optional<uint64_t> ResponseCache::insert_locked(CachedResponse response) {
     for (auto it = entries_.begin(); it != entries_.end(); ++it) {
         if (!same_variant(*it, response)) continue;
-        if (more_recent(*it, response)) return;
+        if (more_recent(*it, response)) return std::nullopt;
         total_bytes_ -= std::min(total_bytes_, it->accounted_bytes);
         entries_.erase(it);
         break;
     }
     if (next_entry_id_ == 0) next_entry_id_ = 1;
     response.entry_id = next_entry_id_++;
+    const uint64_t inserted_id = response.entry_id;
     total_bytes_ = saturating_size_add(total_bytes_, response.accounted_bytes);
     entries_.push_front(std::move(response));
+    bool retained = true;
     while (entries_.size() > max_entries_ || total_bytes_ > max_bytes_) {
         auto last = std::prev(entries_.end());
+        if (last->entry_id == inserted_id) retained = false;
         total_bytes_ -= std::min(total_bytes_, last->accounted_bytes);
         entries_.pop_back();
     }
+    return retained ? std::optional<uint64_t>(inserted_id) : std::nullopt;
 }
 
 bool ResponseCache::store(const CacheRequest& request, const Response& response,
@@ -491,8 +495,10 @@ CacheLookup ResponseCache::lookup_locked(const CacheRequest& request,
                                          std::optional<uint64_t> now_wall_seconds,
                                          uint64_t now_monotonic_ns) {
     auto best = entries_.end();
+    std::vector<uint64_t> validation_candidate_ids;
     for (auto it = entries_.begin(); it != entries_.end(); ++it) {
         if (it->url != request.url || !vary_matches(*it, request.headers)) continue;
+        validation_candidate_ids.push_back(it->entry_id);
         if (best == entries_.end() || more_recent(*it, *best)) best = it;
     }
     if (best == entries_.end()) return {};
@@ -506,9 +512,9 @@ CacheLookup ResponseCache::lookup_locked(const CacheRequest& request,
     const bool clock_unavailable = !now_wall_seconds || now_monotonic_ns == 0;
     if (!clock_unavailable && !response.requires_revalidation && !request_control.no_cache &&
         !request_age_exceeded && age < response.freshness_lifetime_seconds) {
-        return {CacheState::Fresh, std::move(response)};
+        return {CacheState::Fresh, std::move(response), {}};
     }
-    return {CacheState::NeedsValidation, std::move(response)};
+    return {CacheState::NeedsValidation, std::move(response), std::move(validation_candidate_ids)};
 }
 
 CacheLookup ResponseCache::lookup(const CacheRequest& request) {
@@ -521,8 +527,11 @@ CacheLookup ResponseCache::lookup(const CacheRequest& request) {
 
 std::optional<RevalidationResult> ResponseCache::merge_304(
     const CachedResponse& stored, const CacheRequest& request, const HeaderList& response_headers,
-    std::optional<uint64_t> request_wall_seconds) {
+    std::optional<uint64_t> request_wall_seconds,
+    const std::vector<uint64_t>& validation_candidate_ids) {
     if (stored.url != request.url || !vary_matches(stored, request.headers)) return std::nullopt;
+    std::vector<uint64_t> candidate_ids = validation_candidate_ids;
+    if (candidate_ids.empty()) candidate_ids.push_back(stored.entry_id);
     const bool response_has_etag = has_header(response_headers, "etag");
     const bool response_has_last_modified = has_header(response_headers, "last-modified");
     const std::string_view response_etag = response_headers.get("etag");
@@ -549,27 +558,77 @@ std::optional<RevalidationResult> ResponseCache::merge_304(
     const auto delivery = make_cached_response(request, merged, request_wall_seconds,
                                                now_wall_seconds, now_monotonic_ns, false);
     if (!delivery) return std::nullopt;
-    std::optional<CachedResponse> refreshed;
-    if (now_wall_seconds && now_monotonic_ns != 0) {
-        refreshed = make_cached_response(request, merged, request_wall_seconds, now_wall_seconds,
-                                         now_monotonic_ns);
-    }
+
+    struct RefreshCandidate {
+        uint64_t replaced_entry_id = 0;
+        CachedResponse response;
+    };
+    std::vector<RefreshCandidate> refresh_candidates;
+    std::vector<uint64_t> entries_to_remove;
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto current = std::find_if(entries_.begin(), entries_.end(), [&](const auto& entry) {
-        return entry.entry_id == stored.entry_id;
-    });
-    if (current == entries_.end()) {
-        /* A newer response replaced the entry while this validation was in
-         * flight. Deliver this request's validated representation, but never
-         * let the delayed 304 alter the newer cache entry. */
-        return RevalidationResult{*delivery, std::nullopt};
+
+    const auto is_candidate = [&](uint64_t entry_id) {
+        return std::find(candidate_ids.begin(), candidate_ids.end(), entry_id) !=
+               candidate_ids.end();
+    };
+    const auto validator_matches = [&](const CachedResponse& current) {
+        if (response_has_etag) {
+            return current.etag && entity_tag_selects_stored(*current.etag, response_etag);
+        }
+        if (response_has_last_modified) {
+            return current.last_modified && *current.last_modified == response_last_modified;
+        }
+        return !current.etag && !current.last_modified;
+    };
+
+    for (const auto& current : entries_) {
+        if (!is_candidate(current.entry_id) || !validator_matches(current)) continue;
+        entries_to_remove.push_back(current.entry_id);
+
+        Response current_merged;
+        current_merged.status_code = current.status_code;
+        current_merged.headers =
+            merge_headers(headers_for_revalidation(current.headers), validation_headers);
+        current_merged.body = current.body;
+        if (now_wall_seconds && now_monotonic_ns != 0) {
+            const auto refreshed = make_cached_response(
+                request, current_merged, request_wall_seconds, now_wall_seconds, now_monotonic_ns);
+            if (refreshed) {
+                refresh_candidates.push_back({current.entry_id, *refreshed});
+            }
+        }
     }
-    total_bytes_ -= std::min(total_bytes_, current->accounted_bytes);
-    entries_.erase(current);
-    if (refreshed) {
-        insert_locked(*refreshed);
+
+    for (auto it = entries_.begin(); it != entries_.end();) {
+        if (std::find(entries_to_remove.begin(), entries_to_remove.end(), it->entry_id) ==
+            entries_to_remove.end()) {
+            ++it;
+            continue;
+        }
+        total_bytes_ -= std::min(total_bytes_, it->accounted_bytes);
+        it = entries_.erase(it);
     }
-    return RevalidationResult{*delivery, std::move(refreshed)};
+
+    std::optional<CachedResponse> retained_selected;
+    for (auto& candidate : refresh_candidates) {
+        const bool conflicts_with_new_entry =
+            std::any_of(entries_.begin(), entries_.end(), [&](const auto& current) {
+                const bool is_being_replaced =
+                    std::find(entries_to_remove.begin(), entries_to_remove.end(),
+                              current.entry_id) != entries_to_remove.end();
+                return !is_being_replaced && same_variant(current, candidate.response);
+            });
+        if (conflicts_with_new_entry) continue;
+
+        const auto inserted_id = insert_locked(candidate.response);
+        if (inserted_id && candidate.replaced_entry_id == stored.entry_id) {
+            const auto inserted = std::find_if(
+                entries_.begin(), entries_.end(),
+                [inserted_id](const auto& entry) { return entry.entry_id == *inserted_id; });
+            if (inserted != entries_.end()) retained_selected = *inserted;
+        }
+    }
+    return RevalidationResult{*delivery, std::move(retained_selected)};
 }
 
 bool ResponseCache::can_serve_stale_if_error(const CachedResponse& response) const {

@@ -59,6 +59,7 @@ struct CacheCapture {
 
 struct CacheValidation {
     CachedResponse stored;
+    std::vector<uint64_t> candidate_entry_ids;
     HeaderList response_headers;
     bool serve_stale_on_error = false;
 };

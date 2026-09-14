@@ -311,12 +311,12 @@ int Engine::append_request_body(int64_t request_id, const uint8_t* data, size_t 
 }
 
 void Engine::cancel(int64_t request_id) {
-    std::lock_guard<std::recursive_mutex> callback_lock(callback_mutex_);
+    std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    std::unique_lock<std::recursive_mutex> callback_lock(callback_mutex_);
     QuicClient* c = nullptr;
     kathttp3_event_callback cb = nullptr;
     void* ud = nullptr;
     {
-        std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
         std::lock_guard<std::mutex> lk(mtx_);
         auto it = registry_.find(request_id);
         if (it == registry_.end()) return;
@@ -329,6 +329,10 @@ void Engine::cancel(int64_t request_id) {
         registry_.erase(it);
         if (c) c->cancel_job(request_id);
     }
+    /* Do not hold lifecycle_mutex_ while user code runs. The callback lock
+     * remains held until the cancellation event returns, preserving event
+     * serialization while allowing destroy() to finish its worker joins. */
+    lifecycle_lock.unlock();
     kathttp3_event ev{};
     ev.type = KATHTTP3_EVENT_ERROR;
     ev.request_id = request_id;
@@ -392,6 +396,7 @@ void Engine::prepare_cache(Job* job) {
     if (lookup.state == CacheState::NeedsValidation && lookup.response) {
         job->cache_validation = CacheValidation{
             *lookup.response,
+            lookup.validation_candidate_ids,
             {},
             false,
         };
@@ -475,6 +480,17 @@ void Engine::stop_cached_dispatcher() {
     if (cache_dispatch_thread_.joinable()) cache_dispatch_thread_.join();
 }
 
+void Engine::invalidate_cache_validation(Job* job) {
+    if (!http_cache_ || !job || !job->cache_validation) return;
+    const auto& validation = *job->cache_validation;
+    if (validation.candidate_entry_ids.empty()) {
+        http_cache_->invalidate_entry(validation.stored.entry_id);
+        return;
+    }
+    for (const uint64_t entry_id : validation.candidate_entry_ids)
+        http_cache_->invalidate_entry(entry_id);
+}
+
 void Engine::store_job_response(Job* job) {
     if (!http_cache_ || !job || !job->request || !job->cache_capture ||
         !job->cache_capture->enabled || job->redirected || job->response.status_code != 200)
@@ -528,6 +544,13 @@ void Engine::on_job_headers(Job* job, int status, const HeaderList& headers) {
     job->response.status_code = status;
     job->response.headers = headers;
     job->response.url = job->url;
+    if (job->cache_validation && status >= 200 && status < 500 && status != 304) {
+        /* A full response did not validate the stored representation. Remove
+         * every candidate from the lookup snapshot before redirects or the
+         * normal response path can make the old entry visible again. */
+        invalidate_cache_validation(job);
+        job->cache_validation.reset();
+    }
     // Redirect handling (RFC 9114 allows 3xx to be followed).
     if (status / 100 == 3 && status != 304 && job->request->follow_redirects) {
         Response tmp;
@@ -701,6 +724,10 @@ void Engine::on_job_body(Job* job, const uint8_t* data, size_t len) {
 
 void Engine::on_job_complete(Job* job) {
     if (job->redirected) return;  // intermediate redirect hop
+    if (job->cache_validation && job->cache_validation->serve_stale_on_error) {
+        deliver_cached(job, job->cache_validation->stored);
+        return;
+    }
     if (job->declared_content_length >= 0) {
         int st = job->response.status_code;
         bool exempt = (job->request->method == "HEAD") || st == 204 || st == 304 || (st / 100 == 1);
@@ -718,11 +745,6 @@ void Engine::on_job_complete(Job* job) {
             return;
         }
     }
-    if (job->cache_validation && job->cache_validation->serve_stale_on_error) {
-        deliver_cached(job, job->cache_validation->stored);
-        return;
-    }
-
     if (job->cache_validation && job->response.status_code == 304) {
         const std::string cache_url = job->url.to_string();
         const CacheRequest request{
@@ -731,11 +753,11 @@ void Engine::on_job_complete(Job* job) {
         const auto& validation = *job->cache_validation;
         const auto merged =
             http_cache_->merge_304(validation.stored, request, validation.response_headers,
-                                   job->cache_request_wall_seconds);
+                                   job->cache_request_wall_seconds, validation.candidate_entry_ids);
         if (merged) {
             deliver_cached(job, merged->delivery);
         } else {
-            http_cache_->invalidate_entry(validation.stored.entry_id);
+            invalidate_cache_validation(job);
             dispatch_error(job, KATHTTP3_ERR_HTTP3, "cache validation failed");
         }
         return;

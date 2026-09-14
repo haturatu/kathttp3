@@ -82,6 +82,10 @@ enum class CacheState {
 struct CacheLookup {
     CacheState state = CacheState::Miss;
     std::optional<CachedResponse> response;
+    /* Every representation that matched the request when validation began.
+     * A strong 304 can update all of these initial candidates, but never an
+     * entry inserted after this snapshot. */
+    std::vector<uint64_t> validation_candidate_ids;
 };
 
 struct RevalidationResult {
@@ -117,7 +121,8 @@ class ResponseCache {
     std::optional<RevalidationResult> merge_304(
         const CachedResponse& stored, const CacheRequest& request,
         const HeaderList& response_headers,
-        std::optional<uint64_t> request_wall_seconds = std::nullopt);
+        std::optional<uint64_t> request_wall_seconds = std::nullopt,
+        const std::vector<uint64_t>& validation_candidate_ids = {});
 
     bool can_serve_stale_if_error(const CachedResponse& response) const;
 
@@ -147,7 +152,7 @@ class ResponseCache {
                                                        bool require_cacheable = true) const;
     CacheLookup lookup_locked(const CacheRequest& request, const CacheControl& request_control,
                               std::optional<uint64_t> now_wall_seconds, uint64_t now_monotonic_ns);
-    void insert_locked(CachedResponse response);
+    std::optional<uint64_t> insert_locked(CachedResponse response);
 
     std::shared_ptr<const CacheClock> clock_;
     size_t max_entries_;

@@ -25,6 +25,7 @@ struct kathttp3_request;
 namespace kathttp3 {
 
 class QuicClient;
+class EngineTestAccess;
 
 /* Owns the connection pool, the per-request registry, the TLS context
  * and the cookie jar. Implements the kathttp3_client C ABI surface. */
@@ -55,6 +56,8 @@ class Engine {
     void on_job_cached(Job* job);
 
    private:
+    friend class EngineTestAccess;
+
     std::mutex lifecycle_mutex_;
     std::recursive_mutex callback_mutex_;
     struct ReqEntry {
@@ -80,6 +83,7 @@ class Engine {
     void run_cached_dispatcher();
     void stop_cached_dispatcher();
     void store_job_response(Job* job);
+    void invalidate_cache_validation(Job* job);
     void invalidate_after_unsafe_request(Job* job, const HeaderList& headers);
     void deliver(const kathttp3_event& ev);
 
