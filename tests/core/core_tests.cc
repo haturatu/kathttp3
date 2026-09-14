@@ -953,6 +953,51 @@ int main() {
     const CacheLookup changed_vary_probe_hit = revalidation_cache.lookup(changed_vary_probe);
     assert(changed_vary_probe_hit.state == CacheState::Miss);
 
+    auto multi_candidate_clock = std::make_shared<FakeCacheClock>();
+    ResponseCache multi_candidate_cache(
+        ResponseCacheConfig{.max_entries = 8, .max_bytes = 1 << 20, .max_entry_bytes = 1 << 16},
+        multi_candidate_clock);
+    HeaderList multi_candidate_request_headers;
+    multi_candidate_request_headers.add("accept-encoding", "gzip");
+    multi_candidate_request_headers.add("accept-language", "en");
+    const CacheRequest multi_candidate_request{"GET", "https://cache.example/revalidate-candidates",
+                                               multi_candidate_request_headers, false};
+    Response multi_candidate_encoding;
+    multi_candidate_encoding.status_code = 200;
+    multi_candidate_encoding.headers.add("cache-control", "max-age=0");
+    multi_candidate_encoding.headers.add("date", "Thu, 01 Jan 1970 00:16:40 GMT");
+    multi_candidate_encoding.headers.add("vary", "accept-encoding");
+    multi_candidate_encoding.headers.add("etag", "\"candidate-v1\"");
+    multi_candidate_encoding.body = {27};
+    Response multi_candidate_language = multi_candidate_encoding;
+    multi_candidate_language.headers.clear();
+    multi_candidate_language.headers.add("cache-control", "max-age=0");
+    multi_candidate_language.headers.add("date", "Thu, 01 Jan 1970 00:16:41 GMT");
+    multi_candidate_language.headers.add("vary", "accept-language");
+    multi_candidate_language.headers.add("etag", "\"candidate-v1\"");
+    multi_candidate_language.body = {28};
+    const bool stored_multi_encoding =
+        multi_candidate_cache.store(multi_candidate_request, multi_candidate_encoding);
+    const bool stored_multi_language =
+        multi_candidate_cache.store(multi_candidate_request, multi_candidate_language);
+    assert(stored_multi_encoding && stored_multi_language);
+    const CacheLookup multi_candidate_stale = multi_candidate_cache.lookup(multi_candidate_request);
+    assert(multi_candidate_stale.state == CacheState::NeedsValidation &&
+           multi_candidate_stale.response &&
+           multi_candidate_stale.validation_candidate_ids.size() == 2);
+    HeaderList multi_candidate_not_modified_headers;
+    multi_candidate_not_modified_headers.add("cache-control", "no-store");
+    multi_candidate_not_modified_headers.add("etag", "\"candidate-v1\"");
+    const auto multi_candidate_merge =
+        multi_candidate_cache.merge_304(*multi_candidate_stale.response, multi_candidate_request,
+                                        multi_candidate_not_modified_headers, std::nullopt,
+                                        multi_candidate_stale.validation_candidate_ids);
+    assert(multi_candidate_merge && !multi_candidate_merge->retention_candidate &&
+           multi_candidate_merge->delivery.body == multi_candidate_language.body);
+    const CacheLookup multi_candidate_after_merge =
+        multi_candidate_cache.lookup(multi_candidate_request);
+    assert(multi_candidate_after_merge.state == CacheState::Miss);
+
     const CacheRequest last_modified_request{
         "GET", "https://cache.example/revalidate-last-modified", cache_request_headers, false};
     Response last_modified_response;
@@ -1055,7 +1100,8 @@ int main() {
     delayed_race_not_modified_headers.add("cache-control", "max-age=60");
     delayed_race_not_modified_headers.add("etag", "\"race-v1\"");
     const auto delayed_race_merge = revalidation_race_cache.merge_304(
-        *stale_race.response, race_request, delayed_race_not_modified_headers);
+        *stale_race.response, race_request, delayed_race_not_modified_headers, std::nullopt,
+        stale_race.validation_candidate_ids);
     assert(delayed_race_merge && !delayed_race_merge->retention_candidate &&
            delayed_race_merge->delivery.body == race_v1.body);
     const auto race_hit = revalidation_race_cache.lookup(race_request);
@@ -1092,7 +1138,8 @@ int main() {
     HeaderList failed_validation_headers;
     failed_validation_headers.add("etag", "\"unexpected\"");
     const auto failed_validation = validation_failure_cache.merge_304(
-        *stale_validation_failure.response, validation_failure_request, failed_validation_headers);
+        *stale_validation_failure.response, validation_failure_request, failed_validation_headers,
+        std::nullopt, stale_validation_failure.validation_candidate_ids);
     assert(!failed_validation);
     const bool removed_old_validation =
         validation_failure_cache.invalidate_entry(stale_validation_failure.response->entry_id);

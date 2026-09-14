@@ -231,6 +231,50 @@ if(KATHTTP3_BUILD_TESTS AND NOT ANDROID)
     add_executable(kathttp3_c_abi_tests
                    $<TARGET_OBJECTS:kathttp3_c_abi_header_test>)
     target_link_libraries(kathttp3_c_abi_tests PRIVATE kathttp3 pthread)
+    if(KATHTTP3_SANITIZE)
+      target_link_options(kathttp3_c_abi_tests PRIVATE
+        -fsanitize=address,undefined)
+    endif()
+    if(KATHTTP3_THREAD_SANITIZE)
+      target_link_options(kathttp3_c_abi_tests PRIVATE -fsanitize=thread)
+    endif()
     add_test(NAME kathttp3_c_abi_tests COMMAND kathttp3_c_abi_tests)
+
+    # Engine's C++ symbols intentionally remain hidden from the shared-library
+    # ABI. Build this boundary test with the production sources directly so it
+    # can exercise private lifecycle/cache state through EngineTestAccess
+    # without exporting implementation details.
+    add_executable(kathttp3_engine_cache_tests tests/core/engine_cache_tests.cc
+      ${KATHTTP3_CORE_SOURCES})
+    target_include_directories(kathttp3_engine_cache_tests PRIVATE src/core)
+    if(KATHTTP3_BORINGSSL_INCLUDE_DIR)
+      target_include_directories(kathttp3_engine_cache_tests SYSTEM BEFORE PRIVATE
+        "${KATHTTP3_BORINGSSL_INCLUDE_DIR}")
+    endif()
+    if(KATHTTP3_DEP_INCLUDE_DIR)
+      target_include_directories(kathttp3_engine_cache_tests SYSTEM PRIVATE
+        "${KATHTTP3_DEP_INCLUDE_DIR}")
+    endif()
+    target_compile_definitions(kathttp3_engine_cache_tests PRIVATE KATHTTP3_BUILDING_LIBRARY)
+    target_compile_options(kathttp3_engine_cache_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_link_libraries(kathttp3_engine_cache_tests PRIVATE ${KATHTTP3_DEP_TARGETS} pthread)
+    if(KATHTTP3_USE_BORINGSSL AND KATHTTP3_BORINGSSL_LIBRARIES)
+      target_link_libraries(kathttp3_engine_cache_tests PRIVATE ${KATHTTP3_BORINGSSL_LIBRARIES})
+    elseif(NOT KATHTTP3_USE_BORINGSSL)
+      find_package(OpenSSL REQUIRED)
+      target_link_libraries(kathttp3_engine_cache_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(KATHTTP3_SANITIZE)
+      target_compile_options(kathttp3_engine_cache_tests PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+      target_link_options(kathttp3_engine_cache_tests PRIVATE
+        -fsanitize=address,undefined)
+    endif()
+    if(KATHTTP3_THREAD_SANITIZE)
+      target_compile_options(kathttp3_engine_cache_tests PRIVATE
+        -fsanitize=thread -fno-omit-frame-pointer)
+      target_link_options(kathttp3_engine_cache_tests PRIVATE -fsanitize=thread)
+    endif()
+    add_test(NAME kathttp3_engine_cache_tests COMMAND kathttp3_engine_cache_tests)
   endif()
 endif()
