@@ -20,7 +20,7 @@ Kotlin public API
           -> non-blocking UDP socket
 ```
 
-Kotlin owns immutable request values and copies callback data. A JNI callback owns one global reference until one terminal callback. `kathttp3_client_execute` transfers request ownership to native code; callback buffers are valid only during the callback. Engine owns request registry, cookies and connection pool. Each connection worker exclusively owns its UDP fd, TLS session, ngtcp2 connection and nghttp3 connection. `close`, cancellation and terminal delivery are idempotent at their public boundaries.
+Kotlin owns immutable request values and copies callback data. A JNI callback owns one global reference until one terminal callback. `kathttp3_client_execute` transfers request ownership to native code; callback buffers are valid only during the callback. Engine owns request registry, cookies, the opt-in private HTTP response cache, and the connection pool. Each connection worker exclusively owns its UDP fd, TLS session, ngtcp2 connection and nghttp3 connection. `close`, cancellation and terminal delivery are idempotent at their public boundaries.
 
 ngtcp2 owns QUIC packet parsing/generation, loss recovery, congestion and transport flow control. nghttp3 owns HTTP/3 framing, SETTINGS and QPACK encoding/decoding. BoringSSL owns TLS 1.3 and cryptography. KatHttp3 owns DNS, UDP/timer driving, SNI/ALPN/certificate policy, critical stream creation, request lifecycle, redirects/cookies, and language bindings.
 
@@ -228,6 +228,31 @@ handshake, response headers, read-idle, write-idle, and the complete call.
 only when the corresponding direction makes progress. Timeout failures are
 reported as `KatHttp3Exception.Timeout` with a `KatHttp3TimeoutPhase`.
 
+The native private HTTP response cache is opt-in:
+
+```kotlin
+val config = KatHttp3ClientConfig(
+    enableHttpCache = true,
+    httpCacheMaxEntries = 128,
+    httpCacheMaxBytes = 32L * 1024 * 1024,
+    httpCacheMaxEntryBytes = 4L * 1024 * 1024,
+)
+```
+
+It initially caches only complete, non-streaming `GET` responses with status
+`200`, no `Range`, `Authorization`, or `Cookie` request fields, and explicit
+freshness (`Cache-Control: max-age` or valid `Date`/`Expires`). `private` is
+allowed because this is a per-client private cache. `Vary`, `Age`, monotonic
+resident time, ETag/Last-Modified validation, `304` merging, request cache
+directives, stale-if-error, unsafe-method invalidation, and byte-bounded LRU
+eviction are handled natively. Streaming requests, oversized bodies, partial
+responses bypass the cache. Cached delivery omits `Set-Cookie` fields. Cache
+payloads use immutable shared storage. The cache dispatcher admits at most 128
+pending hits and at most `httpCacheMaxBytes` accounted response bytes (including
+headers and metadata, conservatively counting shared bodies for each job), plus
+one active delivery. Excess hits fail with `KATHTTP3_ERR_NOMEM`; capacity becomes
+available again as queued jobs are dispatched.
+
 `KatHttp3RequestBody.Bytes`, `FileBody`, and `Stream` support buffered,
 file-backed, and producer-`Flow` uploads. `FileBody` and `Stream` use a bounded
 native queue (4 MiB), and a non-empty `Stream` chunk is required. Retries are
@@ -283,7 +308,7 @@ By default dependencies are read from `third_party/android-deps`; override this 
 
 - `tests/core/core_tests.cc`: URL/port validation, redirect and cookie
   matching, asynchronous resolver delivery, Happy Eyeballs candidate planning,
-  and DNS-cache behavior.
+  DNS-cache behavior, and HTTP cache parser/freshness/Vary/revalidation tests.
 - `kathttp3/src/test`: Kotlin configuration, request, and header validation.
 - The Android build compiles the JNI bridge and all four configured ABIs.
 - External-network and local ngtcp2-server tests are not part of this
@@ -296,11 +321,17 @@ The worker drives `ngtcp2_conn_get_expiry2`/`ngtcp2_conn_handle_expiry` with mon
 ## C ABI compatibility
 
 The C ABI uses `kathttp3_client_config` (an alias of the retained
-`kathttp3_client_options`) with `struct_size` and `abi_version`. Initialize it
-with `kathttp3_client_config_init`. KatHttp3 accepts known smaller structs and
-defaults appended fields; it rejects future ABI versions. During the 0.x line,
-existing enum values and fields are not reordered and optional fields are
-appended only. Symbols are hidden by default except `kathttp3_*` exports.
+`kathttp3_client_options`) with `struct_size` and `abi_version`. For a current
+header-sized configuration, initialize it with
+`kathttp3_client_config_init_size(&config, sizeof(config))`. The legacy
+`kathttp3_client_config_init` is bounded to the pre-cache prefix so binaries
+compiled against the older layout cannot be overrun; use the size-aware
+initializer when accessing appended fields. KatHttp3 accepts known smaller
+structs and defaults omitted fields; it rejects future ABI versions. During
+the 0.x line, existing enum values and fields are not reordered and optional
+fields are appended only. HTTP cache fields are appended, disabled by default,
+and use zero values to select the defaults of 128 entries, 32 MiB total, and 4
+MiB per entry. Symbols are hidden by default except `kathttp3_*` exports.
 
 ## Known limitations
 
@@ -409,10 +440,13 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
   is experimental and disabled by default (`enableCookies = true` is explicit
   opt-in). It has no public-suffix database, so it must not be treated as a
   browser-equivalent cookie implementation.
-- HTTP response caching is not provided. A former disconnected implementation
-  is intentionally excluded from production builds; a future cache must cover
-  Cache-Control, Vary, Age, Date, Expires, ETag/Last-Modified revalidation,
-  304 merging, no-store, stale-if-error, privacy, and Authorization semantics.
+- HTTP response caching is disabled by default and deliberately conservative.
+  Enable it with `enableHttpCache` (or `enable_http_cache` in the C ABI). It is
+  a per-client in-memory private cache, not a shared/browser cache: cookie- and
+  authorization-bearing requests bypass it, only complete buffered `GET` 200
+  responses are stored, `Vary: *` is rejected, and the default limits are 128
+  entries, 32 MiB total, and 4 MiB per entry. HEAD, range, heuristic freshness,
+  and persistent cache storage are not implemented.
 - Request bodies support `ByteArray`, `File`, and a producer `Flow<ByteArray>`.
   Flow/File data is bounded to 4 MiB in native memory and only resumes nghttp3
   when chunks arrive. Empty producer chunks are rejected. HTTP/3 upload
@@ -431,6 +465,9 @@ appended only. Symbols are hidden by default except `kathttp3_*` exports.
 CMakeLists.txt                  host/Android native build
 include/kathttp3/kathttp3.h       public include forwarder
 src/core/                       QUIC/HTTP3 engine and C ABI
+src/core/cache_control.*        Cache-Control directive parser
+src/core/http_date.*            HTTP-date parser for Date/Expires
+src/core/response_cache.*       Vary-aware private response cache
 src/jni/kathttp3_jni.cc          JNI bridge
 kathttp3/                        Android library and Kotlin API
 example/                        Compose sample app

@@ -21,6 +21,17 @@ struct ResolvedEndpoint {
     int family = 0; /* AF_INET / AF_INET6 */
 };
 
+/* DNS cache identity is data, not a string convention. Keeping the network
+ * generation typed prevents invalidation from treating @1 as a prefix of
+ * @10 or @100. */
+struct DnsCacheKey {
+    std::string canonical_host;
+    uint16_t port = 0;
+    uint64_t network_generation = 0;
+
+    bool operator==(const DnsCacheKey&) const = default;
+};
+
 /* The first two independently-startable address candidates.  The primary
  * preserves resolver ordering; fallback is the first address in the other
  * family and is scheduled after the Happy Eyeballs delay. */
@@ -93,12 +104,12 @@ class DnsCache {
 
    private:
     struct Entry {
-        std::string key;
+        DnsCacheKey key;
         uint64_t expires_at_ms = 0;
         bool negative = false;
         std::vector<ResolvedEndpoint> endpoints;
     };
-    std::string key(const std::string& host, uint16_t port, uint64_t network_generation) const;
+    DnsCacheKey make_key(const std::string& host, uint16_t port, uint64_t network_generation) const;
     void put(Entry entry);
     size_t max_entries_;
     uint64_t positive_ttl_ms_;

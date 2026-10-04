@@ -15,6 +15,7 @@ internal object NativeBridge {
         handshakeMs: Long, responseHeadersMs: Long, readMs: Long, writeMs: Long, callMs: Long, consumerStallMs: Long,
         maxRedirects: Int, trustMode: Int, insecureCert: Boolean, enableCookies: Boolean, enable0Rtt: Boolean, qlogEnabled: Boolean, qlogLogcatEnabled: Boolean, caCertificateFile: String?,
         qlogPathPrefix: String?, maxConnectionWorkers: Int, networkChangePolicy: Int,
+        enableHttpCache: Boolean, httpCacheMaxEntries: Int, httpCacheMaxBytes: Long, httpCacheMaxEntryBytes: Long,
         resolver: DnsResolver?): Long
     external fun closeClient(handle: Long)
     external fun destroyClient(handle: Long)

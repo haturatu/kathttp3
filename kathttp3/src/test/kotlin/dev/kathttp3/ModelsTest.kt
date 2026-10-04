@@ -86,6 +86,20 @@ class ModelsTest {
         assertFailsWith<IllegalArgumentException> { KatHttp3ClientConfig(readTimeoutMillis = 0) }
         assertEquals(10_000, KatHttp3ClientConfig().handshakeTimeoutMillis)
         assertEquals(30_000, KatHttp3ClientConfig().callTimeoutMillis)
+        assertFailsWith<IllegalArgumentException> {
+            KatHttp3ClientConfig(connectTimeoutMillis = 18_446_744_073_710L)
+        }
+    }
+    @Test fun httpCacheIsOptInAndByteBounded() {
+        val defaults = KatHttp3ClientConfig()
+        assertEquals(false, defaults.enableHttpCache)
+        assertEquals(128, defaults.httpCacheMaxEntries)
+        assertEquals(32L * 1024 * 1024, defaults.httpCacheMaxBytes)
+        assertEquals(4L * 1024 * 1024, defaults.httpCacheMaxEntryBytes)
+        assertFailsWith<IllegalArgumentException> { KatHttp3ClientConfig(httpCacheMaxEntries = 0) }
+        assertFailsWith<IllegalArgumentException> {
+            KatHttp3ClientConfig(httpCacheMaxBytes = 4, httpCacheMaxEntryBytes = 5)
+        }
     }
     @Test fun retryRejectsAmbiguousAndLocalTimeouts() {
         val policy = KatHttp3RetryPolicy()

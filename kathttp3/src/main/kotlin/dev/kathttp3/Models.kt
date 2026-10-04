@@ -4,6 +4,8 @@ import java.io.IOException
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 
+private const val MAX_NATIVE_TIMEOUT_MILLIS = 18_446_744_073_709L
+
 /** Certificate trust policy, mapped to the native `kathttp3_trust_mode`. */
 enum class TrustMode {
     PLATFORM,          /* Android: X509TrustManager; else: system store */
@@ -67,6 +69,11 @@ data class KatHttp3ClientConfig(
     val expectSuccess: Boolean = false,
     val interceptors: List<HttpInterceptor> = emptyList(),
     val resolver: DnsResolver? = null,
+    /** Enables the native private HTTP response cache. Disabled by default. */
+    val enableHttpCache: Boolean = false,
+    val httpCacheMaxEntries: Int = 128,
+    val httpCacheMaxBytes: Long = 32L * 1024 * 1024,
+    val httpCacheMaxEntryBytes: Long = 4L * 1024 * 1024,
 ) {
     init {
         require(connectTimeoutMillis > 0 && requestTimeoutMillis > 0 && idleTimeoutMillis > 0)
@@ -80,6 +87,19 @@ data class KatHttp3ClientConfig(
         require(maxActiveStreamsPerOrigin > 0 && maxQueuedRequestsPerOrigin >= 0)
         require(maxConnectionWorkers > 0)
         require(queueTimeoutMillis > 0)
+        require(connectTimeoutMillis <= MAX_NATIVE_TIMEOUT_MILLIS)
+        require(requestTimeoutMillis <= MAX_NATIVE_TIMEOUT_MILLIS)
+        require(idleTimeoutMillis <= MAX_NATIVE_TIMEOUT_MILLIS)
+        require(dnsTimeoutMillis <= MAX_NATIVE_TIMEOUT_MILLIS)
+        require(handshakeTimeoutMillis <= MAX_NATIVE_TIMEOUT_MILLIS)
+        require(responseHeadersTimeoutMillis <= MAX_NATIVE_TIMEOUT_MILLIS)
+        require(readTimeoutMillis <= MAX_NATIVE_TIMEOUT_MILLIS)
+        require(writeTimeoutMillis <= MAX_NATIVE_TIMEOUT_MILLIS)
+        require(callTimeoutMillis <= MAX_NATIVE_TIMEOUT_MILLIS)
+        require(consumerStallTimeoutMillis <= MAX_NATIVE_TIMEOUT_MILLIS)
+        require(httpCacheMaxEntries > 0)
+        require(httpCacheMaxBytes > 0 && httpCacheMaxEntryBytes > 0)
+        require(httpCacheMaxEntryBytes <= httpCacheMaxBytes)
         require(caCertificateFile == null || caCertificateFile.isNotBlank())
         require(qlogPathPrefix == null || qlogPathPrefix.isNotBlank())
         require(qlogEnabled || qlogPathPrefix == null) { "qlogPathPrefix requires qlogEnabled" }

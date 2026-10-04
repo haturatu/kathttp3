@@ -87,8 +87,10 @@ typedef int (*kathttp3_resolve_cb)(const char* host, uint16_t port, void* userda
 typedef void (*kathttp3_qlog_sink_cb)(void* userdata, uint32_t flags, const uint8_t* data,
                                       size_t len);
 
-/* Client construction options. Always initialize with
- * kathttp3_client_options_init() so struct_size/abi_version are set. */
+/* Client construction options. Initialize current storage with
+ * kathttp3_client_options_init_size() so appended fields are available. The
+ * legacy kathttp3_client_options_init() only writes the pre-cache prefix and
+ * remains safe for binaries compiled against the older layout. */
 typedef struct kathttp3_client_options {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -143,7 +145,17 @@ typedef struct kathttp3_client_options {
     /* Bounds origin-owned QUIC workers. Zero selects the safe default (32). */
     uint32_t max_connection_workers;
     uint32_t network_change_policy; /* kathttp3_network_change_policy */
+    /* Native private HTTP cache. Disabled by default to preserve existing
+     * request semantics; zero limits select the documented defaults. */
+    uint8_t enable_http_cache;
+    uint32_t http_cache_max_entries;
+    uint64_t http_cache_max_bytes;
+    uint64_t http_cache_max_entry_bytes;
 } kathttp3_client_options;
+
+/* Number of bytes occupied by the ABI-0.1 layout before HTTP cache fields
+ * were appended. The legacy initializer writes no bytes beyond this offset. */
+#define KATHTTP3_CLIENT_OPTIONS_LEGACY_SIZE offsetof(kathttp3_client_options, enable_http_cache)
 
 /* Stable name for new C callers. `kathttp3_client_options` remains source
  * compatible during 0.x. Fields are fixed-width values or create-time input
@@ -152,7 +164,9 @@ typedef kathttp3_client_options kathttp3_client_config;
 
 KATHTTP3_API uint32_t kathttp3_api_version(void);
 KATHTTP3_API void kathttp3_client_options_init(kathttp3_client_options* opt);
+KATHTTP3_API void kathttp3_client_options_init_size(void* storage, size_t size);
 KATHTTP3_API void kathttp3_client_config_init(kathttp3_client_config* config);
+KATHTTP3_API void kathttp3_client_config_init_size(void* storage, size_t size);
 
 typedef struct kathttp3_client kathttp3_client;
 typedef struct kathttp3_request kathttp3_request;

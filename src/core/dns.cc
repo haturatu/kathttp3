@@ -254,16 +254,15 @@ DnsCache::DnsCache(Config config)
 
 // Kept as a private member to centralize the cache key contract.
 // cppcheck-suppress functionStatic
-std::string DnsCache::key(const std::string& host, uint16_t port,
-                          uint64_t network_generation) const {
-    return canonical_host(host) + ":" + std::to_string(port) + "@" +
-           std::to_string(network_generation);
+DnsCacheKey DnsCache::make_key(const std::string& host, uint16_t port,
+                               uint64_t network_generation) const {
+    return {canonical_host(host), port, network_generation};
 }
 
 bool DnsCache::lookup(const std::string& host, uint16_t port, uint64_t network_generation,
                       std::vector<ResolvedEndpoint>& endpoints) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto cache_key = key(host, port, network_generation);
+    const auto cache_key = make_key(host, port, network_generation);
     const auto now = monotonic_ms();
     for (auto it = entries_.begin(); it != entries_.end(); ++it) {
         if (it->key != cache_key) continue;
@@ -283,12 +282,13 @@ void DnsCache::put_success(const std::string& host, uint16_t port, uint64_t netw
                            const std::vector<ResolvedEndpoint>& endpoints) {
     if (endpoints.empty()) return put_failure(host, port, network_generation);
     if (positive_ttl_ms_ == 0) return;
-    put({key(host, port, network_generation), monotonic_ms() + positive_ttl_ms_, false, endpoints});
+    put({make_key(host, port, network_generation), monotonic_ms() + positive_ttl_ms_, false,
+         endpoints});
 }
 
 void DnsCache::put_failure(const std::string& host, uint16_t port, uint64_t network_generation) {
     if (negative_ttl_ms_ == 0) return;
-    put({key(host, port, network_generation), monotonic_ms() + negative_ttl_ms_, true, {}});
+    put({make_key(host, port, network_generation), monotonic_ms() + negative_ttl_ms_, true, {}});
 }
 
 void DnsCache::put(Entry entry) {
@@ -300,9 +300,8 @@ void DnsCache::put(Entry entry) {
 
 void DnsCache::invalidate_network(uint64_t network_generation) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const std::string suffix = "@" + std::to_string(network_generation);
     entries_.remove_if(
-        [&](const Entry& entry) { return entry.key.find(suffix) == std::string::npos; });
+        [&](const Entry& entry) { return entry.key.network_generation != network_generation; });
 }
 
 std::vector<ResolvedEndpoint> CachedResolver::resolve(const std::string& host, uint16_t port,

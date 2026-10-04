@@ -12,6 +12,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -23,6 +24,7 @@
 #include "network_change.h"
 #include "request.h"
 #include "response.h"
+#include "response_cache.h"
 #include "tls.h"
 #include "udp_socket.h"
 #include "url.h"
@@ -47,6 +49,21 @@ struct QuicTimeouts {
     uint64_t write_ms = 0;
     uint64_t call_ms = 0;
     uint64_t consumer_stall_ms = 0;
+};
+
+struct CacheCapture {
+    bool enabled = false;
+    size_t max_bytes = 0;
+    std::vector<uint8_t> body;
+};
+
+struct CacheValidation {
+    CachedResponse stored;
+    std::vector<uint64_t> candidate_entry_ids;
+    HeaderList response_headers;
+    bool serve_stale_on_error = false;
+    /* Only true for an IMS condition added by Engine from this stored entry. */
+    bool sent_if_modified_since = false;
 };
 
 /* One HTTP/3 request/response exchange multiplexed over a QuicClient. */
@@ -93,6 +110,13 @@ struct Job {
     uint64_t received_body_bytes = 0;     /* running total of BODY bytes */
     bool streaming = false;               /* streaming (Flow) request: apply
                                              HTTP/3 receive flow-control */
+    std::optional<CacheCapture> cache_capture;
+    std::optional<CacheValidation> cache_validation;
+    std::optional<CachedResponse> cached_response;
+    /* Request headers before native validators are appended. Vary matching
+     * and a subsequent store must use the application's original fields. */
+    std::optional<HeaderList> cache_request_headers;
+    std::optional<uint64_t> cache_request_wall_seconds;
     Job() = default;
     Job(const Job&) = delete;
     Job& operator=(const Job&) = delete;
