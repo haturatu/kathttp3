@@ -111,6 +111,9 @@ class Engine {
     std::mutex cache_dispatch_mutex_;
     std::condition_variable cache_dispatch_cv_;
     std::deque<std::unique_ptr<Job>> cache_dispatch_jobs_;
+    static constexpr size_t kMaxQueuedCachedJobs = 128;
+    size_t cache_dispatch_max_bytes_ = 32 * 1024 * 1024;
+    size_t cache_dispatch_queued_bytes_ = 0;
     std::thread cache_dispatch_thread_;
     bool cache_dispatch_stop_ = false;
     TlsClientContext tls_ctx_;

@@ -120,6 +120,7 @@ Engine::Engine(const kathttp3_client_options& opt)
     dns_cache_ = std::make_shared<DnsCache>();
     resolver_ =
         std::make_shared<CachedResolver>(resolver_, dns_cache_, resolver_network_generation_);
+    cache_dispatch_max_bytes_ = size_option(opt_.http_cache_max_bytes, kDefaultCacheMaxBytes);
     cache_max_entry_bytes_ =
         size_option(opt_.http_cache_max_entry_bytes, kDefaultCacheMaxEntryBytes);
     if (opt_.enable_http_cache != 0) {
@@ -388,19 +389,19 @@ void Engine::prepare_cache(Job* job) {
     const CacheRequest request{job->request->method, cache_url, *job->cache_request_headers,
                                job->streaming || job->request->streaming_body,
                                request_has_body(*job->request)};
-    const CacheLookup lookup = http_cache_->lookup(request);
+    CacheLookup lookup = http_cache_->lookup(request);
     if (lookup.state == CacheState::Fresh && lookup.response) {
-        job->cached_response = *lookup.response;
+        job->cached_response = std::move(*lookup.response);
         return;
     }
     if (lookup.state == CacheState::NeedsValidation && lookup.response) {
+        add_cache_validator(job, *lookup.response);
         job->cache_validation = CacheValidation{
-            *lookup.response,
-            lookup.validation_candidate_ids,
+            std::move(*lookup.response),
+            std::move(lookup.validation_candidate_ids),
             {},
             false,
         };
-        add_cache_validator(job, *lookup.response);
     }
 }
 
@@ -417,8 +418,13 @@ void Engine::deliver_cached(Job* job, const CachedResponse& response) {
     if (!job) return;
     const CachedResponse delivery =
         http_cache_ ? http_cache_->response_with_current_age(response) : response;
-    dispatch_headers(job, delivery.status_code, delivery.headers);
-    if (!delivery.body.empty()) dispatch_body(job, delivery.body.data(), delivery.body.size());
+    HeaderList delivery_headers;
+    for (const auto& header : delivery.headers.list()) {
+        if (case_eq(header.name, "set-cookie")) continue;
+        delivery_headers.add(header.name, header.value);
+    }
+    dispatch_headers(job, delivery.status_code, delivery_headers);
+    if (!delivery.body->empty()) dispatch_body(job, delivery.body->data(), delivery.body->size());
     dispatch_complete(job);
 }
 
@@ -428,18 +434,23 @@ void Engine::on_job_cached(Job* job) {
 }
 
 bool Engine::queue_cached_job(std::unique_ptr<Job>& job) {
-    if (!job) return false;
+    if (!job || !job->cached_response) return false;
+    const size_t queued_bytes = job->cached_response->accounted_bytes;
     try {
         {
             std::lock_guard<std::mutex> lock(cache_dispatch_mutex_);
-            if (cache_dispatch_stop_) return false;
+            if (cache_dispatch_stop_ || cache_dispatch_jobs_.size() >= kMaxQueuedCachedJobs ||
+                queued_bytes > cache_dispatch_max_bytes_ - cache_dispatch_queued_bytes_)
+                return false;
             cache_dispatch_jobs_.push_back(std::move(job));
+            cache_dispatch_queued_bytes_ += queued_bytes;
             if (!cache_dispatch_thread_.joinable()) {
                 try {
                     cache_dispatch_thread_ = std::thread([this] { run_cached_dispatcher(); });
                 } catch (...) {
                     job = std::move(cache_dispatch_jobs_.back());
                     cache_dispatch_jobs_.pop_back();
+                    cache_dispatch_queued_bytes_ -= queued_bytes;
                     return false;
                 }
             }
@@ -459,6 +470,8 @@ void Engine::run_cached_dispatcher() {
             cache_dispatch_cv_.wait(
                 lock, [this] { return cache_dispatch_stop_ || !cache_dispatch_jobs_.empty(); });
             if (cache_dispatch_stop_) return;
+            cache_dispatch_queued_bytes_ -=
+                cache_dispatch_jobs_.front()->cached_response->accounted_bytes;
             job = std::move(cache_dispatch_jobs_.front());
             cache_dispatch_jobs_.pop_front();
         }
@@ -475,6 +488,7 @@ void Engine::stop_cached_dispatcher() {
         std::lock_guard<std::mutex> lock(cache_dispatch_mutex_);
         cache_dispatch_stop_ = true;
         cache_dispatch_jobs_.clear();
+        cache_dispatch_queued_bytes_ = 0;
     }
     cache_dispatch_cv_.notify_all();
     if (cache_dispatch_thread_.joinable()) cache_dispatch_thread_.join();

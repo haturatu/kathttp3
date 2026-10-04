@@ -233,7 +233,7 @@ size_t saturating_size_add(size_t lhs, size_t rhs) {
 size_t accounted_bytes(const CachedResponse& response) {
     size_t total = sizeof(CachedResponse);
     total = saturating_size_add(total, response.url.size());
-    total = saturating_size_add(total, response.body.size());
+    total = saturating_size_add(total, response.body->size());
     for (const auto& header : response.headers.list()) {
         total = saturating_size_add(total, header.name.size());
         total = saturating_size_add(total, header.value.size());
@@ -343,11 +343,12 @@ ResponseCache::ResponseCache(size_t max_entries)
 std::optional<CachedResponse> ResponseCache::make_cached_response(
     const CacheRequest& request, const Response& response,
     std::optional<uint64_t> request_wall_seconds, std::optional<uint64_t> now_wall_seconds,
-    uint64_t now_monotonic_ns, bool require_cacheable) const {
+    uint64_t now_monotonic_ns, bool require_cacheable,
+    std::shared_ptr<const std::vector<uint8_t>> shared_body) const {
+    const size_t body_size = shared_body ? shared_body->size() : response.body.size();
     const CacheControl request_control = parse_cache_control(request.headers);
     if (request_cache_bypassed(request, request_control) || request_control.invalid ||
-        response.status_code != 200 ||
-        (require_cacheable && response.body.size() > max_entry_bytes_) ||
+        response.status_code != 200 || (require_cacheable && body_size > max_entry_bytes_) ||
         (require_cacheable && now_monotonic_ns == 0)) {
         return std::nullopt;
     }
@@ -414,7 +415,8 @@ std::optional<CachedResponse> ResponseCache::make_cached_response(
     cached.url = std::string(request.url);
     cached.status_code = response.status_code;
     cached.headers = response.headers;
-    cached.body = response.body;
+    cached.body = shared_body ? std::move(shared_body)
+                              : std::make_shared<const std::vector<uint8_t>>(response.body);
     if (parsed_date) {
         cached.selection_date_seconds = *parsed_date;
     } else if (now_wall_seconds) {
@@ -508,7 +510,7 @@ CacheLookup ResponseCache::lookup_locked(const CacheRequest& request,
     const uint64_t age = current_age(response, now_monotonic_ns);
     response.headers = headers_with_age(response.headers, age);
 
-    const bool request_age_exceeded = request_control.max_age && age >= *request_control.max_age;
+    const bool request_age_exceeded = request_control.max_age && age > *request_control.max_age;
     const bool clock_unavailable = !now_wall_seconds || now_monotonic_ns == 0;
     if (!clock_unavailable && !response.requires_revalidation && !request_control.no_cache &&
         !request_age_exceeded && age < response.freshness_lifetime_seconds) {
@@ -554,9 +556,9 @@ std::optional<RevalidationResult> ResponseCache::merge_304(
     Response merged;
     merged.status_code = stored.status_code;
     merged.headers = merge_headers(headers_for_revalidation(stored.headers), validation_headers);
-    merged.body = stored.body;
-    const auto delivery = make_cached_response(request, merged, request_wall_seconds,
-                                               now_wall_seconds, now_monotonic_ns, false);
+    const auto delivery =
+        make_cached_response(request, merged, request_wall_seconds, now_wall_seconds,
+                             now_monotonic_ns, false, stored.body);
     if (!delivery) return std::nullopt;
 
     struct RefreshCandidate {
@@ -581,18 +583,33 @@ std::optional<RevalidationResult> ResponseCache::merge_304(
         return !current.etag && !current.last_modified;
     };
 
+    /* RFC 9111 section 4.3.4: weak validators identify only the newest
+     * matching representation. Last-Modified is conservatively treated as
+     * weak because we have no proof that it is a strong validator. */
+    const auto received_tag = response_has_etag ? parse_entity_tag(response_etag) : std::nullopt;
+    const bool select_one =
+        (received_tag && received_tag->weak) || (!response_has_etag && response_has_last_modified);
+    const CachedResponse* newest = nullptr;
+    if (select_one) {
+        for (const auto& current : entries_) {
+            if (!is_candidate(current.entry_id) || !validator_matches(current)) continue;
+            if (!newest || more_recent(current, *newest)) newest = &current;
+        }
+    }
+
     for (const auto& current : entries_) {
         if (!is_candidate(current.entry_id) || !validator_matches(current)) continue;
+        if (select_one && &current != newest) continue;
         entries_to_remove.push_back(current.entry_id);
 
         Response current_merged;
         current_merged.status_code = current.status_code;
         current_merged.headers =
             merge_headers(headers_for_revalidation(current.headers), validation_headers);
-        current_merged.body = current.body;
         if (now_wall_seconds && now_monotonic_ns != 0) {
-            const auto refreshed = make_cached_response(
-                request, current_merged, request_wall_seconds, now_wall_seconds, now_monotonic_ns);
+            const auto refreshed =
+                make_cached_response(request, current_merged, request_wall_seconds,
+                                     now_wall_seconds, now_monotonic_ns, true, current.body);
             if (refreshed) {
                 refresh_candidates.push_back({current.entry_id, *refreshed});
             }
@@ -696,7 +713,7 @@ bool ResponseCache::get(std::string_view method, std::string_view url, Response&
     if (result.state != CacheState::Fresh || !result.response) return false;
     out.status_code = result.response->status_code;
     out.headers = result.response->headers;
-    out.body = result.response->body;
+    out.body = *result.response->body;
     return true;
 }
 

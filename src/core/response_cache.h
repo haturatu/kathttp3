@@ -46,7 +46,9 @@ struct CachedResponse {
     std::string url;
     int status_code = 0;
     HeaderList headers;
-    std::vector<uint8_t> body;
+    /* Lookup, validation and queued delivery share immutable payload storage. */
+    std::shared_ptr<const std::vector<uint8_t>> body =
+        std::make_shared<const std::vector<uint8_t>>();
     std::vector<VaryKey> vary;
 
     /* Stable identity of the stored generation. It is assigned only when an
@@ -144,12 +146,11 @@ class ResponseCache {
     void put(std::string_view method, std::string_view url, const Response& response);
 
    private:
-    std::optional<CachedResponse> make_cached_response(const CacheRequest& request,
-                                                       const Response& response,
-                                                       std::optional<uint64_t> request_wall_seconds,
-                                                       std::optional<uint64_t> now_wall_seconds,
-                                                       uint64_t now_monotonic_ns,
-                                                       bool require_cacheable = true) const;
+    std::optional<CachedResponse> make_cached_response(
+        const CacheRequest& request, const Response& response,
+        std::optional<uint64_t> request_wall_seconds, std::optional<uint64_t> now_wall_seconds,
+        uint64_t now_monotonic_ns, bool require_cacheable = true,
+        std::shared_ptr<const std::vector<uint8_t>> shared_body = nullptr) const;
     CacheLookup lookup_locked(const CacheRequest& request, const CacheControl& request_control,
                               std::optional<uint64_t> now_wall_seconds, uint64_t now_monotonic_ns);
     std::optional<uint64_t> insert_locked(CachedResponse response);

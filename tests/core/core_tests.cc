@@ -56,9 +56,113 @@ class FakeCacheClock final : public CacheClock {
     uint64_t monotonic = 1'000'000'000ULL;
 };
 
+void weak_validation_updates_only_newest_variant() {
+    for (const bool use_etag : {true, false}) {
+        for (const bool no_store : {false, true}) {
+            auto clock = std::make_shared<FakeCacheClock>();
+            ResponseCache cache(ResponseCacheConfig{}, clock);
+            HeaderList headers;
+            headers.add("accept-encoding", "gzip");
+            headers.add("accept-language", "en");
+            const CacheRequest request{"GET", "https://cache.example/weak-variants", headers};
+            const char* validator = use_etag ? "etag" : "last-modified";
+            const char* value = use_etag ? "W/\"v1\"" : "Thu, 01 Jan 1970 00:16:00 GMT";
+            Response older;
+            older.status_code = 200;
+            older.headers.add("cache-control", "max-age=0");
+            older.headers.add("date", "Thu, 01 Jan 1970 00:16:40 GMT");
+            older.headers.add("vary", "accept-encoding");
+            older.headers.add(validator, value);
+            older.body = {1};
+            assert(cache.store(request, older));
+            clock->wall += 1;
+            clock->monotonic += 1'000'000'000ULL;
+            Response newer = older;
+            newer.headers.clear();
+            newer.headers.add("cache-control", "max-age=0");
+            newer.headers.add("date", "Thu, 01 Jan 1970 00:16:41 GMT");
+            newer.headers.add("vary", "accept-language");
+            newer.headers.add(validator, value);
+            newer.body = {2};
+            assert(cache.store(request, newer));
+
+            // Touch only the older variant so LRU order disagrees with Date order.
+            HeaderList encoding_headers;
+            encoding_headers.add("accept-encoding", "gzip");
+            encoding_headers.add("accept-language", "ja");
+            const CacheRequest encoding_request{"GET", request.url, encoding_headers};
+            const auto old_lookup = cache.lookup(encoding_request);
+            assert(old_lookup.response && *old_lookup.response->body == older.body);
+            const auto stale = cache.lookup(request);
+            assert(stale.response && stale.validation_candidate_ids.size() == 2);
+            (void)cache.lookup(encoding_request);
+            HeaderList updated;
+            updated.add("cache-control", no_store ? "no-store" : "max-age=60");
+            updated.add(validator, value);
+            const auto result = cache.merge_304(*stale.response, request, updated, std::nullopt,
+                                                stale.validation_candidate_ids);
+            assert(result && *result->delivery.body == newer.body);
+            assert(result->delivery.body == stale.response->body);
+            assert(result->retention_candidate.has_value() == !no_store);
+            const auto old_after = cache.lookup(encoding_request);
+            assert(old_after.state == CacheState::NeedsValidation && old_after.response);
+            assert(old_after.response->entry_id == old_lookup.response->entry_id);
+            assert(old_after.response->headers.get("cache-control") == "max-age=0");
+            const auto after = cache.lookup(request);
+            assert(after.state == (no_store ? CacheState::NeedsValidation : CacheState::Fresh));
+            assert(after.response && *after.response->body == (no_store ? older.body : newer.body));
+            assert(cache.size() == (no_store ? 1 : 2));
+        }
+    }
+}
+
+void request_max_age_includes_equal_age() {
+    auto clock = std::make_shared<FakeCacheClock>();
+    ResponseCache cache(ResponseCacheConfig{}, clock);
+    HeaderList empty;
+    const CacheRequest request{"GET", "https://cache.example/request-age-boundary", empty};
+    Response response;
+    response.status_code = 200;
+    response.headers.add("cache-control", "max-age=60");
+    assert(cache.store(request, response));
+    for (const uint64_t limit : {0ULL, 5ULL}) {
+        HeaderList headers;
+        headers.add("cache-control", "max-age=" + std::to_string(limit));
+        const CacheRequest limited{"GET", request.url, headers};
+        clock->monotonic = 1'000'000'000ULL + limit * 1'000'000'000ULL;
+        assert(cache.lookup(limited).state == CacheState::Fresh);
+        clock->monotonic += 1'000'000'000ULL;
+        assert(cache.lookup(limited).state == CacheState::NeedsValidation);
+    }
+}
+
+void cache_payload_is_shared_and_survives_eviction() {
+    auto clock = std::make_shared<FakeCacheClock>();
+    ResponseCache cache(ResponseCacheConfig{}, clock);
+    HeaderList headers;
+    const CacheRequest request{"GET", "https://cache.example/shared-payload", headers};
+    Response response;
+    response.status_code = 200;
+    response.headers.add("cache-control", "max-age=60");
+    response.body.resize(1 << 20, 42);
+    assert(cache.store(request, response));
+    const auto first = cache.lookup(request);
+    const auto second = cache.lookup(request);
+    assert(first.response && second.response);
+    assert(first.response->body == second.response->body);
+    response.body[0] = 7;
+    cache.clear();
+    assert(first.response->body->size() == (1 << 20));
+    assert(first.response->body->front() == 42);
+    assert(second.response->body->back() == 42);
+}
+
 }  // namespace
 
 int main() {
+    weak_validation_updates_only_newest_variant();
+    request_max_age_includes_equal_age();
+    cache_payload_is_shared_and_survives_eviction();
     // The QUIC worker is elected only after the first Job is visible. This
     // prevents an empty worker from exiting before the initial submission.
     LazyWorkerStart worker_start;
@@ -623,7 +727,7 @@ int main() {
     assert(stored_cache_response);
     CacheLookup cache_hit = response_cache.lookup(cache_request);
     assert(cache_hit.state == CacheState::Fresh && cache_hit.response);
-    assert(cache_hit.response->body == cache_response.body);
+    assert(*cache_hit.response->body == cache_response.body);
     assert(cache_hit.response->headers.get("age") == "0");
     cache_clock->monotonic += 60'000'000'000ULL;
     cache_hit = response_cache.lookup(cache_request);
@@ -836,7 +940,7 @@ int main() {
     const auto merged = revalidation_cache.merge_304(
         *stale_for_validation.response, revalidation_request, matching_not_modified_headers);
     assert(merged && merged->retention_candidate && merged->delivery.status_code == 200 &&
-           merged->delivery.body == revalidation_response.body &&
+           *merged->delivery.body == revalidation_response.body &&
            merged->delivery.headers.get("date") == "Thu, 01 Jan 1970 00:16:40 GMT");
     const auto refreshed = revalidation_cache.lookup(revalidation_request);
     assert(refreshed.state == CacheState::Fresh && refreshed.response);
@@ -868,7 +972,7 @@ int main() {
     const auto age_merged = revalidation_age_cache.merge_304(
         *stale_age.response, revalidation_age_request, age_not_modified_headers);
     assert(age_merged && age_merged->retention_candidate &&
-           age_merged->delivery.body == revalidation_age_response.body);
+           *age_merged->delivery.body == revalidation_age_response.body);
     const auto age_refreshed = revalidation_age_cache.lookup(revalidation_age_request);
     assert(age_refreshed.state == CacheState::Fresh && age_refreshed.response &&
            age_refreshed.response->headers.get("age") == "0");
@@ -892,7 +996,7 @@ int main() {
         *no_store_stale.response, no_store_revalidation_request, no_store_not_modified_headers);
     assert(no_store_merged && !no_store_merged->retention_candidate &&
            no_store_merged->delivery.status_code == 200 &&
-           no_store_merged->delivery.body == no_store_revalidation_response.body);
+           *no_store_merged->delivery.body == no_store_revalidation_response.body);
     const CacheLookup no_store_after_merge =
         revalidation_cache.lookup(no_store_revalidation_request);
     assert(no_store_after_merge.state == CacheState::Miss);
@@ -916,7 +1020,7 @@ int main() {
     const auto star_vary_merged = revalidation_cache.merge_304(
         *star_vary_stale.response, star_vary_revalidation_request, star_vary_not_modified_headers);
     assert(star_vary_merged && !star_vary_merged->retention_candidate &&
-           star_vary_merged->delivery.body == star_vary_revalidation_response.body);
+           *star_vary_merged->delivery.body == star_vary_revalidation_response.body);
     const CacheLookup star_vary_after_merge =
         revalidation_cache.lookup(star_vary_revalidation_request);
     assert(star_vary_after_merge.state == CacheState::Miss);
@@ -993,7 +1097,7 @@ int main() {
                                         multi_candidate_not_modified_headers, std::nullopt,
                                         multi_candidate_stale.validation_candidate_ids);
     assert(multi_candidate_merge && !multi_candidate_merge->retention_candidate &&
-           multi_candidate_merge->delivery.body == multi_candidate_language.body);
+           *multi_candidate_merge->delivery.body == multi_candidate_language.body);
     const CacheLookup multi_candidate_after_merge =
         multi_candidate_cache.lookup(multi_candidate_request);
     assert(multi_candidate_after_merge.state == CacheState::Miss);
@@ -1028,7 +1132,7 @@ int main() {
     const auto matching_last_modified = revalidation_cache.merge_304(
         *last_modified_stale.response, last_modified_request, matching_last_modified_headers);
     assert(matching_last_modified && matching_last_modified->retention_candidate &&
-           matching_last_modified->delivery.body == last_modified_response.body);
+           *matching_last_modified->delivery.body == last_modified_response.body);
     const CacheLookup last_modified_refreshed = revalidation_cache.lookup(last_modified_request);
     assert(last_modified_refreshed.state == CacheState::Fresh);
 
@@ -1053,7 +1157,7 @@ int main() {
     const auto weak_etag_merged = weak_etag_cache.merge_304(
         *weak_etag_stale.response, weak_etag_request, weak_etag_not_modified_headers);
     assert(weak_etag_merged && weak_etag_merged->retention_candidate &&
-           weak_etag_merged->delivery.body == weak_etag_response.body);
+           *weak_etag_merged->delivery.body == weak_etag_response.body);
     const auto weak_etag_hit = weak_etag_cache.lookup(weak_etag_request);
     assert(weak_etag_hit.state == CacheState::Fresh && weak_etag_hit.response &&
            weak_etag_hit.response->etag && *weak_etag_hit.response->etag == "W/\"weak-v1\"");
@@ -1103,10 +1207,10 @@ int main() {
         *stale_race.response, race_request, delayed_race_not_modified_headers, std::nullopt,
         stale_race.validation_candidate_ids);
     assert(delayed_race_merge && !delayed_race_merge->retention_candidate &&
-           delayed_race_merge->delivery.body == race_v1.body);
+           *delayed_race_merge->delivery.body == race_v1.body);
     const auto race_hit = revalidation_race_cache.lookup(race_request);
     assert(race_hit.state == CacheState::Fresh && race_hit.response &&
-           race_hit.response->body == race_v2.body && race_hit.response->etag &&
+           *race_hit.response->body == race_v2.body && race_hit.response->etag &&
            *race_hit.response->etag == "\"race-v2\"");
 
     auto validation_failure_clock = std::make_shared<FakeCacheClock>();
@@ -1146,7 +1250,7 @@ int main() {
     assert(!removed_old_validation);
     const auto validation_failure_hit = validation_failure_cache.lookup(validation_failure_request);
     assert(validation_failure_hit.state == CacheState::Fresh && validation_failure_hit.response &&
-           validation_failure_hit.response->body == validation_v2.body);
+           *validation_failure_hit.response->body == validation_v2.body);
 
     auto variant_invalidation_clock = std::make_shared<FakeCacheClock>();
     ResponseCache variant_invalidation_cache(
@@ -1176,7 +1280,7 @@ int main() {
     assert(removed_en);
     const auto ja_hit = variant_invalidation_cache.lookup(ja_request);
     assert(ja_hit.state == CacheState::Fresh && ja_hit.response &&
-           ja_hit.response->body == ja_response.body);
+           *ja_hit.response->body == ja_response.body);
 
     auto selection_clock = std::make_shared<FakeCacheClock>();
     ResponseCache selection_cache(
@@ -1209,14 +1313,14 @@ int main() {
     assert(stored_encoding_response && stored_language_response);
     const auto encoding_only_hit = selection_cache.lookup(encoding_request);
     assert(encoding_only_hit.state == CacheState::Fresh && encoding_only_hit.response &&
-           encoding_only_hit.response->body == encoding_response.body);
+           *encoding_only_hit.response->body == encoding_response.body);
     HeaderList combined_selection_headers = encoding_request_headers;
     combined_selection_headers.add("accept-language", "ja");
     const CacheRequest combined_selection_request{"GET", "https://cache.example/selection",
                                                   combined_selection_headers, false};
     const auto combined_selection_hit = selection_cache.lookup(combined_selection_request);
     assert(combined_selection_hit.state == CacheState::Fresh && combined_selection_hit.response &&
-           combined_selection_hit.response->body == language_response.body);
+           *combined_selection_hit.response->body == language_response.body);
 
     Response order_newer = language_response;
     order_newer.headers.clear();
@@ -1235,7 +1339,7 @@ int main() {
     assert(stored_order_newer && stored_order_older);
     const auto order_hit = selection_cache.lookup(order_request);
     assert(order_hit.state == CacheState::Fresh && order_hit.response &&
-           order_hit.response->body == order_newer.body);
+           *order_hit.response->body == order_newer.body);
 
     auto delivery_limit_clock = std::make_shared<FakeCacheClock>();
     ResponseCache delivery_limit_cache(
@@ -1263,7 +1367,7 @@ int main() {
         delivery_limit_cache.merge_304(*delivery_limit_stale.response, delivery_limit_request,
                                        delivery_limit_not_modified_headers);
     assert(delivery_limit_merge && !delivery_limit_merge->retention_candidate &&
-           delivery_limit_merge->delivery.body == delivery_limit_response.body);
+           *delivery_limit_merge->delivery.body == delivery_limit_response.body);
     const CacheLookup delivery_limit_after_merge =
         delivery_limit_cache.lookup(delivery_limit_request);
     assert(delivery_limit_after_merge.state == CacheState::Miss);
@@ -1300,7 +1404,7 @@ int main() {
     const auto clock_failure_merge = clock_failure_cache->merge_304(
         *clock_failure_hit.response, cache_request, clock_failure_not_modified_headers);
     assert(clock_failure_merge && !clock_failure_merge->retention_candidate &&
-           clock_failure_merge->delivery.body == cache_response.body);
+           *clock_failure_merge->delivery.body == cache_response.body);
     assert(clock_failure_cache->lookup(cache_request).state == CacheState::Miss);
     cache_clock->wall_available = true;
 
