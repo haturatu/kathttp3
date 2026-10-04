@@ -330,6 +330,7 @@ void Engine::cancel(int64_t request_id) {
         registry_.erase(it);
         if (c) c->cancel_job(request_id);
     }
+    if (!c) remove_queued_cached_job(request_id);
     /* Do not hold lifecycle_mutex_ while user code runs. The callback lock
      * remains held until the cancellation event returns, preserving event
      * serialization while allowing destroy() to finish its worker joins. */
@@ -460,6 +461,16 @@ bool Engine::queue_cached_job(std::unique_ptr<Job>& job) {
     } catch (...) {
         return false;
     }
+}
+
+void Engine::remove_queued_cached_job(int64_t request_id) {
+    std::lock_guard<std::mutex> lock(cache_dispatch_mutex_);
+    const auto it = std::find_if(cache_dispatch_jobs_.begin(), cache_dispatch_jobs_.end(),
+                                 [request_id](const auto& job) { return job->id == request_id; });
+    if (it == cache_dispatch_jobs_.end()) return;
+    if ((*it)->cached_response)
+        cache_dispatch_queued_bytes_ -= (*it)->cached_response->accounted_bytes;
+    cache_dispatch_jobs_.erase(it);
 }
 
 void Engine::run_cached_dispatcher() {

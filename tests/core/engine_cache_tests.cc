@@ -3,6 +3,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -66,7 +67,8 @@ std::unique_ptr<Job> make_job(int64_t id, const char* url) {
     job->id = id;
     job->request = kathttp3_request_create("GET", url);
     assert(job->request);
-    assert(parse_url(url, job->url));
+    const bool parsed = parse_url(url, job->url);
+    assert(parsed);
     job->response.url = job->url;
     return job;
 }
@@ -95,6 +97,7 @@ struct BlockingCallbackState {
     bool headers_entered = false;
     bool release_headers = false;
     size_t completed = 0;
+    std::function<void()> before_release;
 };
 
 void blocking_cached_event(void* user_data, const kathttp3_event* event) {
@@ -109,6 +112,9 @@ void blocking_cached_event(void* user_data, const kathttp3_event* event) {
     state->headers_entered = true;
     state->cv.notify_all();
     state->cv.wait(lock, [state] { return state->release_headers; });
+    auto action = std::move(state->before_release);
+    lock.unlock();
+    if (action) action();
 }
 
 void full_response_removes_validation_target() {
@@ -123,10 +129,12 @@ void full_response_removes_validation_target() {
     cached_response.headers.add("cache-control", "max-age=60");
     cached_response.headers.add("etag", "\"engine-v1\"");
     cached_response.body = {1, 2, 3};
-    assert(EngineTestAccess::cache(engine).store(stored_request, cached_response));
+    const bool stored = EngineTestAccess::cache(engine).store(stored_request, cached_response);
+    assert(stored);
 
     auto job = make_job(101, kUrl);
-    assert(kathttp3_request_add_header(job->request, "cache-control", "no-cache") == KATHTTP3_OK);
+    const int added = kathttp3_request_add_header(job->request, "cache-control", "no-cache");
+    assert(added == KATHTTP3_OK);
     EngineTestAccess::prepare_cache(engine, job.get());
     assert(job->cache_validation);
 
@@ -151,7 +159,8 @@ void stale_fallback_precedes_body_length_validation() {
     cached_response.status_code = 200;
     cached_response.headers.add("cache-control", "max-age=0, stale-if-error=60");
     cached_response.body = {4, 5, 6};
-    assert(EngineTestAccess::cache(engine).store(cache_request, cached_response));
+    const bool stored = EngineTestAccess::cache(engine).store(cache_request, cached_response);
+    assert(stored);
 
     auto job = make_job(102, kUrl);
     EngineTestAccess::prepare_cache(engine, job.get());
@@ -217,7 +226,8 @@ void cache_dispatcher_bounds_pending_hits(bool large_body) {
     response.status_code = 200;
     response.headers.add("cache-control", "max-age=60");
     response.body.resize(large_body ? 4 * 1024 * 1024 : 1, 42);
-    assert(EngineTestAccess::cache(engine).store(request, response));
+    const bool stored = EngineTestAccess::cache(engine).store(request, response);
+    assert(stored);
     const auto lookup = EngineTestAccess::cache(engine).lookup(request);
     assert(lookup.response);
     const size_t job_bytes = lookup.response->accounted_bytes;
@@ -228,10 +238,13 @@ void cache_dispatcher_bounds_pending_hits(bool large_body) {
     engine.execute(kathttp3_request_create("GET", kUrl), 200, blocking_cached_event, &state);
     {
         std::unique_lock<std::mutex> lock(state.mutex);
-        assert(state.cv.wait_for(lock, std::chrono::seconds(5),
-                                 [&] { return state.headers_entered; }));
+        const bool ready =
+            state.cv.wait_for(lock, std::chrono::seconds(5), [&] { return state.headers_entered; });
+        assert(ready);
     }
-    for (size_t i = 0; i < admitted; ++i) {
+    EventLog cancelled;
+    engine.execute(kathttp3_request_create("GET", kUrl), 201, record_event, &cancelled);
+    for (size_t i = 1; i < admitted; ++i) {
         engine.execute(kathttp3_request_create("GET", kUrl), 201 + i, blocking_cached_event,
                        &state);
     }
@@ -248,20 +261,36 @@ void cache_dispatcher_bounds_pending_hits(bool large_body) {
     EngineTestAccess::check_queue(engine, admitted, admitted * job_bytes, lookup.response->body);
     {
         std::lock_guard<std::mutex> lock(state.mutex);
+        // Run inside the active callback, before the dispatcher can pop again.
+        // The recursive callback lock preserves cancellation event ordering.
+        state.before_release = [&] {
+            engine.cancel(201);
+            engine.cancel(201);  // repeated cancellation must not subtract quota twice
+            assert(cancelled.types.size() == 1 && cancelled.types[0] == KATHTTP3_EVENT_ERROR);
+            assert(cancelled.errors[0] == KATHTTP3_ERR_CANCELLED);
+            EngineTestAccess::check_queue(engine, admitted - 1, (admitted - 1) * job_bytes,
+                                          lookup.response->body);
+            engine.execute(kathttp3_request_create("GET", kUrl), 1003, blocking_cached_event,
+                           &state);
+            EngineTestAccess::check_queue(engine, admitted, admitted * job_bytes,
+                                          lookup.response->body);
+        };
         state.release_headers = true;
     }
     state.cv.notify_all();
     {
         std::unique_lock<std::mutex> lock(state.mutex);
-        assert(state.cv.wait_for(lock, std::chrono::seconds(5),
-                                 [&] { return state.completed == admitted + 1; }));
+        const bool ready = state.cv.wait_for(lock, std::chrono::seconds(5),
+                                             [&] { return state.completed == admitted + 1; });
+        assert(ready);
     }
     EngineTestAccess::check_queue(engine, 0, 0, lookup.response->body);
     engine.execute(kathttp3_request_create("GET", kUrl), 1002, blocking_cached_event, &state);
     {
         std::unique_lock<std::mutex> lock(state.mutex);
-        assert(state.cv.wait_for(lock, std::chrono::seconds(5),
-                                 [&] { return state.completed == admitted + 2; }));
+        const bool ready = state.cv.wait_for(lock, std::chrono::seconds(5),
+                                             [&] { return state.completed == admitted + 2; });
+        assert(ready);
     }
     engine.destroy();
 }
@@ -277,7 +306,8 @@ void cache_dispatcher_lifecycle_is_cancel_safe() {
     cached_response.status_code = 200;
     cached_response.headers.add("cache-control", "max-age=60");
     cached_response.body = {7};
-    assert(EngineTestAccess::cache(engine).store(cache_request, cached_response));
+    const bool stored = EngineTestAccess::cache(engine).store(cache_request, cached_response);
+    assert(stored);
 
     BlockingCallbackState callback_state;
     kathttp3_request* request = kathttp3_request_create("GET", kUrl);
@@ -285,9 +315,10 @@ void cache_dispatcher_lifecycle_is_cancel_safe() {
     engine.execute(request, 103, blocking_cached_event, &callback_state);
     {
         std::unique_lock<std::mutex> lock(callback_state.mutex);
-        assert(callback_state.cv.wait_for(lock, std::chrono::seconds(5), [&callback_state] {
-            return callback_state.headers_entered;
-        }));
+        const bool ready = callback_state.cv.wait_for(
+            lock, std::chrono::seconds(5),
+            [&callback_state] { return callback_state.headers_entered; });
+        assert(ready);
     }
 
     std::mutex completion_mutex;
@@ -318,8 +349,9 @@ void cache_dispatcher_lifecycle_is_cancel_safe() {
 
     {
         std::unique_lock<std::mutex> lock(completion_mutex);
-        assert(
-            completion_cv.wait_for(lock, std::chrono::seconds(5), [&] { return completed == 2; }));
+        const bool ready =
+            completion_cv.wait_for(lock, std::chrono::seconds(5), [&] { return completed == 2; });
+        assert(ready);
     }
     destroy_thread.join();
     cancel_thread.join();

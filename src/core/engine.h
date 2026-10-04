@@ -80,6 +80,7 @@ class Engine {
     void add_cache_validator(Job* job, const CachedResponse& response);
     void deliver_cached(Job* job, const CachedResponse& response);
     bool queue_cached_job(std::unique_ptr<Job>& job);
+    void remove_queued_cached_job(int64_t request_id);
     void run_cached_dispatcher();
     void stop_cached_dispatcher();
     void store_job_response(Job* job);
