@@ -362,9 +362,10 @@ std::optional<CachedResponse> ResponseCache::make_cached_response(
 
     const auto date_value = response.headers.get("date");
     const auto expires_value = response.headers.get("expires");
-    const auto parsed_date = date_value.empty() ? std::nullopt : parse_http_date(date_value);
+    const auto parsed_date =
+        date_value.empty() ? std::nullopt : parse_http_date(date_value, now_wall_seconds);
     const auto parsed_expires =
-        expires_value.empty() ? std::nullopt : parse_http_date(expires_value);
+        expires_value.empty() ? std::nullopt : parse_http_date(expires_value, now_wall_seconds);
 
     bool expires_invalid = !expires_value.empty() && !parsed_expires;
     std::optional<uint64_t> freshness_lifetime;
@@ -488,8 +489,7 @@ bool ResponseCache::store(const CacheRequest& request, const Response& response,
                                              now_wall_seconds, clock_->monotonic_ns());
     if (!cached) return false;
     std::lock_guard<std::mutex> lock(mutex_);
-    insert_locked(*cached);
-    return true;
+    return insert_locked(*cached).has_value();
 }
 
 CacheLookup ResponseCache::lookup_locked(const CacheRequest& request,

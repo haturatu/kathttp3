@@ -132,7 +132,7 @@ void append_fixed_decimal(std::string& out, uint64_t value, size_t width) {
 std::optional<int64_t> make_timestamp(int year, int month, int day, int hour, int minute,
                                       int second) {
     if (year < 1601 || month < 1 || month > 12 || day < 1 || day > days_in_month(year, month) ||
-        hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+        hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 60) {
         return std::nullopt;
     }
     const int64_t days =
@@ -153,7 +153,8 @@ std::optional<int64_t> make_timestamp(int year, int month, int day, int hour, in
 
 }  // namespace
 
-std::optional<int64_t> parse_http_date(std::string_view value) {
+std::optional<int64_t> parse_http_date(std::string_view value,
+                                       std::optional<uint64_t> reference_seconds) {
     value = trim_ows(value);
     if (value.empty()) return std::nullopt;
 
@@ -195,7 +196,28 @@ std::optional<int64_t> parse_http_date(std::string_view value) {
                 !parse_time(fields[1], hour, minute, second)) {
                 return std::nullopt;
             }
-            year += year >= 70 ? 1900 : 2000;
+            // Pick the latest matching year whose full date is at most 50
+            // calendar years ahead of the injected clock (RFC 9110 5.6.7).
+            constexpr uint64_t kMaxReferenceSeconds = 253402300799ULL;  // 9999-12-31
+            if (!reference_seconds || *reference_seconds > kMaxReferenceSeconds)
+                return std::nullopt;
+            int64_t reference_year = 0;
+            unsigned reference_month = 0;
+            unsigned reference_day = 0;
+            civil_from_days(static_cast<int64_t>(*reference_seconds / 86400), reference_year,
+                            reference_month, reference_day);
+            const int reference_time = static_cast<int>(*reference_seconds % 86400);
+            year += static_cast<int>((reference_year + 50) / 100) * 100;
+            const int month =
+                month_number(fields[0].substr(first_dash + 1, second_dash - first_dash - 1));
+            const std::array<int64_t, 6> candidate = {year, month, day, hour, minute, second};
+            const std::array<int64_t, 6> future_limit = {reference_year + 50,
+                                                         reference_month,
+                                                         reference_day,
+                                                         reference_time / 3600,
+                                                         (reference_time / 60) % 60,
+                                                         reference_time % 60};
+            if (candidate > future_limit) year -= 100;
             return make_timestamp(
                 year, month_number(fields[0].substr(first_dash + 1, second_dash - first_dash - 1)),
                 day, hour, minute, second);

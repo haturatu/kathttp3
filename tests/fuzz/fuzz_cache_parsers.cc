@@ -14,6 +14,6 @@ extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, size_t size) {
     headers.add("expires", value);
     headers.add("age", value);
     (void)parse_cache_control(headers);
-    (void)parse_http_date(value);
+    (void)parse_http_date(value, 1791072000ULL);
     return 0;
 }

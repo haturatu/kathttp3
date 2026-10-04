@@ -74,7 +74,8 @@ void weak_validation_updates_only_newest_variant() {
             older.headers.add("vary", "accept-encoding");
             older.headers.add(validator, value);
             older.body = {1};
-            assert(cache.store(request, older));
+            const bool stored_older = cache.store(request, older);
+            assert(stored_older);
             clock->wall += 1;
             clock->monotonic += 1'000'000'000ULL;
             Response newer = older;
@@ -84,7 +85,8 @@ void weak_validation_updates_only_newest_variant() {
             newer.headers.add("vary", "accept-language");
             newer.headers.add(validator, value);
             newer.body = {2};
-            assert(cache.store(request, newer));
+            const bool stored_newer = cache.store(request, newer);
+            assert(stored_newer);
 
             // Touch only the older variant so LRU order disagrees with Date order.
             HeaderList encoding_headers;
@@ -124,16 +126,87 @@ void request_max_age_includes_equal_age() {
     Response response;
     response.status_code = 200;
     response.headers.add("cache-control", "max-age=60");
-    assert(cache.store(request, response));
+    const bool stored = cache.store(request, response);
+    assert(stored);
     for (const uint64_t limit : {0ULL, 5ULL}) {
         HeaderList headers;
         headers.add("cache-control", "max-age=" + std::to_string(limit));
         const CacheRequest limited{"GET", request.url, headers};
         clock->monotonic = 1'000'000'000ULL + limit * 1'000'000'000ULL;
-        assert(cache.lookup(limited).state == CacheState::Fresh);
+        const CacheLookup equal_age = cache.lookup(limited);
+        assert(equal_age.state == CacheState::Fresh);
         clock->monotonic += 1'000'000'000ULL;
-        assert(cache.lookup(limited).state == CacheState::NeedsValidation);
+        const CacheLookup exceeded_age = cache.lookup(limited);
+        assert(exceeded_age.state == CacheState::NeedsValidation);
     }
+}
+
+void obsolete_http_date_uses_reference_time() {
+    const auto reference = parse_http_date("Sun, 04 Oct 2026 00:00:00 GMT");
+    assert(reference);
+    const uint64_t now = static_cast<uint64_t>(*reference);
+    const auto year_75 = parse_http_date("Wednesday, 06-Nov-75 08:49:37 GMT", now);
+    const auto expected_75 = parse_http_date("Wed, 06 Nov 2075 08:49:37 GMT");
+    assert(year_75 && year_75 == expected_75);
+    const auto year_77 = parse_http_date("Sunday, 06-Nov-77 08:49:37 GMT", now);
+    const auto expected_77 = parse_http_date("Sun, 06 Nov 1977 08:49:37 GMT");
+    assert(year_77 && year_77 == expected_77);
+    const auto exact_boundary = parse_http_date("Sunday, 04-Oct-76 00:00:00 GMT", now);
+    const auto expected_boundary = parse_http_date("Sun, 04 Oct 2076 00:00:00 GMT");
+    assert(exact_boundary && exact_boundary == expected_boundary);
+    const auto past_boundary = parse_http_date("Sunday, 04-Oct-76 00:00:01 GMT", now);
+    const auto expected_past = parse_http_date("Sun, 04 Oct 1976 00:00:01 GMT");
+    assert(past_boundary && past_boundary == expected_past);
+    const auto before_boundary = parse_http_date("Sunday, 03-Oct-76 23:59:59 GMT", now);
+    const auto expected_before = parse_http_date("Sun, 03 Oct 2076 23:59:59 GMT");
+    assert(before_boundary && before_boundary == expected_before);
+    const auto late_reference = parse_http_date("Sun, 04 Oct 2099 00:00:00 GMT");
+    assert(late_reference);
+    const auto next_century =
+        parse_http_date("Sunday, 06-Nov-01 08:49:37 GMT", static_cast<uint64_t>(*late_reference));
+    const auto expected_next = parse_http_date("Sun, 06 Nov 2101 08:49:37 GMT");
+    assert(next_century && next_century == expected_next);
+    const auto without_clock = parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT");
+    assert(!without_clock);
+
+    const auto normalized = parse_http_date("Sun, 01 Jan 2017 00:00:00 GMT");
+    for (const auto leap_second :
+         {"Sat, 31 Dec 2016 23:59:60 GMT", "Saturday, 31-Dec-16 23:59:60 GMT",
+          "Sat Dec 31 23:59:60 2016"}) {
+        const auto parsed = parse_http_date(leap_second, now);
+        assert(parsed && parsed == normalized);
+    }
+    const auto invalid_second = parse_http_date("Sat, 31 Dec 2016 23:59:61 GMT", now);
+    assert(!invalid_second);
+
+    auto clock = std::make_shared<FakeCacheClock>();
+    clock->wall = now;
+    ResponseCache cache(ResponseCacheConfig{}, clock);
+    HeaderList headers;
+    const CacheRequest request{"GET", "https://cache.example/rfc850-expires", headers};
+    Response response;
+    response.status_code = 200;
+    response.headers.add("date", "Sunday, 04-Oct-26 00:00:00 GMT");
+    response.headers.add("expires", "Wednesday, 06-Nov-75 08:49:37 GMT");
+    const bool stored = cache.store(request, response);
+    assert(stored);
+    const auto lookup = cache.lookup(request);
+    assert(lookup.state == CacheState::Fresh);
+}
+
+void store_reports_immediate_eviction() {
+    auto clock = std::make_shared<FakeCacheClock>();
+    ResponseCache cache(ResponseCacheConfig{.max_bytes = 1}, clock);
+    HeaderList headers;
+    const CacheRequest request{"GET", "https://cache.example/no-byte-budget", headers};
+    Response response;
+    response.status_code = 200;
+    response.headers.add("cache-control", "max-age=60");
+    const bool stored = cache.store(request, response);
+    assert(!stored);
+    assert(cache.size() == 0 && cache.bytes() == 0);
+    const auto lookup = cache.lookup(request);
+    assert(lookup.state == CacheState::Miss);
 }
 
 void cache_payload_is_shared_and_survives_eviction() {
@@ -145,7 +218,8 @@ void cache_payload_is_shared_and_survives_eviction() {
     response.status_code = 200;
     response.headers.add("cache-control", "max-age=60");
     response.body.resize(1 << 20, 42);
-    assert(cache.store(request, response));
+    const bool stored = cache.store(request, response);
+    assert(stored);
     const auto first = cache.lookup(request);
     const auto second = cache.lookup(request);
     assert(first.response && second.response);
@@ -160,6 +234,8 @@ void cache_payload_is_shared_and_survives_eviction() {
 }  // namespace
 
 int main() {
+    obsolete_http_date_uses_reference_time();
+    store_reports_immediate_eviction();
     weak_validation_updates_only_newest_variant();
     request_max_age_includes_equal_age();
     cache_payload_is_shared_and_survives_eviction();
@@ -702,7 +778,7 @@ int main() {
     assert(parse_cache_control(invalid_cache_control).invalid);
 
     assert(parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT") == 784111777);
-    assert(parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT") == 784111777);
+    assert(parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT", 1791072000ULL) == 784111777);
     assert(parse_http_date("Sun Nov  6 08:49:37 1994") == 784111777);
     assert(format_http_date(784111777) == "Sun, 06 Nov 1994 08:49:37 GMT");
     assert(format_http_date(1'000) == "Thu, 01 Jan 1970 00:16:40 GMT");
@@ -1336,7 +1412,7 @@ int main() {
                                      cache_request_headers, false};
     const bool stored_order_newer = selection_cache.store(order_request, order_newer);
     const bool stored_order_older = selection_cache.store(order_request, order_older);
-    assert(stored_order_newer && stored_order_older);
+    assert(stored_order_newer && !stored_order_older);
     const auto order_hit = selection_cache.lookup(order_request);
     assert(order_hit.state == CacheState::Fresh && order_hit.response &&
            *order_hit.response->body == order_newer.body);
@@ -1405,7 +1481,8 @@ int main() {
         *clock_failure_hit.response, cache_request, clock_failure_not_modified_headers);
     assert(clock_failure_merge && !clock_failure_merge->retention_candidate &&
            *clock_failure_merge->delivery.body == cache_response.body);
-    assert(clock_failure_cache->lookup(cache_request).state == CacheState::Miss);
+    const auto clock_failure_lookup = clock_failure_cache->lookup(cache_request);
+    assert(clock_failure_lookup.state == CacheState::Miss);
     cache_clock->wall_available = true;
 
     Response must_revalidate_response = stale_error_response;
