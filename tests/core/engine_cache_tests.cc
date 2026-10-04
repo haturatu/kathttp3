@@ -78,6 +78,7 @@ struct EventLog {
     std::vector<int> statuses;
     std::vector<int> errors;
     HeaderList headers;
+    std::vector<uint8_t> body;
 };
 
 void record_event(void* user_data, const kathttp3_event* event) {
@@ -85,6 +86,8 @@ void record_event(void* user_data, const kathttp3_event* event) {
     log->types.push_back(event->type);
     log->statuses.push_back(event->status_code);
     log->errors.push_back(event->error_code);
+    if (event->type == KATHTTP3_EVENT_BODY && event->data_len != 0)
+        log->body.insert(log->body.end(), event->data, event->data + event->data_len);
     if (event->type == KATHTTP3_EVENT_HEADERS) {
         for (size_t i = 0; i < event->header_count; ++i)
             log->headers.add(event->names[i], event->values[i]);
@@ -146,6 +149,75 @@ void full_response_removes_validation_target() {
     const CacheLookup after_full_response = EngineTestAccess::cache(engine).lookup(stored_request);
     assert(after_full_response.state == CacheState::Miss);
     engine.destroy();
+}
+
+void ims_304_without_last_modified_is_delivery_only() {
+    enum class Scenario { Valid, Replaced, Evicted, Etag };
+    for (const auto scenario :
+         {Scenario::Valid, Scenario::Replaced, Scenario::Evicted, Scenario::Etag}) {
+        Engine engine(test_options());
+        constexpr const char* kUrl = "https://cache.example/ims-304";
+        HeaderList headers;
+        const CacheRequest request{"GET", kUrl, headers};
+        Response response;
+        response.status_code = 200;
+        response.headers.add("cache-control", "max-age=0");
+        response.headers.add("last-modified", "Thu, 01 Jan 1970 00:16:40 GMT");
+        response.headers.add("set-cookie", "old=value");
+        if (scenario == Scenario::Etag) response.headers.add("etag", "\"v1\"");
+        response.body = {8, 9};
+        const bool stored = EngineTestAccess::cache(engine).store(request, response);
+        assert(stored);
+        auto job = make_job(120, kUrl);
+        EngineTestAccess::prepare_cache(engine, job.get());
+        assert(job->cache_validation);
+        const uint64_t initial_id = job->cache_validation->stored.entry_id;
+        assert(job->cache_validation->sent_if_modified_since == (scenario != Scenario::Etag));
+        if (scenario != Scenario::Etag) {
+            assert(job->request->headers.get("if-modified-since") ==
+                   "Thu, 01 Jan 1970 00:16:40 GMT");
+        }
+        if (scenario == Scenario::Replaced) {
+            Response replacement = response;
+            replacement.body = {10};
+            const bool replaced = EngineTestAccess::cache(engine).store(request, replacement);
+            assert(replaced);
+        } else if (scenario == Scenario::Evicted) {
+            EngineTestAccess::cache(engine).clear();
+        }
+        EventLog log;
+        EngineTestAccess::install_callback(engine, job->id, record_event, &log);
+        HeaderList not_modified;
+        not_modified.add("cache-control", "max-age=60");
+        not_modified.add("x-validated", "yes");
+        engine.on_job_headers(job.get(), 304, not_modified);
+        assert(log.types.empty());
+        engine.on_job_complete(job.get());
+        const auto after = EngineTestAccess::cache(engine).lookup(request);
+        if (scenario == Scenario::Valid) {
+            assert(log.types.size() == 3);
+            assert(log.types[0] == KATHTTP3_EVENT_HEADERS && log.statuses[0] == 200);
+            assert(log.types[1] == KATHTTP3_EVENT_BODY && log.body == response.body);
+            assert(log.types[2] == KATHTTP3_EVENT_COMPLETE && log.errors[2] == 0);
+            assert(log.headers.get("x-validated") == "yes");
+            assert(log.headers.get_all("set-cookie").empty());
+            assert(after.state == CacheState::NeedsValidation && after.response);
+            assert(after.response->entry_id == initial_id);
+            assert(after.response->headers.get("cache-control") == "max-age=0");
+            assert(after.response->headers.get("x-validated").empty());
+        } else {
+            assert(log.types.size() == 1 && log.types[0] == KATHTTP3_EVENT_ERROR);
+            assert(log.errors[0] == KATHTTP3_ERR_HTTP3 && log.body.empty());
+            if (scenario == Scenario::Replaced) {
+                assert(after.response && after.response->entry_id != initial_id);
+                assert(*after.response->body == std::vector<uint8_t>{10});
+                assert(after.response->headers.get("cache-control") == "max-age=0");
+            } else {
+                assert(after.state == CacheState::Miss);
+            }
+        }
+        engine.destroy();
+    }
 }
 
 void stale_fallback_precedes_body_length_validation() {
@@ -360,6 +432,7 @@ void cache_dispatcher_lifecycle_is_cancel_safe() {
 }  // namespace
 
 int main() {
+    ims_304_without_last_modified_is_delivery_only();
     cached_delivery_omits_set_cookie();
     cache_dispatcher_bounds_pending_hits(false);
     cache_dispatcher_bounds_pending_hits(true);

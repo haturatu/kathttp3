@@ -98,6 +98,23 @@ void weak_validation_updates_only_newest_variant() {
             const auto stale = cache.lookup(request);
             assert(stale.response && stale.validation_candidate_ids.size() == 2);
             (void)cache.lookup(encoding_request);
+            if (!use_etag) {
+                HeaderList ims_not_modified;
+                ims_not_modified.add("cache-control", "max-age=60");
+                const auto delivery_only =
+                    cache.merge_304(*stale.response, request, ims_not_modified, std::nullopt,
+                                    stale.validation_candidate_ids, true);
+                assert(delivery_only && !delivery_only->retention_candidate);
+                assert(*delivery_only->delivery.body == newer.body);
+                const auto unchanged_old = cache.lookup(encoding_request);
+                const auto unchanged_new = cache.lookup(request);
+                assert(unchanged_old.state == CacheState::NeedsValidation &&
+                       unchanged_old.response);
+                assert(unchanged_new.state == CacheState::NeedsValidation &&
+                       unchanged_new.response);
+                assert(unchanged_old.response->entry_id == old_lookup.response->entry_id);
+                assert(unchanged_new.response->entry_id == stale.response->entry_id);
+            }
             HeaderList updated;
             updated.add("cache-control", no_store ? "no-store" : "max-age=60");
             updated.add(validator, value);
@@ -139,6 +156,73 @@ void request_max_age_includes_equal_age() {
         const CacheLookup exceeded_age = cache.lookup(limited);
         assert(exceeded_age.state == CacheState::NeedsValidation);
     }
+}
+
+void validatorless_304_requires_single_initial_candidate() {
+    auto clock = std::make_shared<FakeCacheClock>();
+    ResponseCache cache(ResponseCacheConfig{}, clock);
+    HeaderList headers;
+    headers.add("accept-encoding", "gzip");
+    headers.add("accept-language", "ja");
+    const CacheRequest request{"GET", "https://cache.example/validatorless-variants", headers};
+    Response encoding;
+    encoding.status_code = 200;
+    encoding.headers.add("cache-control", "max-age=0");
+    encoding.headers.add("vary", "accept-encoding");
+    encoding.body = {1};
+    const bool stored_encoding = cache.store(request, encoding);
+    assert(stored_encoding);
+    clock->wall += 1;
+    clock->monotonic += 1'000'000'000ULL;
+    Response language = encoding;
+    language.headers.clear();
+    language.headers.add("cache-control", "max-age=0");
+    language.headers.add("vary", "accept-language");
+    language.body = {2};
+    const bool stored_language = cache.store(request, language);
+    assert(stored_language);
+    const auto stale = cache.lookup(request);
+    assert(stale.response && stale.validation_candidate_ids.size() == 2);
+    HeaderList encoding_headers;
+    encoding_headers.add("accept-encoding", "gzip");
+    const CacheRequest encoding_request{"GET", request.url, encoding_headers};
+    HeaderList language_headers;
+    language_headers.add("accept-language", "ja");
+    const CacheRequest language_request{"GET", request.url, language_headers};
+    const auto old_encoding = cache.lookup(encoding_request);
+    const auto old_language = cache.lookup(language_request);
+    assert(old_encoding.response && old_language.response);
+    const size_t before_bytes = cache.bytes();
+    HeaderList updated;
+    updated.add("cache-control", "max-age=60");
+    const auto ambiguous = cache.merge_304(*stale.response, request, updated, std::nullopt,
+                                           stale.validation_candidate_ids);
+    assert(!ambiguous);
+    const auto ambiguous_without_snapshot = cache.merge_304(*stale.response, request, updated);
+    assert(!ambiguous_without_snapshot);
+    const auto after_encoding = cache.lookup(encoding_request);
+    const auto after_language = cache.lookup(language_request);
+    assert(after_encoding.state == CacheState::NeedsValidation && after_encoding.response);
+    assert(after_language.state == CacheState::NeedsValidation && after_language.response);
+    assert(after_encoding.response->entry_id == old_encoding.response->entry_id);
+    assert(after_language.response->entry_id == old_language.response->entry_id);
+    assert(after_encoding.response->headers.get("cache-control") == "max-age=0");
+    assert(after_language.response->headers.get("cache-control") == "max-age=0");
+    assert(cache.size() == 2 && cache.bytes() == before_bytes);
+
+    const bool removed = cache.invalidate_entry(old_encoding.response->entry_id);
+    assert(removed);
+    const auto still_ambiguous = cache.merge_304(*stale.response, request, updated, std::nullopt,
+                                                 stale.validation_candidate_ids);
+    assert(!still_ambiguous);
+    const auto single = cache.lookup(request);
+    assert(single.response && single.validation_candidate_ids.size() == 1);
+    const auto unique = cache.merge_304(*single.response, request, updated, std::nullopt,
+                                        single.validation_candidate_ids);
+    assert(unique && unique->retention_candidate);
+    const auto fresh = cache.lookup(request);
+    assert(fresh.state == CacheState::Fresh && fresh.response);
+    assert(*fresh.response->body == language.body);
 }
 
 void obsolete_http_date_uses_reference_time() {
@@ -234,6 +318,7 @@ void cache_payload_is_shared_and_survives_eviction() {
 }  // namespace
 
 int main() {
+    validatorless_304_requires_single_initial_candidate();
     obsolete_http_date_uses_reference_time();
     store_reports_immediate_eviction();
     weak_validation_updates_only_newest_variant();
@@ -1199,9 +1284,18 @@ int main() {
     assert(!mismatched_last_modified);
     HeaderList missing_last_modified_headers;
     missing_last_modified_headers.add("cache-control", "max-age=60");
-    const auto missing_last_modified = revalidation_cache.merge_304(
+    const auto untrusted_missing_last_modified = revalidation_cache.merge_304(
         *last_modified_stale.response, last_modified_request, missing_last_modified_headers);
-    assert(!missing_last_modified);
+    assert(!untrusted_missing_last_modified);
+    const auto missing_last_modified = revalidation_cache.merge_304(
+        *last_modified_stale.response, last_modified_request, missing_last_modified_headers,
+        std::nullopt, last_modified_stale.validation_candidate_ids, true);
+    assert(missing_last_modified && !missing_last_modified->retention_candidate &&
+           *missing_last_modified->delivery.body == last_modified_response.body);
+    const auto last_modified_still_stale = revalidation_cache.lookup(last_modified_request);
+    assert(last_modified_still_stale.state == CacheState::NeedsValidation &&
+           last_modified_still_stale.response &&
+           last_modified_still_stale.response->entry_id == last_modified_stale.response->entry_id);
     HeaderList matching_last_modified_headers;
     matching_last_modified_headers.add("cache-control", "max-age=60");
     matching_last_modified_headers.add("last-modified", "Thu, 01 Jan 1970 00:16:40 GMT");
