@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
@@ -21,6 +22,16 @@ class EngineTestAccess {
     static ResponseCache& cache(Engine& engine) {
         assert(engine.http_cache_);
         return *engine.http_cache_;
+    }
+
+    static void check_queue(Engine& engine, size_t jobs, size_t bytes,
+                            const std::shared_ptr<const std::vector<uint8_t>>& body) {
+        std::lock_guard<std::mutex> lock(engine.cache_dispatch_mutex_);
+        assert(engine.cache_dispatch_jobs_.size() == jobs);
+        assert(engine.cache_dispatch_queued_bytes_ == bytes);
+        for (const auto& job : engine.cache_dispatch_jobs_) {
+            assert(job->cached_response && job->cached_response->body == body);
+        }
     }
 
     static void prepare_cache(Engine& engine, Job* job) {
@@ -64,6 +75,7 @@ struct EventLog {
     std::vector<kathttp3_event_type> types;
     std::vector<int> statuses;
     std::vector<int> errors;
+    HeaderList headers;
 };
 
 void record_event(void* user_data, const kathttp3_event* event) {
@@ -71,6 +83,10 @@ void record_event(void* user_data, const kathttp3_event* event) {
     log->types.push_back(event->type);
     log->statuses.push_back(event->status_code);
     log->errors.push_back(event->error_code);
+    if (event->type == KATHTTP3_EVENT_HEADERS) {
+        for (size_t i = 0; i < event->header_count; ++i)
+            log->headers.add(event->names[i], event->values[i]);
+    }
 }
 
 struct BlockingCallbackState {
@@ -78,12 +94,18 @@ struct BlockingCallbackState {
     std::condition_variable cv;
     bool headers_entered = false;
     bool release_headers = false;
+    size_t completed = 0;
 };
 
 void blocking_cached_event(void* user_data, const kathttp3_event* event) {
     auto* state = static_cast<BlockingCallbackState*>(user_data);
-    if (event->type != KATHTTP3_EVENT_HEADERS) return;
+    if (event->type != KATHTTP3_EVENT_HEADERS && event->type != KATHTTP3_EVENT_COMPLETE) return;
     std::unique_lock<std::mutex> lock(state->mutex);
+    if (event->type == KATHTTP3_EVENT_COMPLETE) {
+        ++state->completed;
+        state->cv.notify_all();
+        return;
+    }
     state->headers_entered = true;
     state->cv.notify_all();
     state->cv.wait(lock, [state] { return state->release_headers; });
@@ -150,6 +172,100 @@ void stale_fallback_precedes_body_length_validation() {
     engine.destroy();
 }
 
+void cached_delivery_omits_set_cookie() {
+    Engine engine(test_options());
+    constexpr const char* kUrl = "https://cache.example/cookies";
+    auto network_job = make_job(110, kUrl);
+    EventLog network_log;
+    EngineTestAccess::install_callback(engine, network_job->id, record_event, &network_log);
+    HeaderList headers;
+    headers.add("cache-control", "max-age=60");
+    headers.add("Set-Cookie", "session=old; Max-Age=3600");
+    headers.add("sEt-CoOkIe", "other=old; Max-Age=3600");
+    headers.add("content-type", "application/octet-stream");
+    engine.on_job_headers(network_job.get(), 200, headers);
+    const uint8_t body[] = {1, 2};
+    engine.on_job_body(network_job.get(), body, sizeof(body));
+    engine.on_job_complete(network_job.get());
+    assert(network_log.headers.get_all("set-cookie").size() == 2);
+
+    auto hit = make_job(111, kUrl);
+    EngineTestAccess::prepare_cache(engine, hit.get());
+    assert(hit->cached_response);
+    assert(hit->cached_response->headers.get_all("set-cookie").size() == 2);
+    EventLog cached_log;
+    EngineTestAccess::install_callback(engine, hit->id, record_event, &cached_log);
+    engine.on_job_cached(hit.get());
+    assert(cached_log.types.size() == 3 && cached_log.statuses[0] == 200);
+    assert(cached_log.headers.get_all("set-cookie").empty());
+    assert(cached_log.headers.get("content-type") == "application/octet-stream");
+    assert(!cached_log.headers.get("age").empty());
+    engine.destroy();
+}
+
+void cache_dispatcher_bounds_pending_hits(bool large_body) {
+    auto options = test_options();
+    if (large_body) {
+        options.http_cache_max_bytes = 32 * 1024 * 1024;
+        options.http_cache_max_entry_bytes = 5 * 1024 * 1024;
+    }
+    Engine engine(options);
+    constexpr const char* kUrl = "https://cache.example/dispatcher-limits";
+    HeaderList headers;
+    const CacheRequest request{"GET", kUrl, headers};
+    Response response;
+    response.status_code = 200;
+    response.headers.add("cache-control", "max-age=60");
+    response.body.resize(large_body ? 4 * 1024 * 1024 : 1, 42);
+    assert(EngineTestAccess::cache(engine).store(request, response));
+    const auto lookup = EngineTestAccess::cache(engine).lookup(request);
+    assert(lookup.response);
+    const size_t job_bytes = lookup.response->accounted_bytes;
+    const size_t admitted = std::min<size_t>(128, options.http_cache_max_bytes / job_bytes);
+    assert(admitted > 0 && (large_body ? admitted < 128 : admitted == 128));
+
+    BlockingCallbackState state;
+    engine.execute(kathttp3_request_create("GET", kUrl), 200, blocking_cached_event, &state);
+    {
+        std::unique_lock<std::mutex> lock(state.mutex);
+        assert(state.cv.wait_for(lock, std::chrono::seconds(5),
+                                 [&] { return state.headers_entered; }));
+    }
+    for (size_t i = 0; i < admitted; ++i) {
+        engine.execute(kathttp3_request_create("GET", kUrl), 201 + i, blocking_cached_event,
+                       &state);
+    }
+    EngineTestAccess::check_queue(engine, admitted, admitted * job_bytes, lookup.response->body);
+    EventLog rejected;
+    for (int64_t id : {1000, 1001}) {
+        engine.execute(kathttp3_request_create("GET", kUrl), id, record_event, &rejected);
+    }
+    assert(rejected.types.size() == 2);
+    for (size_t i = 0; i < rejected.types.size(); ++i) {
+        assert(rejected.types[i] == KATHTTP3_EVENT_ERROR);
+        assert(rejected.errors[i] == KATHTTP3_ERR_NOMEM);
+    }
+    EngineTestAccess::check_queue(engine, admitted, admitted * job_bytes, lookup.response->body);
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.release_headers = true;
+    }
+    state.cv.notify_all();
+    {
+        std::unique_lock<std::mutex> lock(state.mutex);
+        assert(state.cv.wait_for(lock, std::chrono::seconds(5),
+                                 [&] { return state.completed == admitted + 1; }));
+    }
+    EngineTestAccess::check_queue(engine, 0, 0, lookup.response->body);
+    engine.execute(kathttp3_request_create("GET", kUrl), 1002, blocking_cached_event, &state);
+    {
+        std::unique_lock<std::mutex> lock(state.mutex);
+        assert(state.cv.wait_for(lock, std::chrono::seconds(5),
+                                 [&] { return state.completed == admitted + 2; }));
+    }
+    engine.destroy();
+}
+
 void cache_dispatcher_lifecycle_is_cancel_safe() {
     const kathttp3_client_options options = test_options();
     Engine engine(options);
@@ -212,6 +328,9 @@ void cache_dispatcher_lifecycle_is_cancel_safe() {
 }  // namespace
 
 int main() {
+    cached_delivery_omits_set_cookie();
+    cache_dispatcher_bounds_pending_hits(false);
+    cache_dispatcher_bounds_pending_hits(true);
     full_response_removes_validation_target();
     stale_fallback_precedes_body_length_validation();
     cache_dispatcher_lifecycle_is_cancel_safe();

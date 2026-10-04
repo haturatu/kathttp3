@@ -246,7 +246,12 @@ allowed because this is a per-client private cache. `Vary`, `Age`, monotonic
 resident time, ETag/Last-Modified validation, `304` merging, request cache
 directives, stale-if-error, unsafe-method invalidation, and byte-bounded LRU
 eviction are handled natively. Streaming requests, oversized bodies, partial
-responses, and cache hits never reapply cached `Set-Cookie` fields.
+responses bypass the cache. Cached delivery omits `Set-Cookie` fields. Cache
+payloads use immutable shared storage. The cache dispatcher admits at most 128
+pending hits and at most `httpCacheMaxBytes` accounted response bytes (including
+headers and metadata, conservatively counting shared bodies for each job), plus
+one active delivery. Excess hits fail with `KATHTTP3_ERR_NOMEM`; capacity becomes
+available again as queued jobs are dispatched.
 
 `KatHttp3RequestBody.Bytes`, `FileBody`, and `Stream` support buffered,
 file-backed, and producer-`Flow` uploads. `FileBody` and `Stream` use a bounded
