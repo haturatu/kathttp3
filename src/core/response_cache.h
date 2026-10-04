@@ -120,11 +120,15 @@ class ResponseCache {
     bool store(const CacheRequest& request, const Response& response,
                std::optional<uint64_t> request_wall_seconds = std::nullopt);
 
+    /* An Engine-generated IMS may validate delivery without response validators
+     * if the selected generation still exists. Such delivery never refreshes
+     * stored metadata or produces a retention candidate. */
     std::optional<RevalidationResult> merge_304(
         const CachedResponse& stored, const CacheRequest& request,
         const HeaderList& response_headers,
         std::optional<uint64_t> request_wall_seconds = std::nullopt,
-        const std::vector<uint64_t>& validation_candidate_ids = {});
+        const std::vector<uint64_t>& validation_candidate_ids = {},
+        bool sent_if_modified_since = false);
 
     bool can_serve_stale_if_error(const CachedResponse& response) const;
 

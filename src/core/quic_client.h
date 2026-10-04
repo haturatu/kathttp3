@@ -62,6 +62,8 @@ struct CacheValidation {
     std::vector<uint64_t> candidate_entry_ids;
     HeaderList response_headers;
     bool serve_stale_on_error = false;
+    /* Only true for an IMS condition added by Engine from this stored entry. */
+    bool sent_if_modified_since = false;
 };
 
 /* One HTTP/3 request/response exchange multiplexed over a QuicClient. */

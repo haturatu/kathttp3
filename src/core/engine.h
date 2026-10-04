@@ -77,7 +77,8 @@ class Engine {
     void add_cookie_header(kathttp3_request* req, const Url& url);
     void store_cookies(const Url& url, const HeaderList& headers);
     void prepare_cache(Job* job);
-    void add_cache_validator(Job* job, const CachedResponse& response);
+    /* Returns true only when an If-Modified-Since condition was added. */
+    bool add_cache_validator(Job* job, const CachedResponse& response);
     void deliver_cached(Job* job, const CachedResponse& response);
     bool queue_cached_job(std::unique_ptr<Job>& job);
     void remove_queued_cached_job(int64_t request_id);

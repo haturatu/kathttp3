@@ -396,23 +396,23 @@ void Engine::prepare_cache(Job* job) {
         return;
     }
     if (lookup.state == CacheState::NeedsValidation && lookup.response) {
-        add_cache_validator(job, *lookup.response);
+        const bool sent_if_modified_since = add_cache_validator(job, *lookup.response);
         job->cache_validation = CacheValidation{
-            std::move(*lookup.response),
-            std::move(lookup.validation_candidate_ids),
-            {},
-            false,
+            std::move(*lookup.response), std::move(lookup.validation_candidate_ids), {}, false,
+            sent_if_modified_since,
         };
     }
 }
 
-void Engine::add_cache_validator(Job* job, const CachedResponse& response) {
-    if (!job || !job->request) return;
+bool Engine::add_cache_validator(Job* job, const CachedResponse& response) {
+    if (!job || !job->request) return false;
     if (response.etag && !has_header(job->request->headers, "if-none-match")) {
         job->request->headers.add("if-none-match", *response.etag);
     } else if (response.last_modified && !has_header(job->request->headers, "if-modified-since")) {
         job->request->headers.add("if-modified-since", *response.last_modified);
+        return true;
     }
+    return false;
 }
 
 void Engine::deliver_cached(Job* job, const CachedResponse& response) {
@@ -778,7 +778,8 @@ void Engine::on_job_complete(Job* job) {
         const auto& validation = *job->cache_validation;
         const auto merged =
             http_cache_->merge_304(validation.stored, request, validation.response_headers,
-                                   job->cache_request_wall_seconds, validation.candidate_entry_ids);
+                                   job->cache_request_wall_seconds, validation.candidate_entry_ids,
+                                   validation.sent_if_modified_since);
         if (merged) {
             deliver_cached(job, merged->delivery);
         } else {

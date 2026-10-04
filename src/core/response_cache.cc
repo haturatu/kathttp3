@@ -530,12 +530,15 @@ CacheLookup ResponseCache::lookup(const CacheRequest& request) {
 std::optional<RevalidationResult> ResponseCache::merge_304(
     const CachedResponse& stored, const CacheRequest& request, const HeaderList& response_headers,
     std::optional<uint64_t> request_wall_seconds,
-    const std::vector<uint64_t>& validation_candidate_ids) {
+    const std::vector<uint64_t>& validation_candidate_ids, bool sent_if_modified_since) {
     if (stored.url != request.url || !vary_matches(stored, request.headers)) return std::nullopt;
     std::vector<uint64_t> candidate_ids = validation_candidate_ids;
     if (candidate_ids.empty()) candidate_ids.push_back(stored.entry_id);
     const bool response_has_etag = has_header(response_headers, "etag");
     const bool response_has_last_modified = has_header(response_headers, "last-modified");
+    const bool delivery_only_ims = !response_has_etag && !response_has_last_modified &&
+                                   sent_if_modified_since && !stored.etag &&
+                                   stored.last_modified.has_value();
     const std::string_view response_etag = response_headers.get("etag");
     const std::string_view response_last_modified = response_headers.get("last-modified");
     if (response_has_etag) {
@@ -544,7 +547,7 @@ std::optional<RevalidationResult> ResponseCache::merge_304(
     } else if (response_has_last_modified) {
         if (!stored.last_modified || response_last_modified != *stored.last_modified)
             return std::nullopt;
-    } else if (stored.etag || stored.last_modified) {
+    } else if ((stored.etag || stored.last_modified) && !delivery_only_ims) {
         return std::nullopt;
     }
     const auto now_wall_seconds = clock_->wall_seconds();
@@ -573,6 +576,34 @@ std::optional<RevalidationResult> ResponseCache::merge_304(
         return std::find(candidate_ids.begin(), candidate_ids.end(), entry_id) !=
                candidate_ids.end();
     };
+    if (!response_has_etag && !response_has_last_modified) {
+        const auto selected =
+            std::find_if(entries_.begin(), entries_.end(), [&](const auto& entry) {
+                return entry.entry_id == stored.entry_id && is_candidate(entry.entry_id);
+            });
+        if (selected == entries_.end()) return std::nullopt;
+        if (delivery_only_ims) {
+            /* An IMS 304 need not repeat Last-Modified (RFC 9110 15.4.5).
+             * Generation identity ties this delivery to our selected response,
+             * but without a response validator no stored metadata is updated. */
+            if (selected->etag || selected->last_modified != stored.last_modified)
+                return std::nullopt;
+            return RevalidationResult{*delivery, std::nullopt};
+        }
+        /* RFC 9111 4.3.4: the initial set must contain exactly one response
+         * and that response must also lack validators. Eviction during the
+         * request must not turn an ambiguous initial set into a unique one. */
+        const bool ambiguous_without_snapshot =
+            validation_candidate_ids.empty() &&
+            std::any_of(entries_.begin(), entries_.end(), [&](const auto& entry) {
+                return entry.entry_id != stored.entry_id && entry.url == request.url &&
+                       vary_matches(entry, request.headers);
+            });
+        if (candidate_ids.size() != 1 || ambiguous_without_snapshot || selected->etag ||
+            selected->last_modified)
+            return std::nullopt;
+    }
+
     const auto validator_matches = [&](const CachedResponse& current) {
         if (response_has_etag) {
             return current.etag && entity_tag_selects_stored(*current.etag, response_etag);
