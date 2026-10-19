@@ -1,234 +1,249 @@
 # KatHttp3
 
-KatHttp3 is an independent, native HTTP/3 client library for Android (API 26+) that does not depend on Cronet. It ships its own C++20 core built directly on `ngtcp2 1.24.0 + nghttp3 1.17.0 + BoringSSL`, exposed through a stable C ABI, a JNI bridge, and a coroutine-based Kotlin API, with a Jetpack Compose example.
+KatHttp3 is a native HTTP/3 client library for Android 8.0 (API 26) and later. It provides a coroutine-based Kotlin API backed by a C++20 HTTP/3 engine, without depending on Cronet. A Jetpack Compose example application is included.
 
-> Status: host core tests, an ngtcp2/nghttp3/BoringSSL HTTP/3 interoperability
-> smoke test, and Android library/example builds are automated. Redirects,
-> uploads, cancellation, and Android network changes still need validation
-> against each target server and real device network.
+The transport uses **ngtcp2 1.24.0**, **nghttp3 1.17.0**, and a pinned BoringSSL revision. The native core is also available through a versioned C ABI.
 
-## Architecture and ownership
+**Status:** Host unit tests, an HTTP/3 interoperability smoke test, and Android library/example builds run in CI. Passing these checks does not establish interoperability with every HTTP/3 server or behavior on every Android network. In particular, uploads, redirects, cancellation, and migration should be tested on the intended devices and servers.
 
-```text
-Kotlin public API
-  -> JNI bridge
-    -> C ABI (opaque client/request handles)
-      -> C++ Engine / per-origin QuicClient worker
-        -> nghttp3 (HTTP/3 frames and QPACK)
-        -> ngtcp2 (QUIC transport, recovery and flow control)
-        -> BoringSSL (TLS 1.3 and packet protection)
-          -> non-blocking UDP socket
-```
+## Getting started
 
-Kotlin owns immutable request values and copies callback data. A JNI callback owns one global reference until one terminal callback. `kathttp3_client_execute` transfers request ownership to native code; callback buffers are valid only during the callback. Engine owns request registry, cookies, the opt-in private HTTP response cache, and the connection pool. Each connection worker exclusively owns its UDP fd, TLS session, ngtcp2 connection and nghttp3 connection. `close`, cancellation and terminal delivery are idempotent at their public boundaries.
+### Requirements
 
-ngtcp2 owns QUIC packet parsing/generation, loss recovery, congestion and transport flow control. nghttp3 owns HTTP/3 framing, SETTINGS and QPACK encoding/decoding. BoringSSL owns TLS 1.3 and cryptography. KatHttp3 owns DNS, UDP/timer driving, SNI/ALPN/certificate policy, critical stream creation, request lifecycle, redirects/cookies, and language bindings.
+| Component | Requirement |
+| --- | --- |
+| Android runtime | API 26 or later |
+| Android build | Android SDK platform 37, NDK `27.0.12077973`, CMake 3.22.1 or newer |
+| Build tools | JDK 17, Git, Gradle wrapper included in this repository |
+| Native core | C++20, ngtcp2, nghttp3, BoringSSL |
+| Native Android targets | `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86` |
 
-## Host build and tests
+The example application targets Android API 36, while the library and example compile against SDK 37. Set `ANDROID_HOME` or `ANDROID_SDK_ROOT` to the Android SDK path. `ANDROID_NDK_HOME` may be set to select an NDK explicitly. Ninja is recommended; the native dependency script can fall back to Unix Makefiles.
 
-Prerequisites are CMake 3.22+, C++20, pkg-config, and matching development packages for ngtcp2/nghttp3. The tested host versions are ngtcp2 1.24.0 and nghttp3 1.17.0.
+### Build the Android library and example
+
+Clone the repository and build its pinned native dependencies:
 
 ```sh
-cmake -S . -B build -DKATHTTP3_BUILD_TESTS=ON -DKATHTTP3_BUILD_JNI=ON
-cmake --build build -j
-ctest --test-dir build --output-on-failure
-```
-
-Sanitizers:
-
-```sh
-cmake -S . -B build-asan -DKATHTTP3_SANITIZE=ON
-cmake --build build-asan -j
-ctest --test-dir build-asan --output-on-failure
-```
-
-## Android dependencies and build
-
-Prerequisites:
-
-- Android SDK with platform 36 and build-tools 36.0.0
-- Android NDK `27.0.12077973`
-- CMake 3.22.1 or newer, Git, and Java 17. Ninja is recommended; Unix
-  Makefiles are used automatically when Ninja is unavailable.
-
-Set `ANDROID_HOME` or `ANDROID_SDK_ROOT`. An explicit `ANDROID_NDK_HOME` is also accepted. KatHttp3 deliberately does not link Android's private platform BoringSSL ABI. The checked-in build script downloads fixed upstream sources and cross-compiles these static libraries:
-
-```text
-third_party/android-deps/<ABI>/lib/libngtcp2.a
-third_party/android-deps/<ABI>/lib/libngtcp2_crypto_boringssl.a
-third_party/android-deps/<ABI>/lib/libnghttp3.a
-third_party/android-deps/<ABI>/lib/libssl.a
-third_party/android-deps/<ABI>/lib/libcrypto.a
-```
-
-Build every supported ABI:
-
-```sh
+git clone https://github.com/haturatu/kathttp3.git
+cd kathttp3
 ./gradlew buildAndroidNativeDeps
+./gradlew :kathttp3:assembleRelease :example:assembleDebug
 ```
 
-Build only one ABI or rebuild from clean state:
+The release AAR is generated under `kathttp3/build/outputs/aar/`. The example APK is generated at `example/build/outputs/apk/debug/example-debug.apk`.
+
+Building `:kathttp3` invokes the native dependency build through its `preBuild` task; the explicit `buildAndroidNativeDeps` command above is useful when diagnosing or preparing the dependencies separately.
+
+To install the example on a connected device:
 
 ```sh
-scripts/build-android-deps.sh --abi arm64-v8a --jobs 8
-scripts/build-android-deps.sh --clean --abi arm64-v8a
-# Build two independent ABIs at once, with two compiler jobs per ABI.
-scripts/build-android-deps.sh --parallel-abis 2 --jobs 2
+cd example
+make adbinstall
 ```
 
-The script is incremental and safe to run repeatedly. Sources are kept under `third_party/src`, intermediate files under `third_party/build-android`, and installed headers/libraries under `third_party/android-deps/<ABI>`. Supported ABIs are `arm64-v8a`, `armeabi-v7a`, `x86_64`, and `x86`; all target Android API 26.
+The Makefile builds the APK and invokes `adb install -r`. Set `DEVICE_SERIAL=<adb-serial>` if multiple devices are connected. The target does not merely launch a previously built APK; it runs the build and installation steps.
 
-## CI cache
+### Add the library to an Android project
 
-The GitHub Actions workflows pin action commits, cancel superseded runs for the
-same branch or pull request, and bound every job with a timeout. Gradle's setup
-action caches Gradle state. Android and native-analysis jobs additionally cache
-the fixed SDK toolchains plus pinned dependency source checkouts and generated
-`third_party/android-deps` static libraries. The native-dependency cache key
-includes the dependency revisions, build recipe, and every
-`third_party/patches/**` input. The build script validates each cached ABI
-(headers, all five libraries, API level, revisions, and recipe version) before
-skipping it, so an incomplete cache is rebuilt rather than used.
+For a local checkout, include the `:kathttp3` module and add a project dependency:
 
-The Android build produces one combined AAR and verifies that it contains
-`arm64-v8a`, `armeabi-v7a`, `x86_64`, and `x86` native libraries before it
-publishes the build artifact. It builds two ABI dependency sets concurrently
-with two compiler jobs per set, avoiding CPU oversubscription on hosted
-runners. The Gradle build cache and parallel project execution are enabled in
-`gradle.properties`.
-
-Build the APK after dependencies:
-
-```sh
-./gradlew buildAndroidNativeDeps
-./gradlew :example:assembleDebug
-ls -l example/build/outputs/apk/debug/example-debug.apk
+```kotlin
+dependencies {
+    implementation(project(":kathttp3"))
+}
 ```
 
-## Native code quality checks
-
-GitHub Actions runs native formatting, clang-tidy and cppcheck against the
-project-pinned Android dependency headers, host core tests under
-AddressSanitizer and UndefinedBehaviorSanitizer, and a Linux HTTP/3 smoke test
-against a pinned ngtcp2 example server built with pinned nghttp3 and BoringSSL.
-The Android workflow runs Kotlin unit tests, library lint, release-AAR ABI
-contents verification, and the example APK build. The default
-clang-tidy profile is deliberately staged: it reports selected bug-prone,
-analyzer, performance, portability, and low-noise modernize/readability checks
-without treating the existing baseline as errors.
-
-```sh
-# Formatting check / automatic formatting (generated CA bundle is excluded).
-find src include tests -type f ! -name ca_bundle.h \( -name '*.cc' -o -name '*.cpp' -o -name '*.c' -o -name '*.h' -o -name '*.hpp' \) -print0 | xargs -0 clang-format --dry-run --Werror
-find src include tests -type f ! -name ca_bundle.h \( -name '*.cc' -o -name '*.cpp' -o -name '*.c' -o -name '*.h' -o -name '*.hpp' \) -print0 | xargs -0 clang-format -i
-
-# Compilation database and clang-tidy/cppcheck without linking transport deps.
-cmake -S . -B build-tidy -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DKATHTTP3_ANALYSIS_ONLY=ON -DKATHTTP3_BUILD_JNI=OFF
-run-clang-tidy -p build-tidy -quiet
-cppcheck --project=build-tidy/compile_commands.json --enable=warning,style,performance,portability --inline-suppr --suppress=missingIncludeSystem --error-exitcode=1
-
-# ASan + UBSan for the core test suite.
-cmake -S . -B build-sanitize -G Ninja -DCMAKE_BUILD_TYPE=Debug -DKATHTTP3_ANALYSIS_ONLY=ON -DKATHTTP3_SANITIZE=ON -DKATHTTP3_BUILD_JNI=OFF
-cmake --build build-sanitize --parallel
-ctest --test-dir build-sanitize --output-on-failure
-```
-
-Include What You Use is intentionally opt-in because external QUIC/TLS headers
-need project-specific mappings.  Install `include-what-you-use` and configure
-with `-DKATHTTP3_ENABLE_IWYU=ON` when running this manual audit.
-
-The module uses compile SDK 36, minimum SDK 26, and Java/Kotlin JVM target 17.
-The checked-in wrapper uses Gradle 9.6.1; the Android Gradle Plugin version is
-9.2.1 and the Compose compiler plugin version is 2.4.0.
-
-### Publishing and consuming
-
-The `:kathttp3` module is configured with `maven-publish`. Building the release
-AAR first runs `buildAndroidNativeDeps` automatically (wired through `preBuild`),
-so a single command cross-compiles the pinned native dependencies for all four
-ABIs and packages `libkathttp3.so` into the AAR:
+To create a locally published Maven artifact:
 
 ```sh
 ./gradlew :kathttp3:publishReleasePublicationToMavenLocal
 ```
 
-The same command runs on JitPack via [`jitpack.yml`](jitpack.yml). Add JitPack as
-a repository and depend on the tag you want:
+The project also contains a `jitpack.yml` publishing recipe. For a repository tag built by JitPack, configure its repository and use that tag as the dependency version:
 
 ```kotlin
-repositories { maven("https://jitpack.io") }
-dependencies { implementation("com.github.haturatu:kathttp3:v0.1.8") }
-```
+repositories {
+    maven("https://jitpack.io")
+}
 
-For stable releases, build the AAR once in CI (`[Android AAR]` workflow), publish
-it to Maven Central, and depend on `dev.kathttp3:kathttp3:<version>` instead.
-
-Pinned dependencies and licenses:
-
-| Library | Version | License |
-| --- | --- | --- |
-| BoringSSL | `3c6315e00ab02d7bc9b8922aff1f85d8f81ee130` | ISC-style/BSD-style; see upstream `LICENSE` |
-| nghttp3 | `v1.17.0` | MIT |
-| ngtcp2 | `v1.24.0` | MIT |
-
-These revisions are defined once in [`third_party/versions.env`](third_party/versions.env), which `scripts/build-android-deps.sh` sources and `third_party/versions.cmake` loads. Edit `versions.env` to bump a dependency.
-
-### Certificate trust
-
-Peer and hostname verification are enabled by default. The default trust mode is `KATHTTP3_TRUST_PLATFORM`, which on Android delegates to the platform `X509TrustManager` through `android.net.http.X509TrustManagerExtensions` (BoringSSL's custom-verify callback forwards the peer chain, server name and key type). This automatically inherits the Android system trust store and Network Security Config, so public-server use works out of the box without a bundled CA file.
-
-Three trust modes are selectable through `kathttp3_trust_mode`:
-
-| Mode | Meaning |
-| --- | --- |
-| `KATHTTP3_TRUST_PLATFORM` (default) | Use the OS/platform trust provider (Android `X509TrustManagerExtensions`; host OpenSSL default paths). |
-| `KATHTTP3_TRUST_EMBEDDED_MOZILLA` | Verify against the built-in Mozilla CA bundle (`ca_bundle.h`). |
-| `KATHTTP3_TRUST_CUSTOM_CA` | Verify against a caller-supplied PEM CA file (`ca_cert_file`). |
-
-`insecure_cert` disables verification entirely; it is debug-only and must never be enabled in shipped builds.
-
-Verification failure is fatal and surfaced with a distinct error code rather than a generic transport error: `KATHTTP3_ERR_TLS` (-4) for handshake-level failures, `KATHTTP3_ERR_CERTIFICATE_VERIFY` (-5), `KATHTTP3_ERR_HOSTNAME_MISMATCH` (-6), and `KATHTTP3_ERR_NO_TRUST_PROVIDER` (-7) when no trust provider is configured. The Kotlin API throws `TlsHandshakeException`, `CertificateVerificationException`, or `QuicTransportException` accordingly; transport errors remain `KATHTTP3_ERR_QUIC` (-3) / `QuicTransportException`. KatHttp3 does not silently disable verification. Key logging is debug-only and must never be enabled in shipped builds.
-
-## Kotlin usage
-
-```kotlin
-KatHttp3Client().use { client ->
-    val response = client.get("https://your-http3-server.example/resource")
-    println("${response.status}: ${response.body.decodeToString()}")
+dependencies {
+    implementation("com.github.haturatu:kathttp3:<tag>")
 }
 ```
 
-POST and cancellation:
+Replace `<tag>` with an existing tag. This example describes the publishing configuration; it does not claim that a particular tag or Maven Central artifact is currently available. Native Android libraries are bundled into the AAR for the configured ABIs.
+
+## Kotlin API
+
+### Send a request
+
+These examples use suspend functions and must run in a coroutine or another suspend context.
+
+```kotlin
+import dev.kathttp3.KatHttp3Client
+import dev.kathttp3.get
+
+KatHttp3Client().use { client ->
+    val response = client.get("https://your-http3-server.example/resource")
+    println(response.status)
+    println(response.body.decodeToString())
+}
+```
+
+KatHttp3 requires HTTPS URLs. There is no automatic HTTP/1.1 or HTTP/2 fallback when an endpoint does not support HTTP/3.
+
+To send a JSON POST request:
+
+```kotlin
+import dev.kathttp3.KatHttp3Header
+import dev.kathttp3.post
+
+val response = client.post(
+    "https://your-http3-server.example/items",
+    """{"name":"kat"}""".encodeToByteArray(),
+    listOf(KatHttp3Header("content-type", "application/json")),
+)
+```
+
+The same client exposes `get`, `post`, `put`, `delete`, `patch`, and `head` convenience functions, as well as `execute(KatHttp3Request(...))` for general requests. A `KatHttp3Response` contains the status, headers, body, and protocol name.
+
+**Note:** `execute` buffers the response body in memory, up to `maxBufferedBodyBytes` (16 MiB by default). Use the streaming interface for larger or incrementally processed responses. `decodeContent()` is available for supported encoded response bodies; the buffered `saveTo(file)` helper writes an already-buffered body to a file.
+
+### Cancel a request
+
+Cancellation of a coroutine executing a request is propagated to the native request and requests stream shutdown.
 
 ```kotlin
 val job = lifecycleScope.launch {
-    client.post(
-        "https://your-http3-server.example/items",
-        "{\"name\":\"kat\"}".encodeToByteArray(),
-        listOf(KatHttp3Header("content-type", "application/json")),
-    )
+    client.get("https://your-http3-server.example/resource")
 }
-job.cancel() // propagated to RESET_STREAM / STOP_SENDING
+
+job.cancel()
 ```
 
-`execute` buffers at most `maxBufferedBodyBytes` (16 MiB by default).
-`executeStreaming` exposes a bounded `Flow<KatHttp3StreamEvent>`; close/cancel
-its `KatHttp3Call` when abandoning collection. JNI coalesces consecutive body
-data for one request up to 64 KiB and flushes on completion or after the
-one-millisecond latency threshold is observed by a subsequent body callback.
-The resulting byte array is copied into the byte-bounded Kotlin queue before
-receive-window credit is returned, so batching cannot bypass the memory budget.
-The first pending credit operation wakes the QUIC worker immediately; further
-consume operations arriving before that wake is processed share the same
-eventfd notification and are combined per stream and connection.
+Closing a `KatHttp3Client` cancels its active requests. Use `use { ... }` or otherwise call `close()` when the client is no longer needed. Reuse a client across related requests to benefit from connection reuse.
 
-`KatHttp3ClientConfig` has independent monotonic deadlines for DNS, connect,
-handshake, response headers, read-idle, write-idle, and the complete call.
-`callTimeoutMillis` is an absolute request deadline; read/write timeouts reset
-only when the corresponding direction makes progress. Timeout failures are
-reported as `KatHttp3Exception.Timeout` with a `KatHttp3TimeoutPhase`.
+### Stream a response
 
-The native private HTTP response cache is opt-in:
+`executeStreaming` returns a `KatHttp3Call` with a `Flow<KatHttp3StreamEvent>`. The call must be closed if collection stops early:
+
+```kotlin
+import dev.kathttp3.KatHttp3Request
+import dev.kathttp3.KatHttp3StreamEvent
+
+val call = client.executeStreaming(
+    KatHttp3Request("GET", "https://your-http3-server.example/large-file"),
+)
+
+try {
+    call.events.collect { event ->
+        when (event) {
+            is KatHttp3StreamEvent.Headers -> println(event.status)
+            is KatHttp3StreamEvent.Body -> processBytes(event.bytes)
+        }
+    }
+} finally {
+    call.close()
+}
+```
+
+`processBytes` represents application code that handles a received chunk. The Kotlin response queue has byte limits per stream and across the client. JNI copies the callback data before returning receive-window credit; that credit does **not** mean downstream application processing has finished.
+
+For uploads, `KatHttp3RequestBody.Bytes`, `FileBody`, and `Stream` accept an in-memory body, a file, or a producer `Flow<ByteArray>`. File and producer uploads use a bounded native queue (4 MiB). A producer must not emit an empty chunk.
+
+### Configure the client
+
+`KatHttp3ClientConfig` sets limits independently. The most commonly adjusted settings are:
+
+| Property | Default | Purpose |
+| --- | --- | --- |
+| `callTimeoutMillis` | 30,000 | Deadline for the complete native call |
+| `dnsTimeoutMillis` | 10,000 | DNS resolution |
+| `connectTimeoutMillis` | 10,000 | Connection setup |
+| `handshakeTimeoutMillis` | 10,000 | QUIC/TLS handshake |
+| `responseHeadersTimeoutMillis` | 30,000 | Waiting for response headers |
+| `readTimeoutMillis` / `writeTimeoutMillis` | 30,000 / 30,000 | Time without progress in the corresponding direction |
+| `maxBufferedBodyBytes` | 16 MiB | Maximum buffered response body |
+| `maxStreamingBufferedBytesPerStream` | 1 MiB | Pending Kotlin body bytes for one streaming call |
+| `maxStreamingBufferedBytesPerConnection` | 16 MiB | Shared Kotlin streaming-response budget |
+| `maxActiveStreamsPerOrigin` | 8 | Local active-call limit per origin |
+| `maxQueuedRequestsPerOrigin` | 64 | Local waiting-call limit per origin |
+| `queueTimeoutMillis` | 30,000 | Time a request may wait for a local permit |
+| `maxConnectionWorkers` | 32 | Upper bound on native connection workers |
+
+The scheduler limits are **local admission controls**, not the QUIC peer's advertised `MAX_STREAMS` value. Waiting for a permit does not consume the response-header, read-idle, or write-idle deadline. Priority follows RFC 9218 urgency values: 0 is most urgent, 7 is background. Requests with the same urgency are queued FIFO. A supplied `priority` header takes precedence over the generated header; changing priority after submission is not supported.
+
+```kotlin
+import dev.kathttp3.KatHttp3ClientConfig
+
+val config = KatHttp3ClientConfig(
+    callTimeoutMillis = 20_000,
+    maxBufferedBodyBytes = 8L * 1024 * 1024,
+    maxActiveStreamsPerOrigin = 8,
+    maxQueuedRequestsPerOrigin = 32,
+)
+val client = KatHttp3Client(config)
+```
+
+`callTimeoutMillis` is an absolute request deadline. Read and write idle timers reset only when the corresponding operation makes progress. The API reports timeouts through `KatHttp3Exception.Timeout` and `KatHttp3TimeoutPhase`.
+
+### Retries and errors
+
+The default client **does not retry requests**. For policy-based retries, add `PolicyRetryInterceptor` to `KatHttp3ClientConfig.interceptors`. This policy restricts retries to allowed idempotent methods and connection failures. Cancellation and certificate failures are not retried; neither are application-level HTTP failures by default.
+
+```kotlin
+import dev.kathttp3.PolicyRetryInterceptor
+
+val config = KatHttp3ClientConfig(
+    interceptors = listOf(PolicyRetryInterceptor()),
+)
+```
+
+The less restrictive `RetryInterceptor` also exists. Review its policy before enabling it for requests with side effects.
+
+Common exceptions include:
+
+| Exception | Meaning |
+| --- | --- |
+| `KatHttp3Exception.Dns` | Name resolution failed |
+| `KatHttp3Exception.Timeout` | A named timeout phase elapsed |
+| `CertificateVerificationException` | Certificate trust or hostname verification failed |
+| `TlsHandshakeException` | TLS handshake failed |
+| `QuicTransportException` | QUIC transport failed |
+| `KatHttp3Exception.BodyTooLarge` | Buffered response exceeded its limit |
+| `KatHttp3Exception.StreamingBufferLimitExceeded` | Streaming response exhausted its Kotlin byte budget |
+| `KatHttp3Exception.ConsumerStallTimeout` | A streaming consumer stopped making progress |
+| `KatHttp3Exception.NetworkLost` | The selected network path was lost |
+| `KatHttp3Exception.RequestQueueFull` / `RequestQueueTimeout` | Local scheduler rejected or expired a waiting request |
+
+When `expectSuccess = true`, buffered HTTP responses with status 400 or above raise `ResponseException`. Otherwise, non-2xx HTTP statuses are returned to the caller as ordinary responses.
+
+## Security and HTTP behavior
+
+### Certificate verification
+
+Peer certificate and hostname verification are enabled by default. The trust provider is selected with `trustMode`:
+
+| Mode | Behavior |
+| --- | --- |
+| `TrustMode.PLATFORM` (default) | Android's platform `X509TrustManager` and Network Security Config; system trust paths on host |
+| `TrustMode.EMBEDDED_MOZILLA` | Bundled Mozilla CA certificates |
+| `TrustMode.CUSTOM_CA` | Caller-provided PEM bundle at `caCertificateFile` |
+
+The Android platform verifier uses `X509TrustManagerExtensions` through the JNI bridge. `insecureCert = true` disables verification entirely.
+
+**Warning:** Never enable `insecureCert` or TLS key logging in production. If the platform trust provider is unavailable, certificate verification fails rather than silently falling back to insecure behavior.
+
+Redirects reject HTTPS-to-HTTP downgrades. Cross-origin redirects remove sensitive headers, including Authorization, Proxy-Authorization, Cookie, and Host.
+
+### Cookies, 0-RTT, and cache
+
+The cookie jar is experimental and disabled by default (`enableCookies = false`). It does not implement a public suffix list and is **not** a browser-equivalent cookie implementation.
+
+0-RTT is enabled by default (`enable0Rtt = true`), but early data is limited to credential-free, bodyless GET/HEAD requests. TLS session tickets and QUIC transport parameters are cached in memory for the client lifetime. Rejected early data is replayed after handshake confirmation using fresh HTTP/3 state. Tickets are not persisted to disk.
+
+The optional private response cache is also disabled by default:
 
 ```kotlin
 val config = KatHttp3ClientConfig(
@@ -239,239 +254,201 @@ val config = KatHttp3ClientConfig(
 )
 ```
 
-It initially caches only complete, non-streaming `GET` responses with status
-`200`, no `Range`, `Authorization`, or `Cookie` request fields, and explicit
-freshness (`Cache-Control: max-age` or valid `Date`/`Expires`). `private` is
-allowed because this is a per-client private cache. `Vary`, `Age`, monotonic
-resident time, ETag/Last-Modified validation, `304` merging, request cache
-directives, stale-if-error, unsafe-method invalidation, and byte-bounded LRU
-eviction are handled natively. Streaming requests, oversized bodies, partial
-responses bypass the cache. Cached delivery omits `Set-Cookie` fields. Cache
-payloads use immutable shared storage. The cache dispatcher admits at most 128
-pending hits and at most `httpCacheMaxBytes` accounted response bytes (including
-headers and metadata, conservatively counting shared bodies for each job), plus
-one active delivery. Excess hits fail with `KATHTTP3_ERR_NOMEM`; capacity becomes
-available again as queued jobs are dispatched.
+This is a per-client, in-memory cache. It initially stores only complete, buffered GET responses with status 200 and explicit freshness. Requests with Range, Authorization, or Cookie bypass storage. Streaming, oversized, and partial responses also bypass the cache. It handles `Vary`, `Age`, validators (ETag / Last-Modified), 304 merging, cache directives, stale-if-error, and LRU eviction. Cached responses omit `Set-Cookie`.
 
-`KatHttp3RequestBody.Bytes`, `FileBody`, and `Stream` support buffered,
-file-backed, and producer-`Flow` uploads. `FileBody` and `Stream` use a bounded
-native queue (4 MiB), and a non-empty `Stream` chunk is required. Retries are
-opt-in: add `PolicyRetryInterceptor` (or `RetryInterceptor`) through
-`KatHttp3ClientConfig.interceptors`; the default client does not retry.
+The native dispatcher bounds pending cache-hit deliveries to 128 and accounts for response bytes within `httpCacheMaxBytes`. If it cannot queue a delivery, the operation fails with `KATHTTP3_ERR_NOMEM` rather than allocating without limit. Disk persistence, heuristic freshness, and range-response caching are not implemented.
 
-KatHttp3 also applies local, origin-scoped admission control before a request is
-created in native code. `maxActiveStreamsPerOrigin` defaults to 8,
-`maxQueuedRequestsPerOrigin` to 64, and `queueTimeoutMillis` to 30 seconds.
-This is a client resource limit, not QUIC's peer-advertised `MAX_STREAMS`.
-Queued calls are selected by `KatHttp3Request.priority.urgency` using RFC 9218's
-0 (most urgent) through 7 (background) ordering, with FIFO ordering inside one
-urgency. KatHttp3 also generates the RFC 9218 `priority` request field from
-`urgency` and `incremental`; an explicitly supplied `priority` header takes
-precedence. Dynamic `PRIORITY_UPDATE` after request submission is not exposed.
-Queue waiting does not consume response-header, read-idle, or write-idle time;
-it ends with `KatHttp3Exception.RequestQueueTimeout` or
-`KatHttp3Exception.RequestQueueFull` before native stream creation.
+### Android network changes
 
-Pass an application `Context` to `KatHttp3Client` to enable its internal
-`ConnectivityManager` observer. A confirmed QUIC connection is rebound to the
-new Android default `Network` and uses a fresh UDP socket, connection ID and
-ngtcp2 path validation while keeping its HTTP/3 streams. If no replacement
-network exists, the handshake is not confirmed, socket binding fails, or path
-validation fails, active calls end with `KatHttp3Exception.NetworkLost`; a
-configured retry policy may retry only replay-safe methods on a new connection.
-DNS is scoped to the new Android network handle and its old cache generation is
-invalidated. KatHttp3 never binds the entire application process to a network.
+Pass an application `Context` to enable the internal ConnectivityManager observer:
 
-## Example app
+```kotlin
+val client = KatHttp3Client(
+    config = KatHttp3ClientConfig(),
+    applicationContext = applicationContext,
+)
+```
 
-The local-module Compose app is in `example/` and uses `implementation(project(":kathttp3"))`.
-It starts each method with an empty header/body preset and an editable
-`https://nghttp2.org/httpbin` URL; replace that URL when testing another
-HTTP/3-capable HTTPS server. Select GET, POST, PUT, DELETE, PATCH, or HEAD,
-then press the single `Send <method>` button. POST, PUT, PATCH, and DELETE
-expose an editable UTF-8 body; headers are entered as lowercase `name: value`
-lines. Cancel cancels the coroutine and native request. The app shows status,
-headers, HTTP/3-over-QUIC protocol information, duration, byte count, and
-errors; response rendering is capped at 16,000 characters to keep the UI
-responsive. Cleartext traffic is disabled.
+With `NetworkChangePolicy.ATTEMPT_MIGRATION` (the default), a confirmed connection attempts migration to a new Android default network. The client binds a new UDP socket and validates the new path. Existing HTTP/3 streams remain associated with that connection if migration succeeds.
 
-With one Android device connected through adb, the example can be built and installed from its directory:
+If no replacement network is available or migration cannot complete, affected calls fail with `KatHttp3Exception.NetworkLost`. An explicitly configured retry policy may then retry replay-safe requests. DNS state is partitioned by Android network generation. KatHttp3 does **not** bind the entire Android process to a network.
+
+`NetworkChangePolicy.CLOSE_AND_RECONNECT` selects reconnect behavior instead of migration.
+
+## Build and development
+
+### Android native dependencies
+
+The build script downloads pinned sources instead of using Android's private BoringSSL ABI. The revisions are maintained in `third_party/versions.env`:
+
+| Dependency | Revision | License |
+| --- | --- | --- |
+| ngtcp2 | `v1.24.0` | MIT |
+| nghttp3 | `v1.17.0` | MIT |
+| BoringSSL | `3c6315e00ab02d7bc9b8922aff1f85d8f81ee130` | ISC/BSD-style; refer to the upstream license |
+
+The script produces `libngtcp2.a`, `libngtcp2_crypto_boringssl.a`, `libnghttp3.a`, `libssl.a`, and `libcrypto.a` under `third_party/android-deps/<ABI>/lib/`, alongside the corresponding headers.
+
+To build only one ABI or rebuild its dependencies:
 
 ```sh
-cd example
-make adbinstall
+scripts/build-android-deps.sh --abi arm64-v8a --jobs 8
+scripts/build-android-deps.sh --clean --abi arm64-v8a
+scripts/build-android-deps.sh --parallel-abis 2 --jobs 2
 ```
 
-By default dependencies are read from `third_party/android-deps`; override this with `KATHTTP3_DEPS_ROOT=/absolute/path` when needed. When multiple devices are connected, add `DEVICE_SERIAL=<adb-serial>`. The target runs `:example:assembleDebug`, verifies the APK, and installs it with `adb install -r`.
+The last command builds two ABI sets concurrently with two compiler jobs each. Sources are stored under `third_party/src/` and intermediates under `third_party/build-android/`. Cached outputs are checked against dependency revisions, the recipe, expected static libraries, and the Android API level before reuse.
 
-## Tests
+The project uses the Gradle 9.8.1 wrapper, Android Gradle Plugin 9.4.1, and Compose compiler plugin 2.4.21. Build tooling versions should be checked against the repository's Gradle files rather than copied from old release notes.
 
-- `tests/core/core_tests.cc`: URL/port validation, redirect and cookie
-  matching, asynchronous resolver delivery, Happy Eyeballs candidate planning,
-  DNS-cache behavior, and HTTP cache parser/freshness/Vary/revalidation tests.
-- `kathttp3/src/test`: Kotlin configuration, request, and header validation.
-- The Android build compiles the JNI bridge and all four configured ABIs.
-- External-network and local ngtcp2-server tests are not part of this
-  repository's ordinary test suite.
+### Host core build and tests
 
-## Protocol notes
+On Linux, install CMake 3.22 or newer, a C++20 compiler, pkg-config, and compatible development packages for ngtcp2, nghttp3, and the selected TLS integration. The host configuration does not require JNI for the ordinary core tests.
 
-The worker drives `ngtcp2_conn_get_expiry2`/`ngtcp2_conn_handle_expiry` with monotonic nanoseconds and drains non-blocking UDP. After 1-RTT keys are available, it creates the nghttp3 client plus one control and two QPACK unidirectional streams. Requests use client bidirectional streams with `:method`, `:scheme`, `:authority`, and `:path`. Cancellation requests both read and write shutdown.
+```sh
+cmake -S . -B build -DKATHTTP3_BUILD_TESTS=ON -DKATHTTP3_BUILD_JNI=OFF
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
 
-## C ABI compatibility
+For AddressSanitizer and UndefinedBehaviorSanitizer:
 
-The C ABI uses `kathttp3_client_config` (an alias of the retained
-`kathttp3_client_options`) with `struct_size` and `abi_version`. For a current
-header-sized configuration, initialize it with
-`kathttp3_client_config_init_size(&config, sizeof(config))`. The legacy
-`kathttp3_client_config_init` is bounded to the pre-cache prefix so binaries
-compiled against the older layout cannot be overrun; use the size-aware
-initializer when accessing appended fields. KatHttp3 accepts known smaller
-structs and defaults omitted fields; it rejects future ABI versions. During
-the 0.x line, existing enum values and fields are not reordered and optional
-fields are appended only. HTTP cache fields are appended, disabled by default,
-and use zero values to select the defaults of 128 entries, 32 MiB total, and 4
-MiB per entry. Symbols are hidden by default except `kathttp3_*` exports.
+```sh
+cmake -S . -B build-sanitize -DKATHTTP3_SANITIZE=ON -DKATHTTP3_BUILD_JNI=OFF
+cmake --build build-sanitize --parallel
+ctest --test-dir build-sanitize --output-on-failure
+```
 
-## Known limitations
+The test suite includes URL, redirect, cookie, resolver, Happy Eyeballs, cache parsing, freshness and revalidation tests, together with Kotlin model/configuration tests. The CI pipeline additionally exercises a pinned HTTP/3 interoperability smoke test against an ngtcp2 example server. These checks do not replace testing on real Android networks and application endpoints.
 
-- Certificate trust defaults to the Android platform provider (`X509TrustManagerExtensions`); the embedded Mozilla bundle and a caller-supplied CA file are also available via `kathttp3_trust_mode`.
-- Live interoperability is not covered by a local HTTP/3-server integration
-  test in this repository.
-- DNS, connect, handshake, response-header, read-idle, write-idle and call
-  deadlines use the monotonic QUIC clock.
-- Response trailers and informational responses are not exposed by the Kotlin
-  response model. GOAWAY handling drains existing work, but there is no
-  separately configurable drain deadline.
-- Response header validation rejects invalid/uppercase field names,
-  connection-specific fields, invalid `TE`, malformed `:status`, and invalid
-  or conflicting `Content-Length`. Body length is checked at completion.
-- UDP transient send failures are queued with fixed packet and byte limits;
-  queue overflow is surfaced as a connection failure. There are no public
-  queue metrics.
-- Streaming response credit is returned when JNI callback data has been copied
-  into KatHttp3's bounded Kotlin buffer, not when a Flow collector later runs.
-  It is therefore not an acknowledgement that arbitrary application work after
-  collection has completed.
-- Kotlin queues are also guarded by byte budgets: configure
-  `maxStreamingBufferedBytesPerStream` and
-  `maxStreamingBufferedBytesPerConnection` (defaults: 1 MiB and 16 MiB).
-  The per-stream cap is deliberate fairness control: a single slow image
-  consumer cannot reserve the shared client budget needed by other streams.
-- Receive-window credit is queued and wakes the QUIC worker on every accepted
-  consume operation; it is never left waiting solely for a 64 KiB batch. Read,
-  response-header, and write timeouts drain the affected connection from the
-  pool before a retry. Automatic retries are limited to DNS, connect, and
-  handshake failures; read, call, and consumer-stall timeouts are not retried.
-- Deadline arithmetic uses saturating monotonic elapsed time, so callback
-  progress recorded later in an event-loop iteration cannot wrap and cause an
-  immediate timeout. Timeout diagnostics include the process-local connection
-  ID, timestamps, configured deadline, state, pending reason, remote address,
-  and address family. A connection-level timeout reports only its triggering
-  request as that phase; remaining requests fail as connection errors.
-- Native QUIC receive windows use fixed 1 MiB stream high / 512 KiB low
-  watermarks, an 8 MiB connection limit, and 64 KiB credit batching. These
-  values are not yet public configuration knobs. The same limits are applied
-  to normal and Happy Eyeballs connection candidates before the winner is
-  adopted. A stream or shared connection window intentionally blocked by the
-  local consumer does not trigger a network read-idle timeout; a separate
-  consumer-stall timeout governs abandoned streaming calls. Configure it with
-  `consumerStallTimeoutMillis` (default: `readTimeoutMillis`); it is reported
-  as `KatHttp3Exception.ConsumerStallTimeout`, not as a network timeout.
-- While at least one request stream is active, the worker configures ngtcp2
-  keep-alive at half of the peer-advertised idle timeout. It disables probes
-  when no request stream is active; keep-alive is therefore not a background
-  connection-pooling heartbeat.
-- PMTUD is explicitly enabled through ngtcp2's built-in safe probe sequence.
-  Packet generation is capped by ngtcp2's current send quantum and updates
-  its pacing timestamp after each quantum. When the bounded UDP retry queue
-  contains adjacent equal-sized packets, Linux/Android uses `UDP_SEGMENT` GSO
-  to flush up to 16 in one syscall. Unsupported kernels permanently fall back
-  to FIFO single-datagram sends; the non-GSO path remains the portable default.
-  On receive, Linux/Android drains up to 16 immediately available datagrams
-  with non-blocking `recvmmsg()`; other platforms retain the `recvmsg()` loop.
-  UDP GRO is not enabled because KatHttp3 currently sizes each receive slot to
-  one QUIC packet and must never pass a truncated coalesced datagram to ngtcp2.
-- qlog is disabled by default. `KatHttp3ClientConfig(qlogEnabled = true)` enables the Android-only,
-  bounded buffered Logcat destination. Set `qlogPathPrefix = "..."` to instead produce one
-  mode-0600 ngtcp2 `.qlog` file per connection at an app-private writable prefix; set
-  `qlogLogcatEnabled = true` to use both destinations. A core C ABI `qlog_sink_cb` is also
-  available for non-Android destinations and must be non-blocking. Logcat queue contention or a
-  256 KiB queue overflow drops diagnostics rather than delaying QUIC processing. Treat qlog as
-  sensitive connection metadata and do not enable it in normal production builds. The current
-  output is ngtcp2's qlog writer; KatHttp3 does not claim full conformance to draft-ietf-quic-qlog-main-schema-14, whose
-  protocol-specific QUIC and HTTP/3 event schemas are defined in separate
-  drafts.
-- DNS lookups run in a bounded two-thread resolver pool rather than on a QUIC
-  worker. Concurrent lookups for the same case-insensitive hostname, port,
-  resolver, and Android network generation share one in-flight query; each
-  caller waits asynchronously and may cancel without cancelling its peers. A
-  reusable Active or Connecting origin connection is selected before a new
-  client can submit DNS. When the 32-task worker queue is full, up to 128
-  additional unique hosts wait in a bounded host queue; duplicate hosts still
-  attach to their existing flight. Cancellation and DNS deadline expiry remove
-  their waiter immediately, and work with no remaining waiters is skipped.
-  Resolver completion, cancellation, network changes and shutdown notify the
-  waiting connection directly; DNS setup has no fixed 10ms polling interval.
-  Platform DNS caching remains owned by Android/libc because `InetAddress` and
-  `getaddrinfo` do not expose authoritative TTLs; a five-second native success
-  cache only absorbs immediate request bursts and never caches failures. The bundled DoH resolver
-  caches successful A/AAAA results for the minimum answer TTL and caches
-  NXDOMAIN/NODATA only when an SOA supplies the RFC 2308 negative TTL; malformed,
-  timeout, and SOA-less failures are not cached. Network changes partition
-  in-flight work and invalidate the previous DNS generation. Cancellation and DNS
-  deadlines discard late results. When both
-  address families are available, the first resolver-ordered candidate starts
-  a QUIC/TLS handshake immediately and the first opposite-family candidate
-  starts after 250ms (or immediately after the first candidate fails). The
-  handshake winner is selected before any HTTP request stream is opened; the
-  loser socket and QUIC state are released. Additional addresses retain the
-  sequential fallback path. This handshake race is separate from established
-  connection migration. Established Android connections use a network-bound
-  replacement socket and ngtcp2's immediate migration, which sends on the new
-  path while mandatory PATH_CHALLENGE/PATH_RESPONSE validation is pending; this
-  is required when the old mobile or Wi-Fi path has already disappeared.
-- JNI caches callback/resolver classes and method IDs at `JNI_OnLoad`. Native
-  DNS and QUIC workers attach as daemon threads once, reuse their thread-local
-  `JNIEnv*`, and detach when the worker exits; `JNIEnv*` is never shared across
-  threads.
-- Redirects reject HTTPS-to-HTTP downgrades and strip Authorization,
-  Proxy-Authorization, Cookie, and Host on cross-origin hops. The cookie jar
-  is experimental and disabled by default (`enableCookies = true` is explicit
-  opt-in). It has no public-suffix database, so it must not be treated as a
-  browser-equivalent cookie implementation.
-- HTTP response caching is disabled by default and deliberately conservative.
-  Enable it with `enableHttpCache` (or `enable_http_cache` in the C ABI). It is
-  a per-client in-memory private cache, not a shared/browser cache: cookie- and
-  authorization-bearing requests bypass it, only complete buffered `GET` 200
-  responses are stored, `Vary: *` is rejected, and the default limits are 128
-  entries, 32 MiB total, and 4 MiB per entry. HEAD, range, heuristic freshness,
-  and persistent cache storage are not implemented.
-- Request bodies support `ByteArray`, `File`, and a producer `Flow<ByteArray>`.
-  Flow/File data is bounded to 4 MiB in native memory and only resumes nghttp3
-  when chunks arrive. Empty producer chunks are rejected. HTTP/3 upload
-  interoperability still requires connected-server validation.
-- TLS session tickets and their matching ngtcp2 0-RTT transport parameters are
-  cached in memory per origin for the lifetime of a client. `enable0Rtt` is
-  enabled by default and only permits credential-free, bodyless GET/HEAD
-  requests before handshake confirmation. A rejected early-data attempt
-  recreates HTTP/3 state and replays those requests after 1-RTT; the cache is
-  intentionally not persisted to disk or shared between clients.
-- C ABI `destroy` requires a live handle; callers must null their handle after destroy. JNI detects stale/double-destroy handles.
+### Formatting and static analysis
 
-## Source layout
+Formatting, clang-tidy, cppcheck, sanitizer builds and Kotlin lint run in CI. To inspect the native code locally:
+
+```sh
+find src include tests -type f ! -name ca_bundle.h \
+  \( -name '*.cc' -o -name '*.cpp' -o -name '*.c' -o -name '*.h' -o -name '*.hpp' \) \
+  -print0 | xargs -0 -r clang-format --dry-run --Werror
+
+cmake -S . -B build-tidy -G Ninja \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DKATHTTP3_ANALYSIS_ONLY=ON -DKATHTTP3_BUILD_JNI=OFF
+run-clang-tidy -p build-tidy -quiet
+cppcheck --project=build-tidy/compile_commands.json \
+  --enable=warning,style,performance,portability \
+  --inline-suppr --suppress=missingIncludeSystem --error-exitcode=1
+```
+
+`ca_bundle.h` is generated and excluded from formatting. Include What You Use is optional (`-DKATHTTP3_ENABLE_IWYU=ON`); external QUIC/TLS headers may need project-specific mappings.
+
+### Example app
+
+The application under `example/` uses `implementation(project(":kathttp3"))`. It can issue GET, POST, PUT, DELETE, PATCH, and HEAD requests, edit HTTPS URLs and headers, and cancel an active call. It shows response status, headers, protocol, duration, transferred bytes, and errors. Response text display is limited to 16,000 characters.
+
+By default its URL points at `https://nghttp2.org/httpbin`. Replace it with an HTTP/3-capable endpoint when testing another server. Cleartext HTTP is disabled in the example manifest.
+
+## Diagnostics and troubleshooting
+
+### Build fails
+
+- **Android SDK or NDK not found:** Check `ANDROID_HOME` / `ANDROID_SDK_ROOT`, the installed SDK platform and the NDK version. Run the native dependency task separately to isolate its failures.
+- **Missing libraries for an ABI:** Re-run `scripts/build-android-deps.sh --abi <ABI>`, then build the AAR. If an alternate output location is used, configure `KATHTTP3_DEPS_ROOT` for the example or `kathttp3DepsRoot` for Gradle.
+- **Host build cannot find QUIC libraries:** Check the ngtcp2/nghttp3 pkg-config packages and selected TLS linkage. `KATHTTP3_ANALYSIS_ONLY=ON` is for source analysis, not a working HTTP/3 client.
+- **No device found:** Check `adb devices`. With multiple devices, set `DEVICE_SERIAL` before `make adbinstall`.
+
+### Request fails
+
+- **DNS failure:** Check the hostname, resolver, Android network permissions and the selected network.
+- **QUIC connection or handshake failure:** Confirm that the endpoint actually supports HTTP/3 and is reachable over UDP. KatHttp3 does not silently downgrade to TCP-based HTTP.
+- **Certificate error:** Verify the host name, certificate chain and configured trust mode. Do not disable verification to work around a production certificate error.
+- **RequestQueueFull / RequestQueueTimeout:** Check per-origin active/queued limits and whether callers are closing or cancelling abandoned streams.
+- **BodyTooLarge / StreamingBufferLimitExceeded:** Increase the appropriate budget only if memory usage permits, or switch to streaming and consume events promptly.
+- **NetworkLost:** Confirm that an application Context was supplied if automatic Android network observation is needed, and test migration/retry policy on the target network.
+
+### qlog
+
+qlog is disabled by default. On Android, enabling `qlogEnabled` without a file prefix uses a bounded buffered Logcat destination. Set `qlogPathPrefix` to a writable app-private prefix for one mode-0600 `.qlog` file per connection; set `qlogLogcatEnabled` to use both.
+
+```kotlin
+val config = KatHttp3ClientConfig(
+    qlogEnabled = true,
+    qlogPathPrefix = "/data/user/0/your.application.id/files/quic",
+)
+```
+
+The path is an example and must be replaced with a location the application can write to. qlog records can expose sensitive connection metadata. Do not enable qlog or TLS key logging in normal production builds. qlog output is based on ngtcp2's writer; it is not claimed to implement every current QUIC/HTTP3 qlog schema.
+
+## Architecture and compatibility
+
+### Component responsibilities
 
 ```text
-CMakeLists.txt                  host/Android native build
-include/kathttp3/kathttp3.h       public include forwarder
-src/core/                       QUIC/HTTP3 engine and C ABI
-src/core/cache_control.*        Cache-Control directive parser
-src/core/http_date.*            HTTP-date parser for Date/Expires
-src/core/response_cache.*       Vary-aware private response cache
-src/jni/kathttp3_jni.cc          JNI bridge
-kathttp3/                        Android library and Kotlin API
-example/                        Compose sample app
-tests/core/                     host unit tests
-scripts/build-android-deps.sh   pinned Android dependency cross-build
-third_party/android-deps/       generated per-ABI headers and static libraries
+Kotlin client and coroutine API
+  -> JNI bridge
+    -> stable C ABI (opaque client and request handles)
+      -> native Engine and per-origin QUIC worker
+        -> nghttp3 (HTTP/3 framing, SETTINGS, QPACK)
+        -> ngtcp2 (QUIC packets, recovery, flow control)
+        -> BoringSSL (TLS 1.3, encryption)
+          -> non-blocking UDP socket
 ```
+
+KatHttp3 owns DNS resolution, event-loop and timer scheduling, origin pooling, certificate policy, redirects, cookies, cache policy and language bindings. ngtcp2 manages QUIC transport; nghttp3 manages HTTP/3 frames; BoringSSL manages TLS.
+
+Each connection worker owns its UDP descriptor and QUIC/TLS state. The engine maintains requests and the optional in-memory state. JNI callback data is valid only during the callback and is copied before publication to Kotlin. Cancellation, close, and terminal delivery are idempotent at public boundaries.
+
+### Native C ABI
+
+The C API is declared in `src/core/kathttp3.h` (also exposed through `include/kathttp3/kathttp3.h`). It uses opaque client/request handles and structs beginning with `struct_size` and `abi_version`.
+
+Initialize a current-sized configuration with:
+
+```c
+kathttp3_client_config config;
+kathttp3_client_config_init_size(&config, sizeof(config));
+```
+
+`kathttp3_client_config` is an alias of `kathttp3_client_options`. The legacy initializer deliberately writes only the old prefix; use the size-aware initializer when accessing newly appended fields. Known smaller structs are accepted with defaults for missing fields; future ABI versions are rejected. Existing 0.x values are not reordered and optional fields are appended. Exported symbols use the `kathttp3_*` prefix.
+
+**Ownership:** `kathttp3_client_execute` transfers ownership of its request to the native engine. C callback buffers are valid only for the duration of the callback. Callers must not use a handle after destroy and should clear their stored pointer.
+
+### Transport and implementation notes
+
+- The worker drives ngtcp2 timers using monotonic time, a non-blocking UDP socket, and client control/QPACK streams created after 1-RTT keys are available.
+- Native receive-window defaults use 1 MiB stream high and 512 KiB low watermarks, an 8 MiB connection limit, and 64 KiB credit batching. These are distinct from the configurable Kotlin queue limits.
+- Receive credit wakes the worker promptly, while multiple pending credit operations can share a wake-up. A consumer blocked by the local queue uses the consumer-stall timeout, not a misleading network read-idle timeout.
+- DNS runs in a bounded resolver pool, coalesces identical in-flight lookups, and accounts for Android network generations. Platform resolution retains the OS cache policy; a brief native success cache absorbs bursts. The bundled DoH resolver uses answer TTLs and RFC 2308 negative-cache information when available.
+- Connection establishment races address families after a 250 ms stagger when both IPv4 and IPv6 are available. The handshake winner is selected before the HTTP/3 request is submitted. This is separate from migration of an established connection.
+- QUIC keep-alive is active only while request streams are in use. PMTUD, send pacing, bounded UDP retry queues, and supported Linux/Android batched socket operations are implemented. If UDP GSO is not supported, the sender falls back to individual datagrams.
+- Header validation rejects invalid HTTP/3 field names, forbidden connection-specific fields, invalid TE, malformed statuses, and conflicting body lengths.
+
+### Current limitations
+
+- Only HTTP/3 is implemented; there is no automatic HTTP/1.1 / HTTP/2 fallback.
+- Response trailers and informational responses are not exposed through the Kotlin response model. GOAWAY drains existing work without a separately configurable drain deadline.
+- The cookie jar is experimental and has no public suffix list. The HTTP cache is private, in-memory and intentionally narrower than a browser cache.
+- Dynamic RFC 9218 PRIORITY_UPDATE after submission is not exposed.
+- Uploads and connection migration still require endpoint- and device-specific interoperability testing beyond ordinary CI.
+- Native UDP retry queues are bounded, but their counters are not exposed as public metrics.
+- qlog support is diagnostic and does not imply full compliance with all evolving qlog schema drafts.
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `kathttp3/` | Kotlin API, Android library, JNI packaging |
+| `example/` | Jetpack Compose example application |
+| `src/core/` | QUIC/HTTP3 engine, transport, C ABI, caching |
+| `src/jni/` | JNI bridge, Android certificate verifier, qlog |
+| `include/kathttp3/` | Public C include |
+| `tests/core/` | Host unit and state tests |
+| `tests/interop/` | HTTP/3 smoke-test client |
+| `tests/fuzz/` | Parser and protocol fuzz targets |
+| `scripts/build-android-deps.sh` | Reproducible native dependency builds |
+| `third_party/versions.env` | Pinned upstream revisions |
+| `third_party/android-deps/` | Generated ABI-specific libraries and headers |
+
+## License
+
+KatHttp3 uses the [BSD 2-Clause License](LICENSE). ngtcp2, nghttp3, and BoringSSL remain subject to their respective upstream licenses.
