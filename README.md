@@ -2,7 +2,7 @@
 
 KatHttp3 is a native HTTP/3 client library for Android 8.0 (API 26) and later. It provides a coroutine-based Kotlin API backed by a C++20 HTTP/3 engine, without depending on Cronet. A Jetpack Compose example application is included.
 
-The transport uses **ngtcp2 1.24.0**, **nghttp3 1.17.0**, and a pinned BoringSSL revision. The native core is also available through a versioned C ABI.
+The Android transport uses **ngtcp2 1.24.0**, **nghttp3 1.17.0**, and a pinned BoringSSL revision. Host builds can instead use ngtcp2's OpenSSL crypto integration. The native core is also available through a versioned C ABI.
 
 **Status:** Host unit tests, an HTTP/3 interoperability smoke test, and Android library/example builds run in CI. Passing these checks does not establish interoperability with every HTTP/3 server or behavior on every Android network. In particular, uploads, redirects, cancellation, and migration should be tested on the intended devices and servers.
 
@@ -46,7 +46,7 @@ The Makefile builds the APK and invokes `adb install -r`. Set `DEVICE_SERIAL=<ad
 
 ### Add the library to an Android project
 
-For a local checkout, include the `:kathttp3` module and add a project dependency:
+For a local checkout, include `:kathttp3` in the consuming build's `settings.gradle.kts` and add a project dependency:
 
 ```kotlin
 dependencies {
@@ -62,11 +62,21 @@ To create a locally published Maven artifact:
 
 The project also contains a `jitpack.yml` publishing recipe. For a repository tag built by JitPack, configure its repository and use that tag as the dependency version:
 
-```kotlin
-repositories {
-    maven("https://jitpack.io")
-}
+Add the repository in the consumer's `settings.gradle.kts` (rather than a module build file when centralized repository management is enabled):
 
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven("https://jitpack.io")
+    }
+}
+```
+
+Then add the dependency in the app module:
+
+```kotlin
 dependencies {
     implementation("com.github.haturatu:kathttp3:<tag>")
 }
@@ -99,11 +109,14 @@ To send a JSON POST request:
 import dev.kathttp3.KatHttp3Header
 import dev.kathttp3.post
 
-val response = client.post(
-    "https://your-http3-server.example/items",
-    """{"name":"kat"}""".encodeToByteArray(),
-    listOf(KatHttp3Header("content-type", "application/json")),
-)
+KatHttp3Client().use { client ->
+    val response = client.post(
+        "https://your-http3-server.example/items",
+        """{"name":"kat"}""".encodeToByteArray(),
+        listOf(KatHttp3Header("content-type", "application/json")),
+    )
+    println(response.status)
+}
 ```
 
 The same client exposes `get`, `post`, `put`, `delete`, `patch`, and `head` convenience functions, as well as `execute(KatHttp3Request(...))` for general requests. A `KatHttp3Response` contains the status, headers, body, and protocol name.
@@ -112,7 +125,7 @@ The same client exposes `get`, `post`, `put`, `delete`, `patch`, and `head` conv
 
 ### Cancel a request
 
-Cancellation of a coroutine executing a request is propagated to the native request and requests stream shutdown.
+The following examples assume an existing, longer-lived `client`. Cancellation of a coroutine executing a request is propagated to the native request and requests stream shutdown.
 
 ```kotlin
 val job = lifecycleScope.launch {
@@ -165,6 +178,7 @@ For uploads, `KatHttp3RequestBody.Bytes`, `FileBody`, and `Stream` accept an in-
 | `responseHeadersTimeoutMillis` | 30,000 | Waiting for response headers |
 | `readTimeoutMillis` / `writeTimeoutMillis` | 30,000 / 30,000 | Time without progress in the corresponding direction |
 | `maxBufferedBodyBytes` | 16 MiB | Maximum buffered response body |
+| `maxStreamingBufferedBodyBytes` | 4 MiB | Request-body stream buffer limit passed to the native client |
 | `maxStreamingBufferedBytesPerStream` | 1 MiB | Pending Kotlin body bytes for one streaming call |
 | `maxStreamingBufferedBytesPerConnection` | 16 MiB | Shared Kotlin streaming-response budget |
 | `maxActiveStreamsPerOrigin` | 8 | Local active-call limit per origin |
@@ -303,7 +317,7 @@ The project uses the Gradle 9.8.1 wrapper, Android Gradle Plugin 9.4.1, and Comp
 
 ### Host core build and tests
 
-On Linux, install CMake 3.22 or newer, a C++20 compiler, pkg-config, and compatible development packages for ngtcp2, nghttp3, and the selected TLS integration. The host configuration does not require JNI for the ordinary core tests.
+On Linux, install CMake 3.22.1 or newer, a C++20 compiler, pkg-config, and compatible development packages for ngtcp2, nghttp3, and `libngtcp2_crypto_ossl` (the default host TLS integration). To use BoringSSL on host builds, configure the corresponding ngtcp2 crypto integration and BoringSSL include/library paths. The host configuration does not require JNI for the ordinary core tests.
 
 ```sh
 cmake -S . -B build -DKATHTTP3_BUILD_TESTS=ON -DKATHTTP3_BUILD_JNI=OFF
