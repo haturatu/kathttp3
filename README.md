@@ -178,7 +178,6 @@ For uploads, `KatHttp3RequestBody.Bytes`, `FileBody`, and `Stream` accept an in-
 | `responseHeadersTimeoutMillis` | 30,000 | Waiting for response headers |
 | `readTimeoutMillis` / `writeTimeoutMillis` | 30,000 / 30,000 | Time without progress in the corresponding direction |
 | `maxBufferedBodyBytes` | 16 MiB | Maximum buffered response body |
-| `maxStreamingBufferedBodyBytes` | 4 MiB | Request-body stream buffer limit passed to the native client |
 | `maxStreamingBufferedBytesPerStream` | 1 MiB | Pending Kotlin body bytes for one streaming call |
 | `maxStreamingBufferedBytesPerConnection` | 16 MiB | Shared Kotlin streaming-response budget |
 | `maxActiveStreamsPerOrigin` | 8 | Local active-call limit per origin |
