@@ -12,7 +12,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     // Lifecycle 2.11 requires Android API 37, which is not yet available in
     // the reproducible GitHub Actions SDK image. Keep API 36 support here.
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.10.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
 }
