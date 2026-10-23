@@ -22,7 +22,7 @@ source "${VERSIONS_FILE}"
 set +a
 readonly NGTCP2_VERSION="${KATHTTP3_NGTCP2_VERSION}"
 readonly NGHTTP3_VERSION="${KATHTTP3_NGHTTP3_VERSION}"
-# This is the BoringSSL revision used by ngtcp2 v1.24.0 upstream CI.
+# Keep the reviewed BoringSSL revision pinned independently of ngtcp2 releases.
 readonly BORINGSSL_REVISION="${KATHTTP3_BORINGSSL_REVISION}"
 SOURCE_DIR="${ROOT_DIR}/third_party/src"
 BUILD_DIR="${ROOT_DIR}/third_party/build-android"
